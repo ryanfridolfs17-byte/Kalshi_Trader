@@ -317,12 +317,12 @@ class Strategy:
             spread_no = (no_ask - (market.get("no_bid", 0) or 0))
 
             # If either side has a huge spread or no volume, it's phantom
-            if volume_24h < 50:
-                return None  # Not enough activity to trust
+            if volume_24h == 0 and (market.get("volume", 0) or 0) == 0:
+                return None  # Zero activity — phantom quotes
             if spread_yes > 20 or spread_no > 20:
                 return None  # One side is likely a stale quote
-            if gap > 15 and volume_24h < 200:
-                return None  # Too-good-to-be-true + low volume = phantom
+            if gap > 15 and volume_24h < 10:
+                return None  # Too-good-to-be-true + very low volume = phantom
             edge = gap / 100.0
 
             if yes_ask <= no_ask:

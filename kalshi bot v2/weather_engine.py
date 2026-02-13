@@ -421,15 +421,24 @@ class WeatherEngine:
             temp_high = int(range_match.group(2))
         else:
             # Try threshold pattern: "above XX" or "below XX" or "at least XX"
-            above_match = re.search(r'(?:above|over|higher than|at least|≥|>=)\s*(\d+)', title + " " + subtitle, re.I)
-            below_match = re.search(r'(?:below|under|lower than|less than|≤|<=)\s*(\d+)', title + " " + subtitle, re.I)
+            # Also handle Kalshi subtitle patterns like "48° or above", "39° or below"
+            above_match = re.search(r'(?:above|over|higher than|at least|≥|>=|>)\s*(\d+)', title + " " + subtitle, re.I)
+            if not above_match:
+                above_match = re.search(r'(\d+)°?\s*or\s*above', title + " " + subtitle, re.I)
+            below_match = re.search(r'(?:below|under|lower than|less than|≤|<=|<)\s*(\d+)', title + " " + subtitle, re.I)
+            if not below_match:
+                below_match = re.search(r'(\d+)°?\s*or\s*below', title + " " + subtitle, re.I)
 
             if above_match:
-                temp_low = int(above_match.group(1))
+                # ">47°" means 48+; "48° or above" means 48+
+                threshold = int(above_match.group(1))
+                temp_low = threshold + 1  # strictly greater than
                 temp_high = 200  # Effectively infinity
             elif below_match:
+                # "<40°" means 39 or below; "39° or below" means 39 or below
+                threshold = int(below_match.group(1))
                 temp_low = -100  # Effectively negative infinity
-                temp_high = int(below_match.group(1)) - 1
+                temp_high = threshold - 1
             else:
                 return None
 

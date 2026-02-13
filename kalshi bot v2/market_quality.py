@@ -42,7 +42,8 @@ class MarketQualityFilter:
         self.max_spread_cents = 15
 
         # Minimum open interest (contracts currently held by traders)
-        self.min_open_interest = 20
+        # Weather markets often have low OI; don't reject on this alone
+        self.min_open_interest = 0
 
         # Maximum percentage of open interest our order would represent
         # If we'd be >20% of all open interest, we're too big for this market
@@ -154,10 +155,12 @@ class MarketQualityFilter:
 
         # Check 7: Stale market detection
         # If bid and ask haven't changed and volume is 0, market is stale
+        # Note: Kalshi weather markets often show previous_price=0; only penalize
+        # when we have a real previous_price that matches and volume is truly dead
         prev_price = market.get("previous_price", 0) or 0
-        if prev_price > 0 and prev_price == last_price and volume_24h < 10:
+        if prev_price > 0 and prev_price == last_price and volume_24h == 0 and volume == 0:
             score -= 0.2
-            issues.append("Price unchanged with near-zero volume — possibly stale")
+            issues.append("Price unchanged with zero volume — possibly stale")
 
         # Check 8: Arbitrage reality check
         # If YES+NO spread seems too good, verify it's not phantom

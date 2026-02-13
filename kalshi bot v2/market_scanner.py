@@ -20,12 +20,16 @@ API_URLS = {
     "production": "https://api.elections.kalshi.com/trade-api/v2",
 }
 
+# Always use production for public reads (demo orderbooks are empty)
+PUBLIC_READ_URL = "https://api.elections.kalshi.com/trade-api/v2"
+
 
 class MarketScanner:
 
     def __init__(self, kalshi_client=None):
         self.client = kalshi_client
-        self.base_url = API_URLS.get(config.ENVIRONMENT, API_URLS["demo"])
+        # Use production URL for public reads — demo orderbooks are empty
+        self.base_url = PUBLIC_READ_URL
 
     def scan_weather_markets(self):
         """

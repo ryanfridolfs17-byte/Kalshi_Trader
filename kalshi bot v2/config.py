@@ -88,4 +88,10 @@ MIN_VOLUME = 1
 # ═══════════════════════════════════════════════════════
 TRADE_LOG_FILE = "trade_history.json"
 RISK_STATE_FILE = "risk_state.json"
-LOG_LEVEL = "INFO"  # "DEBUG" for verbose output
+LOG_LEVEL = "DEBUG"  # "DEBUG" for verbose output
+
+# ═══════════════════════════════════════════════════════
+# API BASE URLS (used by kalshi_client.py)
+# ═══════════════════════════════════════════════════════
+DEMO_API_URL = "https://demo-api.kalshi.co/trade-api/v2"
+PROD_API_URL = "https://api.elections.kalshi.com/trade-api/v2"
