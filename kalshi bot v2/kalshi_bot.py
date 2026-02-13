@@ -1,0 +1,424 @@
+"""
+KALSHI TRADING BOT v3.0 — Weather-Focused Edition
+=====================================================
+Ensemble weather forecasting + spread arbitrage.
+
+DECISION FLOW (every 5 minutes):
+  1. Scan Kalshi for weather markets (4 cities)
+  2. Fetch 143 ensemble forecasts → probability distribution
+  3. Compare vs market prices → detect mispricing ≥8%
+  4. Get second opinions from 4 independent sources
+  5. Risk check (7 safety layers)
+  6. Size with Quarter-Kelly × confirmation multiplier
+  7. Execute as LIMIT order
+
+PROGRESSION PATH:
+  Level 1: DRY_RUN=True   → Analyzes only, no orders
+  Level 2: ENVIRONMENT=demo → Practice money, real orders
+  Level 3: ENVIRONMENT=prod → Real money (only when ready!)
+"""
+
+import time
+import json
+import os
+import sys
+from datetime import datetime
+import config
+
+
+def main():
+    """Main entry point."""
+
+    # ─── STARTUP BANNER ───
+    print()
+    print("  " + "=" * 54)
+    print("  |     KALSHI WEATHER BOT v3.0                      |")
+    print("  |     Ensemble Forecast × Arbitrage Engine         |")
+    print("  " + "=" * 54)
+    print()
+
+    # Show mode
+    if config.DRY_RUN:
+        print("  MODE: 🔍 DRY RUN (analysis only, no orders)")
+    elif config.ENVIRONMENT == "demo":
+        print("  MODE: 🧪 DEMO (practice money, real orders)")
+    else:
+        print("  MODE: 💰 PRODUCTION (REAL MONEY)")
+        print("  ⚠️  WARNING: Trades will use REAL FUNDS")
+        resp = input("  Type 'yes' to confirm: ")
+        if resp.lower() != "yes":
+            print("  Aborted. Switch to demo mode in config.py")
+            return
+
+    # ─── INITIALIZE COMPONENTS ───
+    from kalshi_client import KalshiClient
+    from risk_manager import RiskManager
+    from market_scanner import MarketScanner
+    from strategy import Strategy
+    from trade_intelligence import TradeIntelligence
+
+    client = KalshiClient()
+    risk = RiskManager()
+    scanner = MarketScanner(client)
+    strategy = Strategy(kalshi_client=client)
+    intel = strategy.intel  # Shared instance
+
+    trade_log = _load_trade_log()
+
+    # ─── STARTUP CLEANUP ───
+    # If DRY_RUN, expire any positions from previous days
+    if config.DRY_RUN and trade_log:
+        today = datetime.now().strftime("%Y-%m-%d")
+        expired_count = 0
+        for trade in trade_log:
+            if trade.get("settled"):
+                continue
+            ticker = trade.get("ticker", "")
+            trade_date = intel._extract_date_from_ticker(ticker)
+            if trade_date and trade_date < today:
+                trade["settled"] = True
+                trade["result"] = "expired_dry_run"
+                trade["profit_cents"] = 0
+                cost = trade.get("cost_cents", 0)
+                city = trade.get("city_code", "")
+                risk.release_exposure(ticker, cost, city)
+                expired_count += 1
+        if expired_count > 0:
+            _save_trade_log(trade_log)
+            print(f"  [CLEANUP] Expired {expired_count} stale DRY_RUN positions from previous days")
+            print(f"  [CLEANUP] Exposure freed — ready for fresh trading")
+
+    # Print strategy info
+    print(strategy.get_strategy_summary())
+
+    # Offer backtest before live trading
+    print("  Would you like to run a backtest first? (recommended)")
+    print("  Enter a city code (NYC/CHI/MIA/AUS) or press Enter to skip:")
+    try:
+        bt_input = input("  > ").strip().upper()
+        if bt_input in ["NYC", "CHI", "MIA", "AUS"]:
+            strategy.quant.run_backtest(bt_input, days_back=90, edge_threshold=config.MIN_EDGE)
+    except (EOFError, KeyboardInterrupt):
+        pass
+
+    # Show model weights
+    for city in config.WEATHER_CITIES:
+        strategy.quant.print_model_weights(city)
+
+    # Check balance if authenticated
+    if config.API_KEY_ID != "YOUR_API_KEY_ID_HERE":
+        try:
+            balance = client.get_balance()
+            if balance is not None:
+                print(f"  Account balance: ${balance/100:.2f}")
+        except Exception:
+            print("  (Could not fetch balance — check API keys)")
+
+    risk.print_status()
+
+    print(f"  Scanning every {config.SCAN_INTERVAL // 60} minutes")
+    print(f"  Cities: {', '.join(config.WEATHER_CITIES)}")
+    print(f"  Press Ctrl+C to stop\n")
+
+    # ─── MAIN LOOP ───
+    cycle = 0
+    while True:
+        try:
+            cycle += 1
+            now = datetime.now().strftime("%H:%M:%S")
+            print(f"\n{'='*60}")
+            print(f"  Scan #{cycle} — {now}")
+            print(f"{'='*60}")
+
+            trade_count_this_cycle = 0
+
+            # ═══════════════════════════════════════════════
+            # STEP 0: CHECK SETTLEMENTS & EXITS
+            # ═══════════════════════════════════════════════
+            print("\n  [STEP 0a] Checking settlements...")
+            settled = intel.check_settlements(trade_log, risk)
+            if settled:
+                print(f"  → {len(settled)} trades settled")
+                _save_trade_log(trade_log)
+            intel.print_pnl()
+
+            print("  [STEP 0b] Checking intraday temperatures...")
+            intel.print_intraday_temps()
+
+            print("  [STEP 0c] Checking exit opportunities...")
+            exits = intel.check_exits(risk.state.get("positions", []), strategy.weather)
+            for exit_rec in exits:
+                print(f"  ⚡ EXIT: {exit_rec['ticker']} — {exit_rec['reason']}")
+                if not config.DRY_RUN and exit_rec["urgency"] == "high":
+                    print(f"    → Auto-exiting (high urgency)")
+                    # TODO: Place sell order via client
+                elif exit_rec["urgency"] == "medium":
+                    print(f"    → Consider exiting manually")
+
+            # ═══════════════════════════════════════════════
+            # STEP 1: SCAN WEATHER MARKETS
+            # ═══════════════════════════════════════════════
+            print("\n  [STEP 1] Scanning weather markets...")
+            weather_markets = scanner.scan_weather_markets()
+            skip_reasons = {}  # Track why markets are skipped
+            signals_found = 0
+
+            if weather_markets:
+                scanner.print_weather_summary(weather_markets)
+
+                # ═══════════════════════════════════════════
+                # STEPS 2-6: EVALUATE EACH MARKET
+                # ═══════════════════════════════════════════
+
+                for market in weather_markets:
+                    ticker = market.get("ticker", "")
+                    title = market.get("title", "")
+
+                    # Quick check: skip if this city is already maxed out
+                    parsed_quick = strategy.weather.parse_market_bucket(market)
+                    if parsed_quick:
+                        city = parsed_quick.get("city_code", "")
+                        city_exp = risk.state.get("city_exposure", {}).get(city, 0)
+                        if city_exp >= config.MAX_PER_CITY_CENTS:
+                            skip_reasons["City maxed out"] = skip_reasons.get("City maxed out", 0) + 1
+                            continue
+
+                    # Quick-evaluate to see if this market is even worth printing
+                    signal = strategy.evaluate_market(market)
+
+                    if signal["signal"] == "skip":
+                        reason = signal.get("reasoning") or "Dead market"
+                        # Categorize the skip reason
+                        if "Dead market" in str(reason) or reason is None:
+                            cat = "Dead/frozen market"
+                        elif "Quality" in str(reason):
+                            cat = "Quality filter"
+                        elif "No signals" in str(reason):
+                            cat = "No edge found"
+                        elif "edge" in str(reason).lower():
+                            cat = "Edge too small"
+                        else:
+                            cat = str(reason)[:40]
+                        skip_reasons[cat] = skip_reasons.get(cat, 0) + 1
+                        continue
+
+                    # Market passed filters — print it
+                    print(f"\n  [STEP 2-3] Evaluating: {ticker}")
+                    print(f"            {title}")
+
+                    # We have a signal!
+                    print(f"\n  ★ SIGNAL FOUND ★")
+                    print(f"    Strategy:    {signal.get('strategy', '?')}")
+                    print(f"    Side:        {signal['side'].upper()}")
+                    print(f"    Edge:        {signal['edge']:.1%}")
+                    print(f"    Confidence:  {signal['confidence']:.1%}")
+                    print(f"    Price:       {signal['price_cents']}¢")
+                    print(f"    Contracts:   {signal['suggested_contracts']}")
+                    print(f"    Confirm:     {signal.get('confirmation_verdict', 'N/A')}")
+                    print(f"    Reasoning:   {signal['reasoning']}")
+
+                    # ═══════════════════════════════════════
+                    # STEP 5: RISK CHECK
+                    # ═══════════════════════════════════════
+                    # Add city info for per-city risk check
+                    parsed = strategy.weather.parse_market_bucket(market)
+                    if parsed:
+                        signal["city_code"] = parsed["city_code"]
+
+                    approved, reason = risk.check_trade(signal)
+
+                    if approved is False:
+                        print(f"    ✗ BLOCKED: {reason}")
+                        continue
+
+                    # ═══════════════════════════════════════
+                    # STEP 6: EXECUTE
+                    # ═══════════════════════════════════════
+                    if approved == "NEEDS_APPROVAL":
+                        print(f"    ⚠ {reason}")
+                        user_input = input("    Approve? (y/n): ").strip().lower()
+                        if user_input != "y":
+                            print("    → Skipped by user")
+                            continue
+
+                    # Execute the trade
+                    trade_result = _execute_trade(
+                        client, risk, signal, trade_log, market
+                    )
+
+                    if trade_result:
+                        trade_count_this_cycle += 1
+
+            # ═══════════════════════════════════════════════
+            # ARBITRAGE SCAN (also checks weather markets)
+            # ═══════════════════════════════════════════════
+            if config.SCAN_ALL_FOR_ARBITRAGE:
+                print("\n  [ARB] Scanning for arbitrage...")
+                all_markets = weather_markets or []
+                arb_list = scanner.scan_for_arbitrage(all_markets)
+
+                for arb in arb_list:
+                    market = arb["market"]
+                    signal = strategy.evaluate_market(market)
+
+                    if signal["signal"] != "skip" and signal.get("strategy") == "S2-Arbitrage":
+                        print(f"\n  ★ ARBITRAGE ★ {market['ticker']}: {arb['gap_cents']}¢ free")
+
+                        approved, reason = risk.check_trade(signal)
+                        if approved is True:
+                            _execute_trade(client, risk, signal, trade_log, market)
+                            trade_count_this_cycle += 1
+
+            # ═══════════════════════════════════════════════
+            # CYCLE SUMMARY
+            # ═══════════════════════════════════════════════
+            print(f"\n  Cycle #{cycle} complete. Trades: {trade_count_this_cycle}")
+
+            # Print diagnostic breakdown so we can see WHY markets were skipped
+            if skip_reasons:
+                total_skipped = sum(skip_reasons.values())
+                print(f"\n  ┌─ Market Filter Breakdown ({total_skipped} skipped) ──")
+                for reason, count in sorted(skip_reasons.items(), key=lambda x: -x[1]):
+                    print(f"  │  {reason}: {count}")
+                print(f"  └──────────────────────────────────────")
+
+            risk.print_status()
+            _print_performance(trade_log)
+
+            # Wait for next cycle
+            print(f"  Next scan in {config.SCAN_INTERVAL // 60} minutes...")
+            time.sleep(config.SCAN_INTERVAL)
+
+        except KeyboardInterrupt:
+            print("\n\n  Bot stopped by user.")
+            print(f"  Total cycles: {cycle}")
+            _print_performance(trade_log)
+            sys.exit(0)
+
+        except Exception as e:
+            print(f"\n  ⚠ Error in cycle {cycle}: {e}")
+            print(f"  Retrying in 60 seconds...")
+            time.sleep(60)
+
+
+def _execute_trade(client, risk, signal, trade_log, market):
+    """Execute a trade based on a signal."""
+    ticker = signal["ticker"]
+    side = signal["side"]
+    price = signal["price_cents"]
+    contracts = signal["suggested_contracts"]
+    cost = price * contracts
+
+    if config.DRY_RUN:
+        status = "dry_run"
+        print(f"    [DRY RUN] Would buy {contracts}x {side.upper()} @ {price}¢ = ${cost/100:.2f}")
+    elif config.ENVIRONMENT == "demo":
+        status = "demo_submitted"
+        print(f"    [DEMO] Submitting: {contracts}x {side.upper()} @ {price}¢")
+        try:
+            result = client.create_order(
+                ticker=ticker,
+                side=side,
+                count=contracts,
+                type="limit",
+                yes_price=price if side == "yes" else None,
+                no_price=price if side == "no" else None,
+            )
+            if result:
+                print(f"    ✓ Order submitted: {result.get('order', {}).get('order_id', 'OK')}")
+                status = "demo_filled"
+        except Exception as e:
+            print(f"    ✗ Order failed: {e}")
+            status = "demo_error"
+    else:
+        status = "live_submitted"
+        print(f"    [LIVE] Submitting: {contracts}x {side.upper()} @ {price}¢")
+        try:
+            result = client.create_order(
+                ticker=ticker,
+                side=side,
+                count=contracts,
+                type="limit",
+                yes_price=price if side == "yes" else None,
+                no_price=price if side == "no" else None,
+            )
+            if result:
+                print(f"    ✓ LIVE order submitted!")
+                status = "live_filled"
+        except Exception as e:
+            print(f"    ✗ LIVE order failed: {e}")
+            status = "live_error"
+
+    # Record trade
+    trade_entry = {
+        "timestamp": datetime.now().isoformat(),
+        "ticker": ticker,
+        "title": market.get("title", ""),
+        "side": side,
+        "price_cents": price,
+        "contracts": contracts,
+        "cost_cents": cost,
+        "strategy": signal.get("strategy", ""),
+        "edge": signal.get("edge", 0),
+        "confidence": signal.get("confidence", 0),
+        "confirmation": signal.get("confirmation_verdict", ""),
+        "predicted_high": signal.get("predicted_high"),
+        "city_code": signal.get("city_code", ""),
+        "status": status,
+        "reasoning": signal.get("reasoning", ""),
+        "settled": False,
+    }
+
+    trade_log.append(trade_entry)
+    _save_trade_log(trade_log)
+
+    # Record with risk manager
+    city_code = signal.get("city_code", "")
+    risk.record_trade(ticker, side, cost, contracts, city_code)
+
+    return True
+
+
+def _print_performance(trade_log):
+    """Print recent performance summary."""
+    if not trade_log:
+        return
+
+    recent = trade_log[-20:]
+    total_invested = sum(t.get("cost_cents", 0) for t in recent)
+
+    by_strategy = {}
+    for t in recent:
+        s = t.get("strategy", "unknown")
+        if s not in by_strategy:
+            by_strategy[s] = {"count": 0, "cost": 0}
+        by_strategy[s]["count"] += 1
+        by_strategy[s]["cost"] += t.get("cost_cents", 0)
+
+    print(f"\n  ┌─ Performance (last {len(recent)} trades) ──────────")
+    print(f"  │  Total invested: ${total_invested/100:.2f}")
+    for s, info in by_strategy.items():
+        print(f"  │  {s}: {info['count']} trades, ${info['cost']/100:.2f}")
+    print(f"  └──────────────────────────────────────────────\n")
+
+
+def _load_trade_log():
+    try:
+        if os.path.exists(config.TRADE_LOG_FILE):
+            with open(config.TRADE_LOG_FILE) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
+
+
+def _save_trade_log(log):
+    try:
+        with open(config.TRADE_LOG_FILE, "w") as f:
+            json.dump(log, f, indent=2)
+    except Exception:
+        pass
+
+
+if __name__ == "__main__":
+    main()
