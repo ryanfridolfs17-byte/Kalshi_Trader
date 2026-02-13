@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+backtest_results.json
+risk_state.json
+trade_history.json
+pnl_history.json
+bias_history.json
+model_accuracy.json
+*.pem
+.env
