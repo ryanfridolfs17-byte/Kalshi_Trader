@@ -1,0 +1,10 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pem
+.env
+.git/
+.claude/
+kalshi bot v2/
+*.json
