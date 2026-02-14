@@ -22,6 +22,7 @@ import time
 import json
 import os
 import sys
+import uuid
 from datetime import datetime, timedelta
 import config
 
@@ -146,6 +147,9 @@ def main():
                 _save_trade_log(trade_log)
             intel.print_pnl()
 
+            # Check for dashboard-approved pending trades
+            _process_approved_trades(client, risk, trade_log)
+
             print("  [STEP 0b] Checking intraday temperatures...")
             intel.print_intraday_temps()
 
@@ -236,7 +240,7 @@ def main():
                         continue
 
                     # ═══════════════════════════════════════
-                    # STEP 6: EXECUTE
+                    # STEP 6: EXECUTE (or queue for approval)
                     # ═══════════════════════════════════════
                     if approved == "NEEDS_APPROVAL":
                         print(f"    ⚠ {reason}")
@@ -244,6 +248,12 @@ def main():
                         if user_input != "y":
                             print("    → Skipped by user")
                             continue
+
+                    # High-edge + STRONG signals go to dashboard for approval
+                    if _should_require_approval(signal):
+                        _add_pending_trade(signal, market)
+                        print(f"    ⏳ QUEUED for dashboard approval (edge {signal['edge']:.1%} > 15%, STRONG)")
+                        continue
 
                     # Execute the trade
                     trade_result = _execute_trade(
@@ -407,6 +417,100 @@ def _print_performance(trade_log):
     for s, info in by_strategy.items():
         print(f"  │  {s}: {info['count']} trades, ${info['cost']/100:.2f}")
     print(f"  └──────────────────────────────────────────────\n")
+
+
+def _should_require_approval(signal):
+    """Check if a signal needs dashboard approval instead of auto-execution."""
+    return (
+        signal.get("edge", 0) > config.HIGH_EDGE_APPROVAL_THRESHOLD
+        and signal.get("confirmation_verdict") == "STRONG"
+    )
+
+
+def _load_pending():
+    try:
+        if os.path.exists(config.PENDING_TRADES_FILE):
+            with open(config.PENDING_TRADES_FILE) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
+
+
+def _save_pending(pending):
+    try:
+        with open(config.PENDING_TRADES_FILE, "w") as f:
+            json.dump(pending, f, indent=2)
+    except Exception:
+        pass
+
+
+def _add_pending_trade(signal, market):
+    """Queue a high-conviction signal for dashboard approval."""
+    pending = _load_pending()
+    pending.append({
+        "id": str(uuid.uuid4())[:8],
+        "timestamp": datetime.now().isoformat(),
+        "ticker": signal.get("ticker", market.get("ticker", "")),
+        "title": market.get("title", ""),
+        "side": signal["side"],
+        "price_cents": signal["price_cents"],
+        "contracts": signal["suggested_contracts"],
+        "cost_cents": signal["price_cents"] * signal["suggested_contracts"],
+        "edge": signal.get("edge", 0),
+        "confidence": signal.get("confidence", 0),
+        "confirmation": signal.get("confirmation_verdict", ""),
+        "city_code": signal.get("city_code", ""),
+        "reasoning": signal.get("reasoning", ""),
+        "strategy": signal.get("strategy", ""),
+        "status": "pending",
+    })
+    _save_pending(pending)
+
+
+def _process_approved_trades(client, risk, trade_log):
+    """Execute trades approved via the dashboard and clean up rejected ones."""
+    pending = _load_pending()
+    if not pending:
+        return
+
+    remaining = []
+    executed = 0
+    for trade in pending:
+        if trade.get("status") == "approved":
+            # Build a signal-like dict for _execute_trade
+            signal = {
+                "ticker": trade["ticker"],
+                "side": trade["side"],
+                "price_cents": trade["price_cents"],
+                "suggested_contracts": trade["contracts"],
+                "strategy": trade.get("strategy", ""),
+                "edge": trade.get("edge", 0),
+                "confidence": trade.get("confidence", 0),
+                "confirmation_verdict": trade.get("confirmation", ""),
+                "predicted_high": None,
+                "city_code": trade.get("city_code", ""),
+                "reasoning": trade.get("reasoning", ""),
+            }
+            market = {"ticker": trade["ticker"], "title": trade.get("title", "")}
+
+            # Re-check risk before executing
+            approved, reason = risk.check_trade(signal)
+            if approved is True or approved == "NEEDS_APPROVAL":
+                print(f"  [APPROVED] Executing: {trade['ticker']} {trade['side'].upper()} x{trade['contracts']}")
+                _execute_trade(client, risk, signal, trade_log, market)
+                executed += 1
+            else:
+                print(f"  [APPROVED] Blocked by risk: {trade['ticker']} — {reason}")
+        elif trade.get("status") == "rejected":
+            print(f"  [REJECTED] {trade['ticker']} — removed from queue")
+        else:
+            remaining.append(trade)
+
+    if executed > 0 or len(remaining) != len(pending):
+        _save_pending(remaining)
+        if executed:
+            print(f"  [PENDING] Executed {executed} approved trade(s)")
 
 
 def _write_bot_status(cycle, skip_reasons, trades_this_cycle, strategy):

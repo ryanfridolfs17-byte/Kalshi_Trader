@@ -84,10 +84,20 @@ MIN_EDGE = 0.08
 MIN_VOLUME = 1
 
 # ═══════════════════════════════════════════════════════
-# LOGGING
+# TRADE APPROVAL
+# ═══════════════════════════════════════════════════════
+# Signals above this edge AND with STRONG confirmation go to
+# pending_trades.json for dashboard approval instead of auto-executing.
+# Signals with edge 8-15% still auto-execute normally.
+HIGH_EDGE_APPROVAL_THRESHOLD = 0.15
+PENDING_TRADES_FILE = "pending_trades.json"
+
+# ═══════════════════════════════════════════════════════
+# LOGGING & STATE FILES
 # ═══════════════════════════════════════════════════════
 TRADE_LOG_FILE = "trade_history.json"
 RISK_STATE_FILE = "risk_state.json"
+DAILY_REPORTS_FILE = "daily_reports.json"
 LOG_LEVEL = "DEBUG"  # "DEBUG" for verbose output
 
 # ═══════════════════════════════════════════════════════
