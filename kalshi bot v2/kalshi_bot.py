@@ -46,10 +46,13 @@ def main():
     else:
         print("  MODE: 💰 PRODUCTION (REAL MONEY)")
         print("  ⚠️  WARNING: Trades will use REAL FUNDS")
-        resp = input("  Type 'yes' to confirm: ")
-        if resp.lower() != "yes":
-            print("  Aborted. Switch to demo mode in config.py")
-            return
+        if sys.stdin.isatty():
+            resp = input("  Type 'yes' to confirm: ")
+            if resp.lower() != "yes":
+                print("  Aborted. Switch to demo mode in config.py")
+                return
+        else:
+            print("  (headless mode — skipping confirmation)")
 
     # ─── START DASHBOARD ───
     from dashboard import start_dashboard_server
@@ -96,15 +99,18 @@ def main():
     # Print strategy info
     print(strategy.get_strategy_summary())
 
-    # Offer backtest before live trading
-    print("  Would you like to run a backtest first? (recommended)")
-    print("  Enter a city code (NYC/CHI/MIA/AUS) or press Enter to skip:")
-    try:
-        bt_input = input("  > ").strip().upper()
-        if bt_input in ["NYC", "CHI", "MIA", "AUS"]:
-            strategy.quant.run_backtest(bt_input, days_back=90, edge_threshold=config.MIN_EDGE)
-    except (EOFError, KeyboardInterrupt):
-        pass
+    # Offer backtest before live trading (only in interactive mode)
+    if sys.stdin.isatty():
+        print("  Would you like to run a backtest first? (recommended)")
+        print("  Enter a city code (NYC/CHI/MIA/AUS) or press Enter to skip:")
+        try:
+            bt_input = input("  > ").strip().upper()
+            if bt_input in ["NYC", "CHI", "MIA", "AUS"]:
+                strategy.quant.run_backtest(bt_input, days_back=90, edge_threshold=config.MIN_EDGE)
+        except (EOFError, KeyboardInterrupt):
+            pass
+    else:
+        print("  (headless mode — skipping backtest prompt)")
 
     # Show model weights
     for city in config.WEATHER_CITIES:
@@ -251,9 +257,15 @@ def main():
                     # ═══════════════════════════════════════
                     if approved == "NEEDS_APPROVAL":
                         print(f"    ⚠ {reason}")
-                        user_input = input("    Approve? (y/n): ").strip().lower()
-                        if user_input != "y":
-                            print("    → Skipped by user")
+                        if sys.stdin.isatty():
+                            user_input = input("    Approve? (y/n): ").strip().lower()
+                            if user_input != "y":
+                                print("    → Skipped by user")
+                                continue
+                        else:
+                            # Headless: queue for dashboard approval instead of blocking
+                            _add_pending_trade(signal, market)
+                            print(f"    ⏳ QUEUED for dashboard approval (needs manual approval)")
                             continue
 
                     # High-edge + STRONG signals go to dashboard for approval

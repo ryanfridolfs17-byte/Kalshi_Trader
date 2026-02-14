@@ -25,7 +25,7 @@ STATE_FILES = {
     "backtest": "backtest_results.json",
 }
 
-DASHBOARD_PORT = 8050
+DASHBOARD_PORT = int(os.environ.get("PORT", 8050))
 
 
 def _read_json(path, default=None):

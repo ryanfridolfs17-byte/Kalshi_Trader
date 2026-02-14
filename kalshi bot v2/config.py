@@ -3,30 +3,45 @@ KALSHI BOT v3.0 — CONFIGURATION
 ====================================
 Weather-focused trading bot with ensemble forecast edge.
 
-QUICK START:
+QUICK START (local):
   1. Set your API_KEY_ID and PRIVATE_KEY_PATH below
   2. Leave ENVIRONMENT = "demo" until you're confident
   3. Leave DRY_RUN = True to watch without trading
   4. Run: python kalshi_bot.py
+
+RAILWAY DEPLOY:
+  Set these env vars in the Railway dashboard:
+    KALSHI_API_KEY_ID    — your Kalshi API key
+    KALSHI_PRIVATE_KEY   — full PEM key contents (paste the whole key)
+    KALSHI_ENVIRONMENT   — "demo" or "production"
+    KALSHI_DRY_RUN       — "true" or "false"
 """
+
+import os
 
 # ═══════════════════════════════════════════════════════
 # API CREDENTIALS
 # ═══════════════════════════════════════════════════════
-# Get these from: kalshi.com → Settings → API Keys
-API_KEY_ID = "YOUR_API_KEY_ID_HERE"
+# Reads from env var first (for Railway), falls back to hardcoded (for local)
+API_KEY_ID = os.environ.get("KALSHI_API_KEY_ID", "YOUR_API_KEY_ID_HERE")
 PRIVATE_KEY_PATH = "kalshi_private_key.pem"
+
+# If the full PEM key is in an env var (Railway), write it to a file at startup
+_private_key_env = os.environ.get("KALSHI_PRIVATE_KEY", "")
+if _private_key_env:
+    with open(PRIVATE_KEY_PATH, "w") as _f:
+        _f.write(_private_key_env)
 
 # ═══════════════════════════════════════════════════════
 # ENVIRONMENT
 # ═══════════════════════════════════════════════════════
 # "demo" = practice with fake money (demo-api.kalshi.co)
 # "production" = real money (api.elections.kalshi.com)
-ENVIRONMENT = "demo"
+ENVIRONMENT = os.environ.get("KALSHI_ENVIRONMENT", "demo")
 
 # True = analyze only, don't place any orders (safest start)
 # False = actually place orders
-DRY_RUN = True
+DRY_RUN = os.environ.get("KALSHI_DRY_RUN", "true").lower() == "true"
 
 # ═══════════════════════════════════════════════════════
 # SCAN SETTINGS
