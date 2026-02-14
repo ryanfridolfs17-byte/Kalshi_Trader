@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kalshi Weather Bot</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --glass-bg: rgba(255,255,255,0.08);
+  --glass-border: rgba(255,255,255,0.15);
+  --glass-hover: rgba(255,255,255,0.12);
+  --text-primary: #f0f0f5;
+  --text-secondary: rgba(240,240,245,0.6);
+  --accent-green: #34d399;
+  --accent-red: #f87171;
+  --accent-blue: #60a5fa;
+  --accent-amber: #fbbf24;
+  --blur: 20px;
+  --radius: 16px;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
+  background: linear-gradient(135deg, #0f0c29 0%, #1a1a3e 40%, #24243e 100%);
+  color: var(--text-primary);
+  min-height: 100vh;
+  padding: 24px;
+  line-height: 1.5;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+  padding: 0 4px;
+}
+.header h1 {
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.5px;
+}
+.header h1 span { color: var(--accent-blue); }
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 500;
+  backdrop-filter: blur(var(--blur));
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+}
+.status-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--accent-green);
+  animation: pulse 2s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.grid { display: grid; gap: 20px; }
+.grid-top { grid-template-columns: repeat(4, 1fr); }
+.grid-main { grid-template-columns: 1fr 1fr; }
+.grid-full { grid-template-columns: 1fr; }
+
+.card {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--blur));
+  -webkit-backdrop-filter: blur(var(--blur));
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  padding: 20px;
+  transition: background 0.2s;
+}
+.card:hover { background: var(--glass-hover); }
+.card-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+}
+.card-value {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -1px;
+}
+.card-sub {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+.green { color: var(--accent-green); }
+.red { color: var(--accent-red); }
+.blue { color: var(--accent-blue); }
+.amber { color: var(--accent-amber); }
+
+/* Pending trade notifications */
+.pending-banner {
+  background: rgba(251,191,36,0.1);
+  border: 1px solid rgba(251,191,36,0.3);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+  margin-bottom: 20px;
+  display: none;
+}
+.pending-banner.visible { display: block; }
+.pending-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.pending-card:last-child { border-bottom: none; }
+.pending-info { flex: 1; }
+.pending-info strong { color: var(--accent-amber); }
+.pending-actions { display: flex; gap: 8px; }
+.btn {
+  padding: 6px 16px;
+  border-radius: 8px;
+  border: none;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.1s, opacity 0.2s;
+}
+.btn:active { transform: scale(0.96); }
+.btn-approve { background: var(--accent-green); color: #000; }
+.btn-reject { background: rgba(248,113,113,0.2); color: var(--accent-red); border: 1px solid rgba(248,113,113,0.3); }
+
+/* Tabs */
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+}
+.tab {
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid transparent;
+  transition: all 0.2s;
+}
+.tab.active {
+  background: var(--glass-bg);
+  color: var(--text-primary);
+  border-color: var(--glass-border);
+}
+
+/* Tables */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th {
+  text-align: left;
+  padding: 8px 12px;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--glass-border);
+}
+td {
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+tr:hover td { background: rgba(255,255,255,0.03); }
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge-strong { background: rgba(52,211,153,0.15); color: var(--accent-green); }
+.badge-confirm { background: rgba(96,165,250,0.15); color: var(--accent-blue); }
+.badge-weak { background: rgba(251,191,36,0.15); color: var(--accent-amber); }
+.badge-dry { background: rgba(255,255,255,0.08); color: var(--text-secondary); }
+.badge-win { background: rgba(52,211,153,0.15); color: var(--accent-green); }
+.badge-loss { background: rgba(248,113,113,0.15); color: var(--accent-red); }
+
+.chart-container { position: relative; height: 220px; }
+
+/* Skip reasons */
+.skip-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+}
+.skip-label { font-size: 13px; flex: 1; }
+.skip-count { font-size: 13px; font-weight: 600; color: var(--text-secondary); min-width: 30px; text-align: right; }
+.skip-fill {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(96,165,250,0.3);
+  flex: 2;
+}
+.skip-fill-inner {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent-blue);
+  transition: width 0.3s;
+}
+
+/* Bot status grid */
+.status-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.status-item {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.04);
+}
+.status-item-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+}
+.status-item-value {
+  font-size: 15px;
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+/* Daily reports */
+.report-card {
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.04);
+  margin-bottom: 8px;
+}
+
+.refresh-bar {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  backdrop-filter: blur(var(--blur));
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  padding: 6px 12px;
+}
+
+@media (max-width: 900px) {
+  .grid-top { grid-template-columns: repeat(2, 1fr); }
+  .grid-main { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1><span>Kalshi</span> Weather Bot</h1>
+  <div class="status-pill">
+    <div class="status-dot" id="statusDot"></div>
+    <span id="statusText">Connecting...</span>
+  </div>
+</div>
+
+<!-- Pending Trades Banner -->
+<div class="pending-banner" id="pendingBanner">
+  <div class="card-title" style="color: var(--accent-amber);">Pending Approval</div>
+  <div id="pendingList"></div>
+</div>
+
+<!-- Bankroll Cards -->
+<div class="grid grid-top" style="margin-bottom: 20px;">
+  <div class="card">
+    <div class="card-title">Total P&L</div>
+    <div class="card-value" id="totalPnl">$0.00</div>
+    <div class="card-sub" id="winLoss">0W / 0L</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Exposure</div>
+    <div class="card-value" id="exposure">$0.00</div>
+    <div class="card-sub" id="exposureSub">0 / 8 positions</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Today's Trades</div>
+    <div class="card-value" id="todayTrades">0</div>
+    <div class="card-sub" id="todayTradesSub">of 20 max</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Win Rate</div>
+    <div class="card-value" id="winRate">-</div>
+    <div class="card-sub" id="winRateSub">all time</div>
+  </div>
+</div>
+
+<!-- Performance Chart + Bot Status -->
+<div class="grid grid-main" style="margin-bottom: 20px;">
+  <div class="card">
+    <div class="card-title">Performance</div>
+    <div class="tabs">
+      <div class="tab active" onclick="setChartRange('daily')">Daily</div>
+      <div class="tab" onclick="setChartRange('weekly')">Weekly</div>
+      <div class="tab" onclick="setChartRange('monthly')">Monthly</div>
+      <div class="tab" onclick="setChartRange('all')">All Time</div>
+    </div>
+    <div class="chart-container"><canvas id="perfChart"></canvas></div>
+  </div>
+  <div class="card">
+    <div class="card-title">Bot Status</div>
+    <div class="status-grid" id="botStatus">
+      <div class="status-item">
+        <div class="status-item-label">Cycle</div>
+        <div class="status-item-value" id="bsCycle">-</div>
+      </div>
+      <div class="status-item">
+        <div class="status-item-label">Next Scan</div>
+        <div class="status-item-value" id="bsNextScan">-</div>
+      </div>
+      <div class="status-item">
+        <div class="status-item-label">Environment</div>
+        <div class="status-item-value" id="bsEnv">-</div>
+      </div>
+      <div class="status-item">
+        <div class="status-item-label">Regime</div>
+        <div class="status-item-value" id="bsRegime">-</div>
+      </div>
+    </div>
+    <div style="margin-top: 16px;">
+      <div class="card-title">Model Weights</div>
+      <div id="modelWeights" style="font-size: 13px; color: var(--text-secondary);"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Active Positions -->
+<div class="grid grid-full" style="margin-bottom: 20px;">
+  <div class="card">
+    <div class="card-title">Active Positions</div>
+    <table>
+      <thead><tr><th>Ticker</th><th>Side</th><th>Cost</th><th>Contracts</th><th>City</th><th>Opened</th></tr></thead>
+      <tbody id="positionsBody"></tbody>
+    </table>
+    <div id="positionsEmpty" style="text-align:center; padding:20px; color: var(--text-secondary); font-size: 13px;">No open positions</div>
+  </div>
+</div>
+
+<!-- Trade History + Passed Signals -->
+<div class="grid grid-main" style="margin-bottom: 20px;">
+  <div class="card">
+    <div class="card-title">Trade History</div>
+    <div style="max-height: 400px; overflow-y: auto;">
+      <table>
+        <thead><tr><th>Time</th><th>Ticker</th><th>Side</th><th>Price</th><th>Edge</th><th>Confirm</th><th>Status</th></tr></thead>
+        <tbody id="tradesBody"></tbody>
+      </table>
+    </div>
+    <div id="tradesEmpty" style="text-align:center; padding:20px; color: var(--text-secondary); font-size: 13px;">No trades yet</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Passed Signals</div>
+    <div id="skipReasons">
+      <div style="text-align:center; padding:20px; color: var(--text-secondary); font-size: 13px;">Waiting for scan data...</div>
+    </div>
+  </div>
+</div>
+
+<!-- Daily Reports -->
+<div class="grid grid-full" style="margin-bottom: 60px;">
+  <div class="card">
+    <div class="card-title">Daily Reports</div>
+    <div id="dailyReports">
+      <div style="text-align:center; padding:20px; color: var(--text-secondary); font-size: 13px;">No reports yet</div>
+    </div>
+  </div>
+</div>
+
+<div class="refresh-bar" id="refreshBar">Last update: never</div>
+
+<script>
+let perfChart = null;
+let currentRange = 'daily';
+let lastData = null;
+
+async function fetchState() {
+  try {
+    const res = await fetch('/api/state');
+    if (!res.ok) throw new Error('fetch failed');
+    const data = await res.json();
+    lastData = data;
+    updateDashboard(data);
+    document.getElementById('refreshBar').textContent = 'Last update: ' + new Date().toLocaleTimeString();
+    document.getElementById('statusDot').style.background = 'var(--accent-green)';
+    document.getElementById('statusText').textContent = data.bot_status?.dry_run ? 'Dry Run' : (data.bot_status?.environment || 'Connected');
+  } catch (e) {
+    document.getElementById('statusDot').style.background = 'var(--accent-red)';
+    document.getElementById('statusText').textContent = 'Offline';
+  }
+}
+
+function updateDashboard(data) {
+  const pnl = data.pnl || {};
+  const risk = data.risk || {};
+  const trades = data.trades || [];
+  const bot = data.bot_status || {};
+  const pending = data.pending || [];
+  const reports = data.reports || [];
+
+  // Bankroll
+  const totalPnl = (pnl.total_profit_cents || 0) / 100;
+  document.getElementById('totalPnl').textContent = '$' + totalPnl.toFixed(2);
+  document.getElementById('totalPnl').className = 'card-value ' + (totalPnl >= 0 ? 'green' : 'red');
+  document.getElementById('winLoss').textContent = (pnl.wins || 0) + 'W / ' + (pnl.losses || 0) + 'L';
+
+  const positions = risk.positions || [];
+  const totalExp = positions.reduce((s, p) => s + (p.cost_cents || 0), 0) / 100;
+  document.getElementById('exposure').textContent = '$' + totalExp.toFixed(2);
+  document.getElementById('exposureSub').textContent = positions.length + ' / 8 positions';
+
+  document.getElementById('todayTrades').textContent = risk.daily_trade_count || 0;
+  document.getElementById('todayTradesSub').textContent = 'of 20 max';
+
+  const totalTrades = (pnl.wins || 0) + (pnl.losses || 0);
+  if (totalTrades > 0) {
+    const wr = ((pnl.wins || 0) / totalTrades * 100).toFixed(0);
+    document.getElementById('winRate').textContent = wr + '%';
+    document.getElementById('winRateSub').textContent = totalTrades + ' settled trades';
+  }
+
+  // Positions table
+  const posBody = document.getElementById('positionsBody');
+  const posEmpty = document.getElementById('positionsEmpty');
+  if (positions.length > 0) {
+    posEmpty.style.display = 'none';
+    posBody.innerHTML = positions.map(p => {
+      const age = timeSince(p.timestamp);
+      return `<tr>
+        <td style="font-weight:600">${p.ticker}</td>
+        <td>${(p.side||'').toUpperCase()}</td>
+        <td>$${(p.cost_cents/100).toFixed(2)}</td>
+        <td>${p.contracts}</td>
+        <td>${p.city_code||'-'}</td>
+        <td style="color:var(--text-secondary)">${age}</td>
+      </tr>`;
+    }).join('');
+  } else {
+    posEmpty.style.display = 'block';
+    posBody.innerHTML = '';
+  }
+
+  // Trade history
+  const trBody = document.getElementById('tradesBody');
+  const trEmpty = document.getElementById('tradesEmpty');
+  const recentTrades = trades.slice(-50).reverse();
+  if (recentTrades.length > 0) {
+    trEmpty.style.display = 'none';
+    trBody.innerHTML = recentTrades.map(t => {
+      const time = new Date(t.timestamp).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+      const conf = t.confirmation || '';
+      const confClass = conf === 'STRONG' ? 'badge-strong' : conf === 'CONFIRM' ? 'badge-confirm' : 'badge-weak';
+      let statusBadge = '';
+      if (t.settled && t.result === 'expired_dry_run') statusBadge = '<span class="badge badge-dry">expired</span>';
+      else if (t.settled && (t.profit_cents||0) > 0) statusBadge = '<span class="badge badge-win">+$'+(t.profit_cents/100).toFixed(2)+'</span>';
+      else if (t.settled && (t.profit_cents||0) < 0) statusBadge = '<span class="badge badge-loss">-$'+Math.abs(t.profit_cents/100).toFixed(2)+'</span>';
+      else if (t.settled) statusBadge = '<span class="badge badge-dry">$0</span>';
+      else statusBadge = '<span class="badge badge-dry">' + (t.status||'open') + '</span>';
+      return `<tr>
+        <td style="color:var(--text-secondary);font-size:12px">${time}</td>
+        <td style="font-weight:600;font-size:12px">${shortTicker(t.ticker)}</td>
+        <td>${(t.side||'').toUpperCase()}</td>
+        <td>${t.price_cents}c x${t.contracts}</td>
+        <td>${(t.edge*100).toFixed(1)}%</td>
+        <td><span class="badge ${confClass}">${conf||'-'}</span></td>
+        <td>${statusBadge}</td>
+      </tr>`;
+    }).join('');
+  } else {
+    trEmpty.style.display = 'block';
+    trBody.innerHTML = '';
+  }
+
+  // Skip reasons
+  const skips = bot.skip_reasons || {};
+  const skipDiv = document.getElementById('skipReasons');
+  const skipEntries = Object.entries(skips).sort((a,b) => b[1]-a[1]);
+  if (skipEntries.length > 0) {
+    const maxCount = Math.max(...skipEntries.map(e => e[1]));
+    skipDiv.innerHTML = skipEntries.map(([reason, count]) => {
+      const pct = (count / maxCount * 100).toFixed(0);
+      return `<div class="skip-bar">
+        <span class="skip-label">${reason}</span>
+        <div class="skip-fill"><div class="skip-fill-inner" style="width:${pct}%"></div></div>
+        <span class="skip-count">${count}</span>
+      </div>`;
+    }).join('');
+  }
+
+  // Bot status
+  document.getElementById('bsCycle').textContent = bot.cycle || '-';
+  if (bot.next_scan) {
+    const next = new Date(bot.next_scan);
+    const diff = Math.max(0, Math.round((next - Date.now()) / 1000));
+    document.getElementById('bsNextScan').textContent = diff > 0 ? diff + 's' : 'Now';
+  }
+  document.getElementById('bsEnv').textContent = bot.dry_run ? 'Dry Run' : (bot.environment || '-');
+  document.getElementById('bsRegime').textContent = bot.regime || '-';
+
+  // Model weights
+  const mw = bot.model_weights || {};
+  const mwDiv = document.getElementById('modelWeights');
+  const cities = Object.keys(mw);
+  if (cities.length > 0) {
+    mwDiv.innerHTML = cities.map(city => {
+      const weights = mw[city];
+      const parts = Object.entries(weights).map(([m,w]) => `${m.replace('_ensemble','').replace('_ifs','').replace('_eps','')}:${w}`);
+      return `<div style="margin-bottom:4px"><span style="color:var(--text-primary);font-weight:600">${city}</span> ${parts.join(' | ')}</div>`;
+    }).join('');
+  } else {
+    mwDiv.innerHTML = '<span>No data yet</span>';
+  }
+
+  // Pending trades
+  const banner = document.getElementById('pendingBanner');
+  const pendingList = document.getElementById('pendingList');
+  const pendingActive = pending.filter(p => p.status === 'pending');
+  if (pendingActive.length > 0) {
+    banner.classList.add('visible');
+    pendingList.innerHTML = pendingActive.map(p => `
+      <div class="pending-card">
+        <div class="pending-info">
+          <strong>${p.ticker}</strong> &mdash; ${(p.side||'').toUpperCase()} @ ${p.price_cents}c x${p.contracts}
+          &mdash; Edge: ${(p.edge*100).toFixed(1)}% &mdash; ${p.city_code||''}
+        </div>
+        <div class="pending-actions">
+          <button class="btn btn-approve" onclick="approveTrade('${p.id}')">Approve</button>
+          <button class="btn btn-reject" onclick="rejectTrade('${p.id}')">Reject</button>
+        </div>
+      </div>
+    `).join('');
+  } else {
+    banner.classList.remove('visible');
+  }
+
+  // Daily reports
+  const reportsDiv = document.getElementById('dailyReports');
+  if (reports.length > 0) {
+    reportsDiv.innerHTML = reports.slice(-7).reverse().map(r => {
+      const cityPerf = Object.entries(r.city_performance || {}).map(([c, d]) =>
+        `${c}: ${d.wins||0}W/${d.trades||0}T $${((d.pnl_cents||0)/100).toFixed(2)}`
+      ).join(' | ');
+      return `<div class="report-card">
+        <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+          <span style="font-weight:600">${r.date}</span>
+          <span class="${(r.total_pnl_cents||0)>=0?'green':'red'}" style="font-weight:600">$${((r.total_pnl_cents||0)/100).toFixed(2)}</span>
+        </div>
+        <div style="font-size:13px;color:var(--text-secondary)">
+          ${r.trades_placed||0} trades | ${r.wins||0}W ${r.losses||0}L | Avg edge: ${((r.avg_edge||0)*100).toFixed(1)}% | ${r.regime_summary||'-'}
+        </div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">${cityPerf || 'No city data'}</div>
+      </div>`;
+    }).join('');
+  }
+
+  // Performance chart
+  updateChart(trades);
+}
+
+function updateChart(trades) {
+  const settled = trades.filter(t => t.settled && t.profit_cents !== undefined);
+  if (settled.length === 0) return;
+
+  const now = new Date();
+  let filtered;
+  if (currentRange === 'daily') filtered = settled.filter(t => isSameDay(new Date(t.timestamp), now));
+  else if (currentRange === 'weekly') filtered = settled.filter(t => (now - new Date(t.timestamp)) < 7*86400000);
+  else if (currentRange === 'monthly') filtered = settled.filter(t => (now - new Date(t.timestamp)) < 30*86400000);
+  else filtered = settled;
+
+  if (filtered.length === 0) filtered = settled.slice(-20);
+
+  let cumPnl = 0;
+  const labels = [];
+  const dataPoints = [];
+  filtered.forEach(t => {
+    cumPnl += (t.profit_cents || 0) / 100;
+    labels.push(new Date(t.timestamp).toLocaleDateString([], {month:'short',day:'numeric'}));
+    dataPoints.push(cumPnl);
+  });
+
+  const ctx = document.getElementById('perfChart').getContext('2d');
+  if (perfChart) perfChart.destroy();
+  const gradient = ctx.createLinearGradient(0, 0, 0, 220);
+  const isPositive = cumPnl >= 0;
+  gradient.addColorStop(0, isPositive ? 'rgba(52,211,153,0.3)' : 'rgba(248,113,113,0.3)');
+  gradient.addColorStop(1, 'rgba(0,0,0,0)');
+
+  perfChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data: dataPoints,
+        borderColor: isPositive ? '#34d399' : '#f87171',
+        backgroundColor: gradient,
+        fill: true,
+        tension: 0.4,
+        pointRadius: 3,
+        pointBackgroundColor: isPositive ? '#34d399' : '#f87171',
+        borderWidth: 2,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: 'rgba(240,240,245,0.4)', font: { size: 11 } } },
+        y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: 'rgba(240,240,245,0.4)', font: { size: 11 }, callback: v => '$' + v.toFixed(2) } }
+      }
+    }
+  });
+}
+
+function setChartRange(range) {
+  currentRange = range;
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  event.target.classList.add('active');
+  if (lastData) updateChart(lastData.trades || []);
+}
+
+async function approveTrade(id) {
+  await fetch('/api/approve', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({id}) });
+  fetchState();
+}
+
+async function rejectTrade(id) {
+  await fetch('/api/reject', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({id}) });
+  fetchState();
+}
+
+function shortTicker(t) {
+  if (!t) return '-';
+  const parts = t.split('-');
+  if (parts.length >= 3) return parts[0].replace('KXHIGH','') + '-' + parts[1].slice(2) + '-' + parts[2];
+  return t;
+}
+
+function timeSince(ts) {
+  if (!ts) return '-';
+  const diff = (Date.now() - new Date(ts).getTime()) / 1000;
+  if (diff < 60) return Math.round(diff) + 's ago';
+  if (diff < 3600) return Math.round(diff/60) + 'm ago';
+  if (diff < 86400) return Math.round(diff/3600) + 'h ago';
+  return Math.round(diff/86400) + 'd ago';
+}
+
+function isSameDay(a, b) { return a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate(); }
+
+// Initial fetch + auto-refresh
+fetchState();
+setInterval(fetchState, 30000);
+
+// Countdown timer for next scan
+setInterval(() => {
+  if (!lastData?.bot_status?.next_scan) return;
+  const diff = Math.max(0, Math.round((new Date(lastData.bot_status.next_scan) - Date.now()) / 1000));
+  document.getElementById('bsNextScan').textContent = diff > 0 ? diff + 's' : 'Scanning...';
+}, 1000);
+</script>
+</body>
+</html>

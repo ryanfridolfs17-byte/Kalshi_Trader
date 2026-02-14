@@ -22,7 +22,7 @@ import time
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 import config
 
 
@@ -49,6 +49,10 @@ def main():
         if resp.lower() != "yes":
             print("  Aborted. Switch to demo mode in config.py")
             return
+
+    # ─── START DASHBOARD ───
+    from dashboard import start_dashboard_server
+    start_dashboard_server()
 
     # ─── INITIALIZE COMPONENTS ───
     from kalshi_client import KalshiClient
@@ -285,6 +289,9 @@ def main():
             risk.print_status()
             _print_performance(trade_log)
 
+            # Write bot status for dashboard
+            _write_bot_status(cycle, skip_reasons, trade_count_this_cycle, strategy)
+
             # Wait for next cycle
             print(f"  Next scan in {config.SCAN_INTERVAL // 60} minutes...")
             time.sleep(config.SCAN_INTERVAL)
@@ -400,6 +407,32 @@ def _print_performance(trade_log):
     for s, info in by_strategy.items():
         print(f"  │  {s}: {info['count']} trades, ${info['cost']/100:.2f}")
     print(f"  └──────────────────────────────────────────────\n")
+
+
+def _write_bot_status(cycle, skip_reasons, trades_this_cycle, strategy):
+    """Write bot status JSON for the dashboard to read."""
+    now = datetime.now()
+    model_weights = {}
+    for city in config.WEATHER_CITIES:
+        model_weights[city] = strategy.quant.get_model_weights(city)
+
+    status = {
+        "cycle": cycle,
+        "timestamp": now.isoformat(),
+        "next_scan": (now + timedelta(seconds=config.SCAN_INTERVAL)).isoformat(),
+        "scan_interval": config.SCAN_INTERVAL,
+        "skip_reasons": skip_reasons,
+        "model_weights": model_weights,
+        "regime": "TRANSITIONAL",  # Updated per-market, show last known
+        "trades_this_cycle": trades_this_cycle,
+        "environment": config.ENVIRONMENT,
+        "dry_run": config.DRY_RUN,
+    }
+    try:
+        with open("bot_status.json", "w") as f:
+            json.dump(status, f, indent=2)
+    except Exception:
+        pass
 
 
 def _load_trade_log():
