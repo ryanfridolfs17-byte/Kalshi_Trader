@@ -127,6 +127,7 @@ def main():
 
     # ─── MAIN LOOP ───
     cycle = 0
+    last_report_date = datetime.now().strftime("%Y-%m-%d")
     while True:
         try:
             cycle += 1
@@ -141,11 +142,17 @@ def main():
             # STEP 0: CHECK SETTLEMENTS & EXITS
             # ═══════════════════════════════════════════════
             print("\n  [STEP 0a] Checking settlements...")
-            settled = intel.check_settlements(trade_log, risk)
+            settled = intel.check_settlements(trade_log, risk, quant=strategy.quant)
             if settled:
                 print(f"  → {len(settled)} trades settled")
                 _save_trade_log(trade_log)
             intel.print_pnl()
+
+            # Daily report generation on day change
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            if today_str != last_report_date:
+                _generate_daily_report(trade_log, strategy)
+                last_report_date = today_str
 
             # Check for dashboard-approved pending trades
             _process_approved_trades(client, risk, trade_log)
@@ -537,6 +544,95 @@ def _write_bot_status(cycle, skip_reasons, trades_this_cycle, strategy):
             json.dump(status, f, indent=2)
     except Exception:
         pass
+
+
+def _generate_daily_report(trade_log, strategy):
+    """
+    Generate a daily learning report for the previous day.
+    Called at day transition (first cycle of a new day).
+    Writes to daily_reports.json.
+    """
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    # Filter trades from yesterday
+    day_trades = [
+        t for t in trade_log
+        if t.get("timestamp", "").startswith(yesterday)
+    ]
+
+    if not day_trades:
+        return  # No trades yesterday, skip report
+
+    # Compute stats
+    settled = [t for t in day_trades if t.get("settled")]
+    wins = [t for t in settled if t.get("result") == "win"]
+    losses = [t for t in settled if t.get("result") == "loss"]
+    total_pnl = sum(t.get("profit_cents", 0) for t in settled)
+    edges = [t.get("edge", 0) for t in day_trades if t.get("edge")]
+    avg_edge = sum(edges) / len(edges) if edges else 0
+
+    # City breakdown
+    city_perf = {}
+    for t in day_trades:
+        city = t.get("city_code", "OTHER")
+        if city not in city_perf:
+            city_perf[city] = {"trades": 0, "wins": 0, "pnl_cents": 0}
+        city_perf[city]["trades"] += 1
+        if t.get("result") == "win":
+            city_perf[city]["wins"] += 1
+        city_perf[city]["pnl_cents"] += t.get("profit_cents", 0)
+
+    # Model accuracy snapshot from quant
+    model_accuracy = {}
+    if strategy and strategy.quant:
+        acc_data = strategy.quant.model_accuracy
+        for key, models in acc_data.items():
+            for model_name, stats in models.items():
+                if model_name not in model_accuracy:
+                    model_accuracy[model_name] = {"count": 0, "mse_sum": 0}
+                model_accuracy[model_name]["count"] += stats.get("count", 0)
+                model_accuracy[model_name]["mse_sum"] += stats.get("mse_sum", 0)
+
+    # Current model weights
+    model_weights = {}
+    for city in config.WEATHER_CITIES:
+        model_weights[city] = strategy.quant.get_model_weights(city)
+
+    report = {
+        "date": yesterday,
+        "trades_placed": len(day_trades),
+        "wins": len(wins),
+        "losses": len(losses),
+        "total_pnl_cents": total_pnl,
+        "avg_edge": round(avg_edge, 4),
+        "city_performance": city_perf,
+        "model_accuracy": model_accuracy,
+        "regime_summary": "TRANSITIONAL",
+        "model_weights_after": model_weights,
+    }
+
+    # Load existing reports and append
+    reports = []
+    try:
+        if os.path.exists(config.DAILY_REPORTS_FILE):
+            with open(config.DAILY_REPORTS_FILE) as f:
+                reports = json.load(f)
+    except Exception:
+        reports = []
+
+    # Don't duplicate if report for this date already exists
+    if any(r.get("date") == yesterday for r in reports):
+        return
+
+    reports.append(report)
+    try:
+        with open(config.DAILY_REPORTS_FILE, "w") as f:
+            json.dump(reports, f, indent=2)
+    except Exception:
+        pass
+
+    print(f"  [REPORT] Daily report generated for {yesterday}")
+    print(f"           Trades: {len(day_trades)}, W/L: {len(wins)}/{len(losses)}, P&L: ${total_pnl/100:.2f}")
 
 
 def _load_trade_log():

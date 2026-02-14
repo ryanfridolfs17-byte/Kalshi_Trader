@@ -406,11 +406,11 @@ class TradeIntelligence:
     # 5. SETTLEMENT TRACKING & P&L
     # ═══════════════════════════════════════════════════════
 
-    def check_settlements(self, trade_log, risk_manager):
+    def check_settlements(self, trade_log, risk_manager, quant=None):
         """
         Check if any past trades have settled.
         In DRY_RUN mode, auto-settle trades when their market date has passed.
-        Update P&L and bias data.
+        Update P&L, bias data, and model accuracy weights.
 
         Returns list of newly settled trades.
         """
@@ -491,11 +491,18 @@ class TradeIntelligence:
 
             # Record bias data if this was a weather market
             city_code = trade.get("city_code", "")
-            if city_code and settlement.get("actual_temp") is not None:
+            actual_temp = settlement.get("actual_temp")
+            if city_code and actual_temp is not None:
                 predicted = trade.get("predicted_high")
                 if predicted:
                     self.record_bias_datapoint(
-                        city_code, predicted, settlement["actual_temp"]
+                        city_code, predicted, actual_temp
+                    )
+
+                # Update per-model accuracy weights immediately
+                if quant and actual_temp is not None:
+                    _update_model_accuracy_from_settlement(
+                        quant, city_code, actual_temp
                     )
 
             settled.append(trade)
@@ -631,3 +638,70 @@ class TradeIntelligence:
                 json.dump(data, f, indent=2)
         except Exception:
             pass
+
+
+# ═══════════════════════════════════════════════════════
+# MODULE-LEVEL HELPERS
+# ═══════════════════════════════════════════════════════
+
+# Mapping from signal_confirmer model keys → quant_analytics model keys
+_CONFIRMER_TO_QUANT = {
+    "nws_gfs": "gfs_ensemble",
+    "ecmwf": "ecmwf_ifs",
+    "icon": "icon_eps",
+    "gem": "gem_ensemble",
+}
+
+# Open-Meteo deterministic forecast endpoints (same as signal_confirmer)
+_DETERMINISTIC_APIS = {
+    "nws_gfs": "https://api.open-meteo.com/v1/gfs",
+    "ecmwf": "https://api.open-meteo.com/v1/ecmwf",
+    "icon": "https://api.open-meteo.com/v1/dwd-icon",
+    "gem": "https://api.open-meteo.com/v1/gem",
+}
+
+
+def _update_model_accuracy_from_settlement(quant, city_code, actual_temp):
+    """
+    After a trade settles, fetch what each deterministic model predicted
+    for that day and record accuracy data in quant_analytics.
+
+    This feeds the dynamic model weighting system so better models
+    get higher weight over time.
+    """
+    city = CITIES.get(city_code)
+    if not city:
+        return
+
+    # Use yesterday's date since settlements happen after the market date
+    target_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    for confirmer_key, api_url in _DETERMINISTIC_APIS.items():
+        quant_key = _CONFIRMER_TO_QUANT.get(confirmer_key)
+        if not quant_key:
+            continue
+
+        try:
+            params = {
+                "latitude": city["lat"],
+                "longitude": city["lon"],
+                "daily": "temperature_2m_max",
+                "temperature_unit": "fahrenheit",
+                "timezone": city.get("timezone", "auto"),
+                "start_date": target_date,
+                "end_date": target_date,
+            }
+
+            response = requests.get(api_url, params=params, timeout=15)
+            if response.status_code != 200:
+                continue
+
+            data = response.json()
+            temps = data.get("daily", {}).get("temperature_2m_max", [])
+            if temps and temps[0] is not None:
+                forecast_high = round(temps[0])
+                quant.record_model_accuracy(
+                    city_code, quant_key, forecast_high, actual_temp
+                )
+        except Exception:
+            continue
