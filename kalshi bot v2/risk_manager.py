@@ -198,7 +198,7 @@ class RiskManager:
     # ═══════════════════════════════════════════════════════
 
     def _maybe_reset_daily(self):
-        """Reset daily counters at midnight."""
+        """Reset daily counters at midnight and clean up expired positions."""
         today = datetime.now().strftime("%Y-%m-%d")
         if self.state["last_reset_date"] != today:
             self.state["daily_loss_cents"] = 0
@@ -206,7 +206,37 @@ class RiskManager:
             self.state["last_reset_date"] = today
             self.state["consecutive_losses"] = 0
             self.state["loss_pause_until"] = None
+            self._cleanup_expired_positions()
             self._save_state()
+
+    def _cleanup_expired_positions(self):
+        """Remove positions whose market date has passed.
+        Ticker format: KXHIGHNY-26FEB14-B46.5 → date portion is 26FEB14 (Feb 14, 2026).
+        """
+        today = datetime.now().date()
+        active = []
+        for p in self.state["positions"]:
+            ticker = p.get("ticker", "")
+            parts = ticker.split("-")
+            if len(parts) >= 2:
+                date_str = parts[1]  # e.g. "26FEB14"
+                try:
+                    market_date = datetime.strptime(date_str, "%y%b%d").date()
+                    if market_date >= today:
+                        active.append(p)
+                    else:
+                        print(f"  [RISK] Cleaned up expired position: {ticker} (settled {market_date})")
+                except ValueError:
+                    active.append(p)  # keep positions with unparseable dates
+            else:
+                active.append(p)
+        self.state["positions"] = active
+        # Recalculate city exposure from remaining positions
+        self.state["city_exposure"] = {}
+        for p in self.state["positions"]:
+            city = p.get("city_code", "")
+            if city:
+                self.state["city_exposure"][city] = self.state["city_exposure"].get(city, 0) + p["cost_cents"]
 
     def _save_state(self):
         try:
