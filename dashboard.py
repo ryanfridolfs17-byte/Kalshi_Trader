@@ -162,9 +162,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 
 def start_dashboard_server(port=DASHBOARD_PORT):
-    """Start the dashboard HTTP server in a daemon thread."""
+    """Start the dashboard HTTP server in a background thread.
+
+    Uses a non-daemon thread so the server stays alive even if the
+    main bot thread crashes.  On Railway this keeps the process
+    running and responding to health checks.
+    """
     server = HTTPServer(("0.0.0.0", port), DashboardHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=False)
     thread.start()
-    print(f"  [DASHBOARD] Running at http://localhost:{port}")
+    print(f"  [DASHBOARD] Running on port {port}")
     return server

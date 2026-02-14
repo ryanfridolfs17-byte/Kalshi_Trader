@@ -30,6 +30,13 @@ import config
 def main():
     """Main entry point."""
 
+    # ─── START DASHBOARD FIRST ───
+    # Must bind to PORT before anything else so Railway health checks pass.
+    # Runs in a non-daemon thread so it survives if the bot crashes.
+    from dashboard import start_dashboard_server
+    port = int(os.environ.get("PORT", 8050))
+    start_dashboard_server(port)
+
     # ─── STARTUP BANNER ───
     print()
     print("  " + "=" * 54)
@@ -53,10 +60,6 @@ def main():
                 return
         else:
             print("  (headless mode — skipping confirmation)")
-
-    # ─── START DASHBOARD ───
-    from dashboard import start_dashboard_server
-    start_dashboard_server()
 
     # ─── INITIALIZE COMPONENTS ───
     from kalshi_client import KalshiClient
