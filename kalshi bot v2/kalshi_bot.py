@@ -149,9 +149,47 @@ def main():
             exits = intel.check_exits(risk.state.get("positions", []), strategy.weather)
             for exit_rec in exits:
                 print(f"  ⚡ EXIT: {exit_rec['ticker']} — {exit_rec['reason']}")
-                if not config.DRY_RUN and exit_rec["urgency"] == "high":
+                if config.DRY_RUN:
+                    # In DRY_RUN, simulate the exit by releasing exposure
+                    print(f"    → [DRY RUN] Simulating exit")
+                    ticker = exit_rec["ticker"]
+                    # Find the position to get cost and city info
+                    for pos in risk.state.get("positions", []):
+                        if pos.get("ticker") == ticker:
+                            cost = pos.get("cost_cents", 0)
+                            city = pos.get("city_code", "")
+                            risk.release_exposure(ticker, cost, city)
+                            # Mark the trade as settled in the log
+                            for trade in trade_log:
+                                if trade.get("ticker") == ticker and not trade.get("settled"):
+                                    trade["settled"] = True
+                                    trade["result"] = f"exited_dry_run: {exit_rec['reason'][:60]}"
+                                    trade["profit_cents"] = 0
+                            _save_trade_log(trade_log)
+                            print(f"    → Position released. Exposure freed.")
+                            break
+                elif exit_rec["urgency"] == "high":
                     print(f"    → Auto-exiting (high urgency)")
-                    # TODO: Place sell order via client
+                    # Place sell order via client
+                    try:
+                        ticker = exit_rec["ticker"]
+                        for pos in risk.state.get("positions", []):
+                            if pos.get("ticker") == ticker:
+                                result = client.create_order(
+                                    ticker=ticker,
+                                    side="yes" if pos["side"] == "no" else "no",
+                                    count=pos.get("contracts", 1),
+                                    type="limit",
+                                    yes_price=exit_rec.get("current_price"),
+                                )
+                                if result:
+                                    cost = pos.get("cost_cents", 0)
+                                    city = pos.get("city_code", "")
+                                    risk.release_exposure(ticker, cost, city)
+                                    print(f"    → Exit order placed")
+                                break
+                    except Exception as e:
+                        print(f"    → Exit failed: {e}")
                 elif exit_rec["urgency"] == "medium":
                     print(f"    → Consider exiting manually")
 

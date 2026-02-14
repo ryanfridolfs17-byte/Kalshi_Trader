@@ -84,102 +84,113 @@ class TradeIntelligence:
             if not city_code or city_code not in CITIES:
                 continue
 
-            # Get current market price
+            # Get current market price (uses production API directly)
             current_price = self._get_current_price(ticker, side)
             if current_price is None:
+                print(f"    [EXIT] Could not fetch price for {ticker} — skipping exit check")
                 continue
 
             # Get current actual temperature
             actual_temp = self.get_current_temperature(city_code)
 
             # ─── EXIT RULE 1: TAKE PROFIT ───
-            # If we're up 30%+ on the position, take profit
-            if side == "yes" and current_price > 0:
+            # If we're up 30%+ on the position, take profit (both YES and NO)
+            if current_price > 0:
                 profit_pct = (current_price - entry_price) / max(entry_price, 1)
                 if profit_pct >= 0.30:
                     exits.append({
                         "ticker": ticker,
-                        "reason": f"Take profit: up {profit_pct:.0%} (entry {entry_price}¢, now {current_price}¢)",
+                        "reason": f"Take profit: up {profit_pct:.0%} (entry {entry_price:.0f}¢, now {current_price}¢)",
                         "action": "sell",
                         "urgency": "medium",
                         "current_price": current_price,
                     })
                     continue
+                # Cut loss if down 50%+
+                if profit_pct <= -0.50:
+                    exits.append({
+                        "ticker": ticker,
+                        "reason": f"Stop loss: down {profit_pct:.0%} (entry {entry_price:.0f}¢, now {current_price}¢)",
+                        "action": "sell",
+                        "urgency": "high",
+                        "current_price": current_price,
+                    })
+                    continue
+
+            # ─── Parse bucket from ticker (works without title/subtitle) ───
+            parsed = self._parse_bucket_from_ticker(ticker)
+            if not parsed:
+                # Fallback: try fetching full market data from API
+                market_data = self._fetch_market_data(ticker)
+                if market_data:
+                    parsed = weather_engine.parse_market_bucket(market_data)
 
             # ─── EXIT RULE 2: INTRADAY TEMP ELIMINATES BUCKET ───
-            if actual_temp is not None:
-                # Parse what bucket this position is on
-                parsed = weather_engine.parse_market_bucket({"ticker": ticker, "title": "", "subtitle": "", "event_ticker": ticker})
-                if parsed:
-                    temp_low = parsed["temp_low"]
-                    temp_high = parsed["temp_high"]
+            if actual_temp is not None and parsed and "temp_low" in parsed:
+                temp_low = parsed["temp_low"]
+                temp_high = parsed["temp_high"]
+                now_hour = datetime.now().hour
 
-                    # If we bought YES on a bucket and the current temp
-                    # already EXCEEDS the bucket's high, the bucket can
-                    # still win (high was recorded earlier). But if the
-                    # current temp is way BELOW the bucket and it's late
-                    # afternoon, the bucket is dead.
-                    now_hour = datetime.now().hour
+                if side == "yes":
+                    # If it's past 3 PM and current temp hasn't
+                    # reached the bucket's low, this bucket is dying
+                    if now_hour >= 15 and actual_temp < temp_low - 3:
+                        exits.append({
+                            "ticker": ticker,
+                            "reason": (f"Cut loss: {now_hour}:00, current temp {actual_temp}°F "
+                                      f"but bucket needs {temp_low}-{temp_high}°F"),
+                            "action": "sell",
+                            "urgency": "high",
+                            "current_price": current_price,
+                        })
+                        continue
 
-                    if side == "yes":
-                        # If it's past 3 PM and current temp hasn't
-                        # reached the bucket's low, this bucket is dying
-                        if now_hour >= 15 and actual_temp < temp_low - 3:
-                            exits.append({
-                                "ticker": ticker,
-                                "reason": (f"Cut loss: {now_hour}:00, current temp {actual_temp}°F "
-                                          f"but bucket needs {temp_low}-{temp_high}°F"),
-                                "action": "sell",
-                                "urgency": "high",
-                                "current_price": current_price,
-                            })
-                            continue
-
-                    elif side == "no":
-                        # If we bought NO and the temp is already in the
-                        # bucket, our NO is losing value fast
-                        if temp_low <= actual_temp <= temp_high and now_hour >= 12:
-                            exits.append({
-                                "ticker": ticker,
-                                "reason": (f"Cut loss: temp {actual_temp}°F is IN the bucket "
-                                          f"{temp_low}-{temp_high}°F at {now_hour}:00"),
-                                "action": "sell",
-                                "urgency": "high",
-                                "current_price": current_price,
-                            })
-                            continue
+                elif side == "no":
+                    # If we bought NO and the temp is already in the
+                    # bucket, our NO is losing value fast
+                    if temp_low <= actual_temp <= temp_high and now_hour >= 12:
+                        exits.append({
+                            "ticker": ticker,
+                            "reason": (f"Cut loss: temp {actual_temp}°F is IN the bucket "
+                                      f"{temp_low}-{temp_high}°F at {now_hour}:00"),
+                            "action": "sell",
+                            "urgency": "high",
+                            "current_price": current_price,
+                        })
+                        continue
 
             # ─── EXIT RULE 3: EDGE REVERSED ───
             # Re-evaluate the market with fresh ensemble data
-            if city_code and weather_engine:
-                parsed = weather_engine.parse_market_bucket({"ticker": ticker, "title": "", "subtitle": "", "event_ticker": ticker})
-                if parsed:
-                    dist = weather_engine.get_temperature_distribution(city_code, parsed.get("target_date"))
-                    if dist:
-                        new_prob = weather_engine.calculate_bucket_probability(
-                            dist, parsed["temp_low"], parsed["temp_high"]
-                        )
-                        if new_prob is not None:
-                            market_prob = current_price / 100.0
+            if city_code and weather_engine and parsed and "temp_low" in parsed:
+                target_date = parsed.get("target_date")
+                dist = weather_engine.get_temperature_distribution(city_code, target_date)
+                if dist:
+                    new_prob = weather_engine.calculate_bucket_probability(
+                        dist, parsed["temp_low"], parsed["temp_high"]
+                    )
+                    if new_prob is not None:
+                        market_prob = current_price / 100.0
 
-                            if side == "yes" and new_prob < market_prob - 0.05:
-                                # We bought YES but now models say it's overpriced
-                                exits.append({
-                                    "ticker": ticker,
-                                    "reason": (f"Edge reversed: ensemble now says {new_prob:.0%} "
-                                              f"but market is at {market_prob:.0%}"),
-                                    "action": "sell",
-                                    "urgency": "medium",
-                                    "current_price": current_price,
-                                })
-                            elif side == "no" and (1 - new_prob) < market_prob - 0.05:
-                                exits.append({
-                                    "ticker": ticker,
-                                    "reason": f"Edge reversed on NO position",
-                                    "action": "sell",
-                                    "urgency": "medium",
-                                    "current_price": current_price,
-                                })
+                        if side == "yes" and new_prob < market_prob - 0.05:
+                            # We bought YES but now models say it's overpriced
+                            exits.append({
+                                "ticker": ticker,
+                                "reason": (f"Edge reversed: ensemble now says {new_prob:.0%} "
+                                          f"but market is at {market_prob:.0%}"),
+                                "action": "sell",
+                                "urgency": "medium",
+                                "current_price": current_price,
+                            })
+                        elif side == "no" and new_prob > market_prob + 0.05:
+                            # We bought NO but now models say YES is underpriced
+                            exits.append({
+                                "ticker": ticker,
+                                "reason": (f"Edge reversed on NO: ensemble now says {new_prob:.0%} "
+                                          f"for YES but market is at {market_prob:.0%}"),
+                                "action": "sell",
+                                "urgency": "medium",
+                                "current_price": current_price,
+                            })
 
         return exits
 
@@ -426,24 +437,68 @@ class TradeIntelligence:
                 continue
 
             # ─── DRY RUN: Auto-settle when the market date has passed ───
+            # Also settle same-day markets after trading hours (6 PM+)
             if config.DRY_RUN:
-                # Extract date from ticker like KXHIGHNY-26FEB12-B36.5
                 trade_date = self._extract_date_from_ticker(ticker)
-                if trade_date and trade_date < today:
-                    # Market date has passed — check actual temp to determine result
+                if not trade_date:
+                    continue
+
+                now = datetime.now()
+                is_past_date = trade_date < today
+                is_same_day_after_hours = (trade_date == today and now.hour >= 18)
+
+                if is_past_date or is_same_day_after_hours:
                     city_code = trade.get("city_code", "")
-                    actual_high = self.get_todays_high_so_far(city_code) if city_code else None
-
-                    # If we can't get actual data, mark as expired
-                    trade["settled"] = True
-                    trade["result"] = "expired_dry_run"
-                    trade["profit_cents"] = 0
-                    print(f"  ⏰ EXPIRED (dry run): {ticker} — market date passed")
-
-                    # Release the exposure
+                    side = trade.get("side", "")
+                    contracts = trade.get("contracts", 0)
                     cost_cents = trade.get("cost_cents", 0)
+
+                    # Try to determine actual outcome from the market's settlement
+                    # First check if Kalshi has actually settled the market
+                    market_data = self._fetch_market_data(ticker)
+                    actual_result = None
+                    if market_data:
+                        status = market_data.get("status", "")
+                        result = market_data.get("result", "")
+                        if status == "settled" and result:
+                            actual_result = result  # "yes" or "no"
+
+                    # If market settled, determine win/loss
+                    if actual_result:
+                        if (side == "yes" and actual_result == "yes") or \
+                           (side == "no" and actual_result == "no"):
+                            payout = contracts * 100
+                            profit = payout - cost_cents
+                            trade["settled"] = True
+                            trade["result"] = "win"
+                            trade["payout_cents"] = payout
+                            trade["profit_cents"] = profit
+                            self.pnl_data["total_returned_cents"] = self.pnl_data.get("total_returned_cents", 0) + payout
+                            self.pnl_data["total_profit_cents"] = self.pnl_data.get("total_profit_cents", 0) + profit
+                            self.pnl_data["wins"] = self.pnl_data.get("wins", 0) + 1
+                            self.pnl_data["total_invested_cents"] = self.pnl_data.get("total_invested_cents", 0) + cost_cents
+                            risk_manager.record_win(profit)
+                            print(f"  ✓ WIN (dry run): {ticker} → +${profit/100:.2f}")
+                        else:
+                            trade["settled"] = True
+                            trade["result"] = "loss"
+                            trade["payout_cents"] = 0
+                            trade["profit_cents"] = -cost_cents
+                            self.pnl_data["total_profit_cents"] = self.pnl_data.get("total_profit_cents", 0) - cost_cents
+                            self.pnl_data["losses"] = self.pnl_data.get("losses", 0) + 1
+                            self.pnl_data["total_invested_cents"] = self.pnl_data.get("total_invested_cents", 0) + cost_cents
+                            risk_manager.record_loss(cost_cents)
+                            print(f"  ✗ LOSS (dry run): {ticker} → -${cost_cents/100:.2f}")
+                    else:
+                        # Market not settled yet on Kalshi — mark as expired
+                        trade["settled"] = True
+                        trade["result"] = "expired_dry_run"
+                        trade["profit_cents"] = 0
+                        print(f"  ⏰ EXPIRED (dry run): {ticker} — market date passed, no settlement data")
+
                     risk_manager.release_exposure(ticker, cost_cents, city_code)
                     settled.append(trade)
+
                 continue  # In DRY_RUN, skip the API settlement check
 
             # ─── LIVE MODE: Check via Kalshi API ───
@@ -600,8 +655,89 @@ class TradeIntelligence:
             pass
         return None
 
+    def _parse_bucket_from_ticker(self, ticker):
+        """
+        Parse temperature bucket directly from ticker suffix.
+        Tickers like:
+          KXHIGHNY-26FEB14-B46.5 → range bucket 46-47°F
+          KXHIGHNY-26FEB14-T47   → threshold above 47°F (i.e. 48+)
+          KXHIGHNY-26FEB14-T40   → threshold below 40°F (need title to know direction)
+
+        Also identifies city_code and target_date from the ticker.
+
+        Returns: {"city_code": "NYC", "temp_low": 46, "temp_high": 47, "target_date": "2026-02-14"}
+                 or None if can't parse.
+        """
+        import re
+        try:
+            # Identify city
+            city_code = None
+            for code, info in CITIES.items():
+                if info["series_ticker"].upper() in ticker.upper():
+                    city_code = code
+                    break
+            if not city_code:
+                return None
+
+            target_date = self._extract_date_from_ticker(ticker)
+
+            parts = ticker.split("-")
+            if len(parts) < 3:
+                return None
+
+            suffix = parts[2]  # e.g., "B46.5" or "T47"
+
+            if suffix.startswith("B"):
+                # Bucket range: B46.5 means the midpoint of a 2°F range → 46-47
+                midpoint = float(suffix[1:])
+                temp_low = int(midpoint - 0.5)
+                temp_high = int(midpoint + 0.5)
+                return {"city_code": city_code, "temp_low": temp_low, "temp_high": temp_high, "target_date": target_date}
+
+            elif suffix.startswith("T"):
+                # Threshold: T47 could be ">47" or "<47" depending on the market
+                # We can't tell direction from ticker alone — need to check position side
+                # For exit logic, return the threshold and let caller interpret
+                threshold = int(suffix[1:])
+                return {"city_code": city_code, "threshold": threshold, "target_date": target_date}
+
+        except Exception:
+            pass
+        return None
+
+    def _fetch_market_data(self, ticker):
+        """Fetch full market data from production API (public, no auth)."""
+        try:
+            prod_url = "https://api.elections.kalshi.com/trade-api/v2"
+            response = requests.get(f"{prod_url}/markets/{ticker}", timeout=15)
+            if response.status_code == 200:
+                data = response.json()
+                return data.get("market", {})
+        except Exception:
+            pass
+        return None
+
     def _get_current_price(self, ticker, side):
-        """Get current market price for a ticker."""
+        """
+        Get current market price for a ticker.
+        Uses production API directly for public reads (works without auth).
+        Falls back to authenticated client if available.
+        """
+        # Try production API directly (public endpoint, no auth needed)
+        try:
+            prod_url = "https://api.elections.kalshi.com/trade-api/v2"
+            response = requests.get(f"{prod_url}/markets/{ticker}", timeout=15)
+            if response.status_code == 200:
+                data = response.json()
+                market = data.get("market", {})
+                if side == "yes":
+                    return market.get("yes_bid", 0) or market.get("last_price", 0)
+                else:
+                    return market.get("no_bid", 0) or (100 - (market.get("last_price", 0) or 0))
+        except Exception:
+            pass
+
+        # Fallback to authenticated client
         if not self.client:
             return None
         try:
