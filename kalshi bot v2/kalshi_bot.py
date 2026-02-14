@@ -66,26 +66,26 @@ def main():
     trade_log = _load_trade_log()
 
     # ─── STARTUP CLEANUP ───
-    # If DRY_RUN, expire any positions from previous days
+    # If DRY_RUN, expire all unsettled positions from previous sessions.
+    # Dry-run positions are never placed on the exchange, so they should
+    # not persist across sessions and block new signals.
     if config.DRY_RUN and trade_log:
-        today = datetime.now().strftime("%Y-%m-%d")
         expired_count = 0
         for trade in trade_log:
             if trade.get("settled"):
                 continue
-            ticker = trade.get("ticker", "")
-            trade_date = intel._extract_date_from_ticker(ticker)
-            if trade_date and trade_date < today:
+            if trade.get("status") == "dry_run":
                 trade["settled"] = True
                 trade["result"] = "expired_dry_run"
                 trade["profit_cents"] = 0
                 cost = trade.get("cost_cents", 0)
                 city = trade.get("city_code", "")
+                ticker = trade.get("ticker", "")
                 risk.release_exposure(ticker, cost, city)
                 expired_count += 1
         if expired_count > 0:
             _save_trade_log(trade_log)
-            print(f"  [CLEANUP] Expired {expired_count} stale DRY_RUN positions from previous days")
+            print(f"  [CLEANUP] Expired {expired_count} stale DRY_RUN positions")
             print(f"  [CLEANUP] Exposure freed — ready for fresh trading")
 
     # Print strategy info
