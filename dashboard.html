@@ -285,7 +285,12 @@ tr:hover td { background: rgba(255,255,255,0.03); }
 </div>
 
 <!-- Bankroll Cards -->
-<div class="grid grid-top" style="margin-bottom: 20px;">
+<div class="grid grid-top" style="margin-bottom: 20px; grid-template-columns: repeat(5, 1fr);">
+  <div class="card">
+    <div class="card-title">Balance</div>
+    <div class="card-value green" id="balance">$20.00</div>
+    <div class="card-sub" id="balanceSub">Kalshi account</div>
+  </div>
   <div class="card">
     <div class="card-title">Total P&L</div>
     <div class="card-value" id="totalPnl">$0.00</div>
@@ -294,7 +299,7 @@ tr:hover td { background: rgba(255,255,255,0.03); }
   <div class="card">
     <div class="card-title">Exposure</div>
     <div class="card-value" id="exposure">$0.00</div>
-    <div class="card-sub" id="exposureSub">0 / 8 positions</div>
+    <div class="card-sub" id="exposureSub">0 / 15 positions</div>
   </div>
   <div class="card">
     <div class="card-title">Today's Trades</div>
@@ -420,6 +425,14 @@ function updateDashboard(data) {
   const pending = data.pending || [];
   const reports = data.reports || [];
 
+  // Balance
+  if (bot.balance_cents != null) {
+    const bal = bot.balance_cents / 100;
+    document.getElementById('balance').textContent = '$' + bal.toFixed(2);
+    document.getElementById('balance').className = 'card-value ' + (bal >= 2000 ? 'green' : bal >= 500 ? '' : 'red');
+    document.getElementById('balanceSub').textContent = (bot.environment || 'demo') + ' account';
+  }
+
   // Bankroll
   const totalPnl = (pnl.total_profit_cents || 0) / 100;
   document.getElementById('totalPnl').textContent = '$' + totalPnl.toFixed(2);
@@ -429,7 +442,7 @@ function updateDashboard(data) {
   const positions = risk.positions || [];
   const totalExp = positions.reduce((s, p) => s + (p.cost_cents || 0), 0) / 100;
   document.getElementById('exposure').textContent = '$' + totalExp.toFixed(2);
-  document.getElementById('exposureSub').textContent = positions.length + ' / 8 positions';
+  document.getElementById('exposureSub').textContent = positions.length + ' / 15 positions';
 
   document.getElementById('todayTrades').textContent = risk.daily_trade_count || 0;
   document.getElementById('todayTradesSub').textContent = 'of 20 max';

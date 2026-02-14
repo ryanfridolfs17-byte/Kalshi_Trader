@@ -73,7 +73,7 @@ DAILY_LOSS_LIMIT_CENTS = 1000       # $10.00
 MAX_TOTAL_EXPOSURE_CENTS = 1500     # $15.00
 
 # Max open positions at once
-MAX_OPEN_POSITIONS = 8
+MAX_OPEN_POSITIONS = 15
 
 # Max exposure per city (weather)
 MAX_PER_CITY_CENTS = 500            # $5.00 per city

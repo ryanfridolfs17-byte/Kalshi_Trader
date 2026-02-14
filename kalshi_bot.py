@@ -23,7 +23,7 @@ import json
 import os
 import sys
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import config
 
 
@@ -322,7 +322,7 @@ def main():
             _print_performance(trade_log)
 
             # Write bot status for dashboard
-            _write_bot_status(cycle, skip_reasons, trade_count_this_cycle, strategy)
+            _write_bot_status(cycle, skip_reasons, trade_count_this_cycle, strategy, client)
 
             # Wait for next cycle
             print(f"  Next scan in {config.SCAN_INTERVAL // 60} minutes...")
@@ -535,12 +535,20 @@ def _process_approved_trades(client, risk, trade_log):
             print(f"  [PENDING] Executed {executed} approved trade(s)")
 
 
-def _write_bot_status(cycle, skip_reasons, trades_this_cycle, strategy):
+def _write_bot_status(cycle, skip_reasons, trades_this_cycle, strategy, client=None):
     """Write bot status JSON for the dashboard to read."""
-    now = datetime.now()
+    now = datetime.now(tz=timezone.utc)
     model_weights = {}
     for city in config.WEATHER_CITIES:
         model_weights[city] = strategy.quant.get_model_weights(city)
+
+    # Fetch live balance from Kalshi API
+    balance_cents = None
+    if client and config.API_KEY_ID != "YOUR_API_KEY_ID_HERE":
+        try:
+            balance_cents = client.get_balance()
+        except Exception:
+            pass
 
     status = {
         "cycle": cycle,
@@ -553,6 +561,7 @@ def _write_bot_status(cycle, skip_reasons, trades_this_cycle, strategy):
         "trades_this_cycle": trades_this_cycle,
         "environment": config.ENVIRONMENT,
         "dry_run": config.DRY_RUN,
+        "balance_cents": balance_cents,
     }
     try:
         with open("bot_status.json", "w") as f:
