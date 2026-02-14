@@ -1,5 +1,7 @@
 __pycache__/
 *.pyc
+.pytest_cache/
+bot/artifacts/
 backtest_results.json
 risk_state.json
 trade_history.json
