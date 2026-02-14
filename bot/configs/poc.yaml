@@ -1,0 +1,29 @@
+# POC Backtest Configuration
+# ============================
+# Thresholds that CI checks against.
+# If the backtest violates any threshold, CI fails (exit code 1).
+
+backtest:
+  # Data source
+  fixtures_dir: "data/fixtures"
+  historical_temps: "data/fixtures/historical_temps_90d.json"
+  market_snapshots: "data/fixtures/weather_markets_20260214.json"
+
+  # Simulation parameters
+  initial_balance_cents: 10000    # $100
+  fill_probability: 0.85          # 85% of limit orders fill
+  slippage_cents: 1               # 1¢ slippage per contract
+  fees_per_contract_cents: 0      # Kalshi has no per-contract fees
+
+  # Strategy parameters
+  min_edge: 0.10                  # 10% minimum edge
+  cities: ["NYC", "CHI", "MIA", "AUS"]
+  days_back: 60                   # Backtest over 60 days
+
+# CI Pass/Fail Thresholds
+thresholds:
+  min_sharpe: 0.10                # Minimum Sharpe-like ratio (ROI-based)
+  max_drawdown_pct: 30.0          # Maximum drawdown as % of peak
+  min_win_rate: 0.50              # Minimum win rate (50%)
+  min_trades: 5                   # Must generate at least 5 trades
+  max_roi_loss_pct: -20.0         # Max acceptable loss (-20%)

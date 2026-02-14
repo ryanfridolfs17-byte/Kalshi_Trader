@@ -1,0 +1,8 @@
+[project]
+name = "kalshi-weather-bot"
+version = "3.0.0"
+description = "Kalshi Weather Trading Bot"
+requires-python = ">=3.9"
+
+[tool.pytest.ini_options]
+testpaths = ["bot/tests"]
