@@ -1,8 +1,0 @@
-[build]
-builder = "nixpacks"
-
-[deploy]
-startCommand = "python kalshi_bot.py"
-healthcheckPath = "/api/state"
-healthcheckTimeout = 30
-restartPolicyType = "always"
