@@ -1,16 +1,17 @@
 """
-STRATEGY ENGINE v3.0 — Weather-Focused + Arbitrage
+STRATEGY ENGINE v3.1 — Multi-Market Trading
 ======================================================
-Primary: Weather ensemble edge (S4 from v2, massively upgraded)
-Secondary: Spread arbitrage (S2 from v2, risk-free)
+Primary: Weather ensemble edge (S1)
+Secondary: Spread arbitrage (S2)
+Tertiary: S&P 500 VIX-implied brackets (S3) — toggleable
 
-Decision flow (from your friend's design, adapted for Kalshi):
-  1. Scan Kalshi for weather markets
-  2. Fetch 143 ensemble forecasts → build probability distribution
-  3. Compare distribution vs market prices → detect mispricing (≥8%)
-  4. Get second opinions from 4 independent sources
-  5. Risk check (daily loss, exposure, streaks)
-  6. Size trade with Quarter-Kelly × confirmation multiplier
+Decision flow:
+  1. Scan Kalshi for weather/SP500 markets
+  2. Fetch forecasts → build probability distribution
+  3. Compare vs market prices → detect mispricing
+  4. Get second opinions from independent sources
+  5. Risk check (safety layers)
+  6. Size with Quarter-Kelly × confirmation multiplier
   7. Execute as LIMIT order (maker strategy)
 """
 
@@ -27,7 +28,7 @@ import config
 class Strategy:
     """
     Multi-strategy evaluation engine.
-    Weather is primary, arbitrage is secondary.
+    Weather is primary, arbitrage is secondary, SP500 is tertiary.
     """
 
     def __init__(self, kalshi_client=None):
@@ -37,6 +38,19 @@ class Strategy:
         self.intel = TradeIntelligence(kalshi_client, self.weather)
         self.quant = QuantAnalytics(self.weather)
         self.quality = MarketQualityFilter()
+
+        # Conditionally init SP500 components (only if enabled)
+        self.vol_engine = None
+        self.spx_confirmer = None
+        if config.MARKET_TYPES.get("sp500"):
+            try:
+                from volatility_engine import VolatilityEngine
+                from spx_confirmer import SPXConfirmer
+                self.vol_engine = VolatilityEngine()
+                self.spx_confirmer = SPXConfirmer()
+                print("  [STRATEGY] S&P 500 strategy (S3) enabled")
+            except Exception as e:
+                print(f"  [STRATEGY] WARN: Could not init SP500 strategy: {e}")
 
     # ═══════════════════════════════════════════════════════
     # MAIN: Evaluate a market
@@ -102,6 +116,12 @@ class Strategy:
         arb_signal = self._strategy_arbitrage(market, yes_ask, no_ask)
         if arb_signal:
             signals.append(arb_signal)
+
+        # ─── STRATEGY 3: S&P 500 VIX-IMPLIED BRACKETS ───
+        if self.vol_engine and self.spx_confirmer:
+            sp500_signal = self._strategy_sp500(market, ref_price, spread, volume)
+            if sp500_signal:
+                signals.append(sp500_signal)
 
         # Return best signal
         if not signals:
@@ -354,6 +374,122 @@ class Strategy:
         return None
 
     # ═══════════════════════════════════════════════════════
+    # S&P 500 STRATEGY
+    # ═══════════════════════════════════════════════════════
+
+    def _strategy_sp500(self, market, ref_price, spread, volume):
+        """
+        S&P 500 daily bracket strategy using VIX-implied volatility.
+        Steps:
+        1. Parse market to identify price bracket + date
+        2. Build VIX-based price distribution
+        3. Calculate our probability vs market price
+        4. If edge >= 6%, get confirmation
+        5. Return signal with market_type: "sp500"
+        """
+        if not self.vol_engine or not self.spx_confirmer:
+            return None
+
+        # Step 1: Parse market
+        parsed = self.vol_engine.parse_market_bracket(market)
+        if not parsed:
+            return None  # Not an S&P 500 bracket market
+
+        price_low = parsed["price_low"]
+        price_high = parsed["price_high"]
+        target_date = parsed["target_date"]
+
+        if target_date is None:
+            from datetime import timezone as tz
+            target_date = datetime.now(tz.utc).strftime("%Y-%m-%d")
+
+        # Need some activity
+        if volume == 0 and (market.get("volume_24h", 0) or 0) == 0:
+            return None
+
+        # Step 2: Get VIX-based distribution
+        distribution = self.vol_engine.get_price_distribution(target_date)
+        if not distribution:
+            return None
+
+        # Step 3: Calculate our probability for this bracket
+        our_prob = self.vol_engine.calculate_bracket_probability(
+            distribution, price_low, price_high
+        )
+        if our_prob is None:
+            return None
+
+        market_prob = ref_price / 100.0
+        edge = our_prob - market_prob
+
+        # Need at least 6% edge for SP500
+        if abs(edge) < config.SP500_MIN_EDGE:
+            return None
+
+        # Step 4: Get confirmation
+        confirmation = self.spx_confirmer.confirm_signal(
+            distribution=distribution,
+            price_low=price_low,
+            price_high=price_high,
+            our_prob=our_prob,
+            market_price_cents=ref_price,
+        )
+
+        self.spx_confirmer.print_vote_details(confirmation)
+
+        if confirmation["verdict"] == "REJECT":
+            return None
+
+        # Step 5: Build signal
+        bracket_desc = f"{price_low:.0f}-{price_high:.0f}" if price_high < 99999 else f"{price_low:.0f}+"
+
+        if edge > 0:
+            signal = {
+                "signal": "buy_yes",
+                "side": "yes",
+                "edge": edge,
+                "confidence": min(0.75, distribution["confidence"] * 0.8 + abs(edge)),
+                "price_cents": market.get("yes_ask", 0) or ref_price,
+                "confirmation_multiplier": confirmation["size_multiplier"],
+                "confirmation_verdict": confirmation["verdict"],
+                "predicted_high": distribution["mean"],
+                "reasoning": (
+                    f"[SP500] {target_date}: "
+                    f"VIX-implied says {our_prob:.0%} for bracket {bracket_desc}, "
+                    f"market at {market_prob:.0%} ({ref_price}c). "
+                    f"Edge: +{edge:.0%}. "
+                    f"VIX={distribution['vix']:.1f}, vol=+/-{distribution['std_dev']:.0f}pts. "
+                    f"Confirmed: {confirmation['verdict']}."
+                ),
+                "strategy": "S3-SP500",
+                "market_type": "sp500",
+            }
+        else:
+            no_price = market.get("no_ask", 0) or (100 - ref_price)
+            signal = {
+                "signal": "buy_no",
+                "side": "no",
+                "edge": abs(edge),
+                "confidence": min(0.75, distribution["confidence"] * 0.8 + abs(edge)),
+                "price_cents": no_price,
+                "confirmation_multiplier": confirmation["size_multiplier"],
+                "confirmation_verdict": confirmation["verdict"],
+                "predicted_high": distribution["mean"],
+                "reasoning": (
+                    f"[SP500] {target_date}: "
+                    f"VIX-implied says {our_prob:.0%} for bracket {bracket_desc}, "
+                    f"market at {market_prob:.0%} ({ref_price}c). "
+                    f"Edge: {edge:.0%} (OVERPRICED). "
+                    f"VIX={distribution['vix']:.1f}. "
+                    f"Confirmed: {confirmation['verdict']}."
+                ),
+                "strategy": "S3-SP500",
+                "market_type": "sp500",
+            }
+
+        return signal
+
+    # ═══════════════════════════════════════════════════════
     # POSITION SIZING (Quarter-Kelly)
     # ═══════════════════════════════════════════════════════
 
@@ -398,31 +534,53 @@ class Strategy:
         }
 
     def get_strategy_summary(self):
-        return """
-  Active Strategies:
-  ═══════════════════════════════════════════════════════════
-  S1: WEATHER ENSEMBLE EDGE (primary)
-      → 143 ensemble members (GFS+ECMWF+ICON+GEM)
-      → 4-source confirmation voting before every trade
-      → Statistical significance test (z-test, p<0.10)
-      → Regime detection (stable/transitional/volatile)
-      → Bias correction (learns from past accuracy)
-      → Time-of-day sizing (1.3x morning → 0.4x evening)
-      → Smart order placement (bid inside spread)
-      → Correlation-aware sizing (avoid concentration)
-      → Quarter-Kelly × all multipliers
-      → Limit orders only (maker strategy)
+        # Build active market list
+        active = [k for k, v in config.MARKET_TYPES.items() if v]
+        lines = [
+            "",
+            "  Active Strategies:",
+            "  ═══════════════════════════════════════════════════════════",
+            f"  Markets: {', '.join(active).upper()}",
+            "",
+        ]
 
-  S2: SPREAD ARBITRAGE (secondary)
-      → Detects YES+NO < 98¢ (guaranteed profit)
-      → No confirmation needed (pure math)
-      → Auto-executes when found
+        if config.MARKET_TYPES.get("weather"):
+            lines += [
+                "  S1: WEATHER ENSEMBLE EDGE (primary)",
+                "      → 143 ensemble members (GFS+ECMWF+ICON+GEM)",
+                "      → 4-source confirmation voting before every trade",
+                "      → Statistical significance test (z-test, p<0.10)",
+                "      → Regime detection (stable/transitional/volatile)",
+                "      → Bias correction (learns from past accuracy)",
+                "      → Quarter-Kelly x all multipliers",
+                "      → Limit orders only (maker strategy)",
+                "",
+            ]
 
-  Intelligence Layer:
-      → Exit strategy (take profit / cut losses / edge reversal)
-      → Intraday temperature tracking (NWS live observations)
-      → Settlement P&L tracking with bias learning
-      → Backtester for strategy validation
-      → Dynamic model weighting per city/season
-  ═══════════════════════════════════════════════════════════
-"""
+        lines += [
+            "  S2: SPREAD ARBITRAGE (secondary)",
+            "      → Detects YES+NO < 98c (guaranteed profit)",
+            "      → Auto-executes when found",
+            "",
+        ]
+
+        if config.MARKET_TYPES.get("sp500"):
+            lines += [
+                "  S3: S&P 500 VIX-IMPLIED BRACKETS",
+                "      → VIX-based normal distribution for price probabilities",
+                "      → 3-check confirmation (momentum, vol ratio, historical)",
+                "      → Intraday vol adjustment as market day progresses",
+                "      → yfinance data (free, no API key)",
+                "      → Quarter-Kelly sizing",
+                "",
+            ]
+
+        lines += [
+            "  Intelligence Layer:",
+            "      → Exit strategy (take profit / cut losses / edge reversal)",
+            "      → Settlement P&L tracking with bias learning",
+            "      → Dynamic model weighting per city/season",
+            "  ═══════════════════════════════════════════════════════════",
+            "",
+        ]
+        return "\n".join(lines)

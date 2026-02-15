@@ -134,7 +134,10 @@ def main():
     risk.print_status()
 
     print(f"  Scanning every {config.SCAN_INTERVAL // 60} minutes")
-    print(f"  Cities: {', '.join(config.WEATHER_CITIES)}")
+    active_markets = [k.upper() for k, v in config.MARKET_TYPES.items() if v]
+    print(f"  Active markets: {', '.join(active_markets)}")
+    if config.MARKET_TYPES.get("weather"):
+        print(f"  Weather cities: {', '.join(config.WEATHER_CITIES)}")
     print(f"  Press Ctrl+C to stop\n")
 
     # ─── MAIN LOOP ───
@@ -313,6 +316,91 @@ def main():
 
                     if trade_result:
                         trade_count_this_cycle += 1
+
+            # ═══════════════════════════════════════════════
+            # STEP 1b: SCAN S&P 500 BRACKET MARKETS
+            # ═══════════════════════════════════════════════
+            if config.MARKET_TYPES.get("sp500"):
+                print("\n  [STEP 1b] Scanning S&P 500 bracket markets...")
+                sp500_markets = scanner.scan_sp500_markets()
+
+                if sp500_markets:
+                    scanner.print_sp500_summary(sp500_markets)
+
+                    for market in sp500_markets:
+                        ticker = market.get("ticker", "")
+                        title = market.get("title", "")
+
+                        signal = strategy.evaluate_market(market)
+
+                        if signal["signal"] == "skip":
+                            reason = signal.get("reasoning") or "Dead market"
+                            if "Dead market" in str(reason) or reason is None:
+                                cat = "Dead/frozen market"
+                            elif "Quality" in str(reason):
+                                cat = "Quality filter"
+                            elif "No signals" in str(reason):
+                                cat = "No edge found"
+                            elif "edge" in str(reason).lower():
+                                cat = "Edge too small"
+                            else:
+                                cat = str(reason)[:40]
+                            skip_reasons[cat] = skip_reasons.get(cat, 0) + 1
+                            continue
+
+                        print(f"\n  [SP500] Evaluating: {ticker}")
+                        print(f"          {title}")
+
+                        print(f"\n  ★ SP500 SIGNAL ★")
+                        print(f"    Strategy:    {signal.get('strategy', '?')}")
+                        print(f"    Side:        {signal['side'].upper()}")
+                        print(f"    Edge:        {signal['edge']:.1%}")
+                        print(f"    Confidence:  {signal['confidence']:.1%}")
+                        print(f"    Price:       {signal['price_cents']}c")
+                        print(f"    Contracts:   {signal['suggested_contracts']}")
+                        print(f"    Confirm:     {signal.get('confirmation_verdict', 'N/A')}")
+                        print(f"    Reasoning:   {signal['reasoning']}")
+
+                        # Use "SP500" as city_code for risk manager per-market tracking
+                        signal["city_code"] = "SP500"
+                        signal["market_type"] = "sp500"
+
+                        if market.get("close_time"):
+                            signal["close_time"] = market["close_time"]
+
+                        approved, reason = risk.check_trade(signal)
+
+                        if approved is False:
+                            print(f"    x BLOCKED: {reason}")
+                            continue
+
+                        if observation_mode:
+                            cost = signal["price_cents"] * signal["suggested_contracts"]
+                            print(f"    [OBSERVATION] Would trade {signal['suggested_contracts']}x {signal['side'].upper()} @ {signal['price_cents']}c = ${cost/100:.2f} but kill switch active")
+                            continue
+
+                        if approved == "NEEDS_APPROVAL":
+                            print(f"    ! {reason}")
+                            if sys.stdin.isatty():
+                                user_input = input("    Approve? (y/n): ").strip().lower()
+                                if user_input != "y":
+                                    print("    → Skipped by user")
+                                    continue
+                            else:
+                                _add_pending_trade(signal, market)
+                                print(f"    QUEUED for dashboard approval")
+                                continue
+
+                        if _should_require_approval(signal, risk):
+                            _add_pending_trade(signal, market)
+                            print(f"    QUEUED for dashboard approval (SP500)")
+                            continue
+
+                        trade_result = _execute_trade(
+                            client, risk, signal, trade_log, market
+                        )
+                        if trade_result:
+                            trade_count_this_cycle += 1
 
             # ═══════════════════════════════════════════════
             # ARBITRAGE SCAN (also checks weather markets)
@@ -635,6 +723,7 @@ def _write_bot_status(cycle, skip_reasons, trades_this_cycle, strategy, client=N
         "observation_mode": observation_mode,
         "observation_reason": observation_reason,
         "total_expected_profit_cents": total_expected_profit_cents,
+        "active_markets": [k for k, v in config.MARKET_TYPES.items() if v],
     }
     try:
         with open(config.BOT_STATUS_FILE, "w") as f:
@@ -806,19 +895,29 @@ def _execute_exit(client, risk, trade_log, exit_rec):
 
 
 def _build_market_description(ticker, city_code, title):
-    """Build a human-readable description like 'NYC 42-46F Feb 15' from ticker."""
-    city_names = {"NYC": "NYC", "CHI": "Chicago", "MIA": "Miami", "AUS": "Austin"}
+    """Build a human-readable description from ticker."""
+    city_names = {"NYC": "NYC", "CHI": "Chicago", "MIA": "Miami", "AUS": "Austin", "SP500": "S&P 500"}
+    months = {"JAN":"Jan","FEB":"Feb","MAR":"Mar","APR":"Apr","MAY":"May","JUN":"Jun",
+              "JUL":"Jul","AUG":"Aug","SEP":"Sep","OCT":"Oct","NOV":"Nov","DEC":"Dec"}
     try:
         parts = ticker.split("-")
         if len(parts) >= 3:
             date_str = parts[1]  # e.g. 26FEB15
-            bucket = parts[2]    # e.g. B42.5
-            # Parse date
-            months = {"JAN":"Jan","FEB":"Feb","MAR":"Mar","APR":"Apr","MAY":"May","JUN":"Jun",
-                       "JUL":"Jul","AUG":"Aug","SEP":"Sep","OCT":"Oct","NOV":"Nov","DEC":"Dec"}
+            bucket = parts[2]    # e.g. B42.5 or B5600
             month = months.get(date_str[2:5].upper(), "")
             day = date_str[5:7].lstrip("0")
-            # Parse bucket: B42.5 → temp threshold
+
+            # S&P 500 bracket
+            if ticker.startswith(config.SP500_SERIES_TICKER.upper()) or city_code == "SP500":
+                if bucket.startswith("B"):
+                    price = bucket[1:]
+                    return f"S&P {price}+ {month} {day}"
+                elif bucket.startswith("T"):
+                    price = bucket[1:]
+                    return f"S&P {price} {month} {day}"
+                return f"S&P {bucket} {month} {day}"
+
+            # Weather market
             city_name = city_names.get(city_code, city_code)
             if bucket.startswith("B"):
                 temp = bucket[1:]

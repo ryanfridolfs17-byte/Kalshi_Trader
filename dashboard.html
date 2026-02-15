@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>Kalshi Weather Bot</title>
+<title>Kalshi Trading Bot</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -206,6 +206,8 @@ tr:hover td { background: rgba(255,255,255,0.03); }
 .badge-dry { background: rgba(255,255,255,0.08); color: var(--text-secondary); }
 .badge-win { background: rgba(52,211,153,0.15); color: var(--accent-green); }
 .badge-loss { background: rgba(248,113,113,0.15); color: var(--accent-red); }
+.badge-weather { background: rgba(96,165,250,0.15); color: var(--accent-blue); }
+.badge-sp500 { background: rgba(52,211,153,0.15); color: var(--accent-green); }
 
 .chart-container { position: relative; height: 220px; }
 
@@ -369,6 +371,10 @@ tr:hover td { background: rgba(255,255,255,0.03); }
         <div class="status-item-label">Regime</div>
         <div class="status-item-value" id="bsRegime">-</div>
       </div>
+      <div class="status-item">
+        <div class="status-item-label">Markets</div>
+        <div class="status-item-value" id="bsMarkets">-</div>
+      </div>
     </div>
     <div style="margin-top: 14px;">
       <div class="card-title">Model Weights</div>
@@ -383,7 +389,7 @@ tr:hover td { background: rgba(255,255,255,0.03); }
     <div class="card-title">Active Positions</div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Description</th><th>Side</th><th>Cost</th><th>Qty</th><th>Edge</th><th>Exp. Profit</th><th>Opened</th></tr></thead>
+        <thead><tr><th>Type</th><th>Description</th><th>Side</th><th>Cost</th><th>Qty</th><th>Edge</th><th>Exp. Profit</th><th>Opened</th></tr></thead>
         <tbody id="positionsBody"></tbody>
       </table>
     </div>
@@ -397,7 +403,7 @@ tr:hover td { background: rgba(255,255,255,0.03); }
     <div class="card-title">Trade History</div>
     <div class="table-wrap" style="max-height: 400px; overflow-y: auto;">
       <table>
-        <thead><tr><th>Time</th><th>Description</th><th>Side</th><th>Price</th><th>Edge</th><th>Conf</th><th>Status</th></tr></thead>
+        <thead><tr><th>Type</th><th>Time</th><th>Description</th><th>Side</th><th>Price</th><th>Edge</th><th>Conf</th><th>Status</th></tr></thead>
         <tbody id="tradesBody"></tbody>
       </table>
     </div>
@@ -512,7 +518,10 @@ function updateDashboard(data) {
       const edgePct = p.edge ? (p.edge * 100).toFixed(1) + '%' : '-';
       const expProfit = p.expected_profit_cents ? ((p.expected_profit_cents >= 0 ? '+$' : '-$') + Math.abs(p.expected_profit_cents / 100).toFixed(2)) : '-';
       const expClass = (p.expected_profit_cents || 0) >= 0 ? 'green' : 'amber';
+      const mtype = (p.city_code === 'SP500' || (p.ticker||'').startsWith('KXINX')) ? 'sp500' : 'weather';
+      const mtypeLabel = mtype === 'sp500' ? 'S&P' : 'WX';
       return `<tr>
+        <td><span class="badge badge-${mtype}">${mtypeLabel}</span></td>
         <td style="font-weight:600">${desc}</td>
         <td>${(p.side||'').toUpperCase()}</td>
         <td>$${(p.cost_cents/100).toFixed(2)}</td>
@@ -543,7 +552,10 @@ function updateDashboard(data) {
       else if (t.settled && (t.profit_cents||0) < 0) statusBadge = '<span class="badge badge-loss">-$'+Math.abs(t.profit_cents/100).toFixed(2)+'</span>';
       else if (t.settled) statusBadge = '<span class="badge badge-dry">$0</span>';
       else statusBadge = '<span class="badge badge-dry">' + (t.status||'open') + '</span>';
+      const mtype = (t.city_code === 'SP500' || (t.strategy||'').includes('SP500') || (t.ticker||'').startsWith('KXINX')) ? 'sp500' : 'weather';
+      const mtypeLabel = mtype === 'sp500' ? 'S&P' : 'WX';
       return `<tr>
+        <td><span class="badge badge-${mtype}">${mtypeLabel}</span></td>
         <td style="color:var(--text-secondary);font-size:12px">${time}</td>
         <td style="font-weight:600;font-size:12px" title="${t.ticker}">${t.market_description || t.title || shortTicker(t.ticker)}</td>
         <td>${(t.side||'').toUpperCase()}</td>
@@ -583,6 +595,12 @@ function updateDashboard(data) {
   }
   document.getElementById('bsEnv').textContent = bot.dry_run ? 'Dry Run' : (bot.environment || '-');
   document.getElementById('bsRegime').textContent = bot.regime || '-';
+  const activeMarkets = bot.active_markets || ['weather'];
+  document.getElementById('bsMarkets').innerHTML = activeMarkets.map(m => {
+    const cls = m === 'sp500' ? 'badge-sp500' : 'badge-weather';
+    const label = m === 'sp500' ? 'S&P 500' : m.charAt(0).toUpperCase() + m.slice(1);
+    return `<span class="badge ${cls}" style="margin-right:4px">${label}</span>`;
+  }).join('');
 
   // Model weights
   const mw = bot.model_weights || {};

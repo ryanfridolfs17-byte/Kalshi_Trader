@@ -58,6 +58,23 @@ WEATHER_CITIES = ["NYC", "CHI", "MIA", "AUS"]
 SCAN_ALL_FOR_ARBITRAGE = True
 
 # ═══════════════════════════════════════════════════════
+# MARKET TYPES (toggle each independently via env var)
+# ═══════════════════════════════════════════════════════
+# Each market type can be enabled/disabled independently.
+# Weather is ON by default. All others are OFF by default.
+MARKET_TYPES = {
+    "weather": os.environ.get("ENABLE_WEATHER", "true").lower() == "true",
+    "sp500":   os.environ.get("ENABLE_SP500", "false").lower() == "true",
+    # Future: "cpi", "oil", "bitcoin", "nfp", "fed"
+}
+
+# S&P 500 bracket settings
+SP500_SERIES_TICKER = "KXINX"        # Kalshi series ticker for S&P 500 daily brackets
+SP500_MIN_EDGE = 0.06                # 6% minimum edge (tighter than weather due to higher liquidity)
+SP500_VIX_CACHE_MINUTES = 15         # Cache VIX/SPY data for this many minutes
+SP500_MAX_EXPOSURE_CENTS = 800       # $8.00 max exposure for SP500 positions
+
+# ═══════════════════════════════════════════════════════
 # RISK PARAMETERS (all in cents, 100 cents = $1.00)
 # ═══════════════════════════════════════════════════════
 # Max cost of a single auto-trade (no approval needed)
