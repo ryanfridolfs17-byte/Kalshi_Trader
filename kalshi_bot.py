@@ -772,9 +772,13 @@ def _write_bot_status(cycle, skip_reasons, trades_this_cycle, strategy, client=N
 
     # Fetch live balance from Kalshi API
     balance_cents = None
+    portfolio_value_cents = None
     if client and config.API_KEY_ID != "YOUR_API_KEY_ID_HERE":
         try:
-            balance_cents = client.get_balance()
+            bal_resp = client.get_balance()
+            if bal_resp and isinstance(bal_resp, dict):
+                balance_cents = bal_resp.get("balance")
+                portfolio_value_cents = bal_resp.get("portfolio_value")
         except Exception:
             pass
 
@@ -790,6 +794,7 @@ def _write_bot_status(cycle, skip_reasons, trades_this_cycle, strategy, client=N
         "environment": config.ENVIRONMENT,
         "dry_run": config.DRY_RUN,
         "balance_cents": balance_cents,
+        "portfolio_value_cents": portfolio_value_cents,
         "observation_mode": observation_mode,
         "observation_reason": observation_reason,
         "total_expected_profit_cents": total_expected_profit_cents,

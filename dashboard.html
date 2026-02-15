@@ -479,12 +479,19 @@ function updateDashboard(data) {
   const pending = data.pending || [];
   const reports = data.reports || [];
 
-  // Balance
-  if (bot.balance_cents != null) {
-    const bal = bot.balance_cents / 100;
+  // Balance — handle both old format (object) and new format (number)
+  let balCents = bot.balance_cents;
+  let portCents = bot.portfolio_value_cents;
+  if (balCents != null && typeof balCents === 'object') {
+    portCents = balCents.portfolio_value;
+    balCents = balCents.balance;
+  }
+  if (balCents != null) {
+    const bal = balCents / 100;
     document.getElementById('balance').textContent = '$' + bal.toFixed(2);
-    document.getElementById('balance').className = 'card-value ' + (bal >= 2000 ? 'green' : bal >= 500 ? '' : 'red');
-    document.getElementById('balanceSub').textContent = (bot.environment || 'demo') + ' account';
+    document.getElementById('balance').className = 'card-value ' + (bal >= 15 ? 'green' : bal >= 5 ? '' : 'red');
+    const portStr = portCents != null ? ' | Portfolio: $' + (portCents / 100).toFixed(2) : '';
+    document.getElementById('balanceSub').textContent = (bot.environment || 'demo') + ' account' + portStr;
   }
 
   // Bankroll

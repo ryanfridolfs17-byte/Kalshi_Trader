@@ -334,11 +334,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             removed_count = original_count - len(kept_trades)
             _write_json(STATE_FILES["trades"], kept_trades)
 
-            # Also clean up risk state: remove positions for failed trades
+            # Also clean up risk state: remove positions for tickers with NO successful trades
             failed_tickers = {t.get("ticker") for t in failed_trades}
+            kept_tickers = {t.get("ticker") for t in kept_trades}
+            orphaned_tickers = failed_tickers - kept_tickers  # only tickers with zero filled trades
             risk = _read_json(STATE_FILES["risk"], default={})
             positions = risk.get("positions", [])
-            risk["positions"] = [p for p in positions if p.get("ticker") not in failed_tickers]
+            risk["positions"] = [p for p in positions if p.get("ticker") not in orphaned_tickers]
             # Recalculate city exposure from remaining positions
             risk["city_exposure"] = {}
             for p in risk["positions"]:
