@@ -364,16 +364,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             positions = risk.get("positions", [])
             trades = _read_json(STATE_FILES["trades"], default=[])
 
-            # Build set of tickers that have live_filled trades
-            filled_tickers = {t["ticker"] for t in trades if t.get("status") == "live_filled"}
+            # Build set of (ticker, side) pairs that have live_filled trades
+            filled_pairs = {(t["ticker"], t["side"]) for t in trades if t.get("status") == "live_filled"}
 
             # Group positions by (ticker, side) and merge
             merged = {}
             for p in positions:
                 ticker = p.get("ticker", "")
                 side = p.get("side", "")
-                # Skip phantom positions with no matching filled trade
-                if ticker not in filled_tickers:
+                # Skip phantom positions with no matching filled trade for this side
+                if (ticker, side) not in filled_pairs:
                     continue
                 key = (ticker, side)
                 if key in merged:
