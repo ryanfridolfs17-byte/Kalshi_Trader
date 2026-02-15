@@ -275,9 +275,15 @@ tr:hover td { background: rgba(255,255,255,0.03); }
 
 <div class="header">
   <h1><span>Kalshi</span> Weather Bot</h1>
-  <div class="status-pill">
-    <div class="status-dot" id="statusDot"></div>
-    <span id="statusText">Connecting...</span>
+  <div style="display:flex;gap:10px;align-items:center;">
+    <div class="status-pill" id="healthPill" title="Bot health">
+      <div class="status-dot" id="healthDot" style="background:var(--text-secondary)"></div>
+      <span id="healthText">Checking...</span>
+    </div>
+    <div class="status-pill">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="statusText">Connecting...</span>
+    </div>
   </div>
 </div>
 
@@ -798,9 +804,44 @@ function timeSince(ts) {
 
 function isSameDay(a, b) { return a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate(); }
 
+// Health check
+async function checkHealth() {
+  try {
+    const res = await fetch('/api/health');
+    if (!res.ok) throw new Error('health fetch failed');
+    const h = await res.json();
+    const dot = document.getElementById('healthDot');
+    const text = document.getElementById('healthText');
+    const pill = document.getElementById('healthPill');
+    if (h.status === 'healthy') {
+      dot.style.background = 'var(--accent-green)';
+      text.textContent = 'Healthy';
+      pill.title = 'Last scan ' + (h.last_scan_age_seconds ? Math.round(h.last_scan_age_seconds/60) + 'm ago' : 'unknown');
+    } else if (h.status === 'degraded') {
+      dot.style.background = 'var(--accent-amber)';
+      text.textContent = 'Degraded';
+      pill.title = 'Last scan ' + Math.round(h.last_scan_age_seconds/60) + 'm ago (>10m)';
+    } else if (h.status === 'observation') {
+      dot.style.background = 'var(--accent-amber)';
+      text.textContent = 'Observation';
+      pill.title = h.observation_reason || 'Kill switch active';
+    } else {
+      dot.style.background = 'var(--accent-red)';
+      text.textContent = 'Down';
+      dot.style.animation = 'pulse 1s ease-in-out infinite';
+      pill.title = 'Last scan ' + (h.last_scan_age_seconds ? Math.round(h.last_scan_age_seconds/60) + 'm ago' : 'unknown') + ' — likely crashed';
+    }
+  } catch (e) {
+    document.getElementById('healthDot').style.background = 'var(--accent-red)';
+    document.getElementById('healthText').textContent = 'Offline';
+  }
+}
+
 // Initial fetch + auto-refresh
 fetchState();
+checkHealth();
 setInterval(fetchState, 30000);
+setInterval(checkHealth, 60000);
 
 // Countdown timer for next scan
 setInterval(() => {

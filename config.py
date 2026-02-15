@@ -138,6 +138,18 @@ DAILY_REPORTS_FILE = "daily_reports.json"
 LOG_LEVEL = "DEBUG"  # "DEBUG" for verbose output
 
 # ═══════════════════════════════════════════════════════
+# HEALTH MONITORING & EMAIL ALERTS
+# ═══════════════════════════════════════════════════════
+ALERT_EMAIL = os.environ.get("ALERT_EMAIL", "")
+SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("SMTP_USER", "")  # sender email
+SMTP_PASS = os.environ.get("SMTP_PASS", "")  # app password
+HEALTH_STALE_MINUTES = 15    # scan older than this = stalled
+HEALTH_WARN_MINUTES = 10     # yellow status threshold
+PENDING_ALERT_MINUTES = 30   # alert if pending trade unapproved this long
+
+# ═══════════════════════════════════════════════════════
 # API BASE URLS (used by kalshi_client.py)
 # ═══════════════════════════════════════════════════════
 DEMO_API_URL = "https://demo-api.kalshi.co/trade-api/v2"
