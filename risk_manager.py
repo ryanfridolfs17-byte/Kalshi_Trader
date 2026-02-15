@@ -72,6 +72,19 @@ class RiskManager:
             if city_exp + cost > config.MAX_PER_CITY_CENTS:
                 return False, f"{city} exposure: ${city_exp/100:.2f} + ${cost/100:.2f} > ${config.MAX_PER_CITY_CENTS/100:.2f}"
 
+        # 4b. Correlated positions cap (same city + same date)
+        if city:
+            ticker = signal.get("ticker", "")
+            signal_date = self._extract_date_from_ticker(ticker)
+            if signal_date:
+                corr_count = sum(
+                    1 for p in self.state["positions"]
+                    if p.get("city_code") == city
+                    and self._extract_date_from_ticker(p.get("ticker", "")) == signal_date
+                )
+                if corr_count >= config.MAX_CORRELATED_POSITIONS:
+                    return False, f"Max {config.MAX_CORRELATED_POSITIONS} correlated positions for {city} on {signal_date}"
+
         # 5. Consecutive loss pause
         if self.state["loss_pause_until"]:
             pause_until = datetime.fromisoformat(self.state["loss_pause_until"])
@@ -250,6 +263,17 @@ class RiskManager:
             city = p.get("city_code", "")
             if city:
                 self.state["city_exposure"][city] = self.state["city_exposure"].get(city, 0) + p["cost_cents"]
+
+    @staticmethod
+    def _extract_date_from_ticker(ticker):
+        """Extract date portion from ticker like KXHIGHNY-26FEB15-B42.5 → '26FEB15'."""
+        try:
+            parts = ticker.split("-")
+            if len(parts) >= 2:
+                return parts[1]
+        except Exception:
+            pass
+        return None
 
     def _save_state(self):
         try:
