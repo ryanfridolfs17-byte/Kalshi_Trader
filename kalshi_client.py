@@ -43,12 +43,27 @@ class KalshiClient:
             from cryptography.hazmat.backends import default_backend
 
             with open(config.PRIVATE_KEY_PATH, "rb") as key_file:
+                key_data = key_file.read()
                 self.private_key = serialization.load_pem_private_key(
-                    key_file.read(),
+                    key_data,
                     password=None,
                     backend=default_backend()
                 )
-            print("  [API] Private key loaded successfully")
+            # Diagnostic: show key format without exposing the key itself
+            key_text = key_data.decode("utf-8", errors="replace")
+            key_lines = key_text.strip().split("\n")
+            print(f"  [API] Private key loaded successfully")
+            print(f"  [API] Key format: {len(key_lines)} lines, "
+                  f"first='{key_lines[0][:30]}...', "
+                  f"last='{key_lines[-1][:30]}...'")
+            print(f"  [API] Key ID: {self.api_key_id[:8]}...{self.api_key_id[-4:]}")
+
+            # Immediate auth test
+            test = self._request("GET", "/portfolio/balance", authenticated=True)
+            if test:
+                print(f"  [API] ✓ Auth test PASSED — balance: ${test.get('balance', 0)/100:.2f}")
+            else:
+                print(f"  [API] ✗ Auth test FAILED — check API key + private key pairing")
         except FileNotFoundError:
             print(f"  [API] ⚠️  Private key file not found: {config.PRIVATE_KEY_PATH}")
             print("  [API] Bot will scan markets but cannot trade")
