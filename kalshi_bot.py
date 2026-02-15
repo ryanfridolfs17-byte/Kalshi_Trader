@@ -249,6 +249,10 @@ def main():
                     if parsed:
                         signal["city_code"] = parsed["city_code"]
 
+                    # Pass close_time for settlement proximity check
+                    if market.get("close_time"):
+                        signal["close_time"] = market["close_time"]
+
                     approved, reason = risk.check_trade(signal)
 
                     if approved is False:

@@ -17,7 +17,7 @@ CHECKS:
 
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import config
 
 
@@ -100,6 +100,19 @@ class RiskManager:
         # 8. Manual approval
         if cost > config.APPROVAL_THRESHOLD_CENTS:
             return "NEEDS_APPROVAL", f"Trade costs ${cost/100:.2f} > ${config.APPROVAL_THRESHOLD_CENTS/100:.2f} — needs approval"
+
+        # 9. Settlement proximity — no new positions within N hours of close
+        close_time_str = signal.get("close_time")
+        if close_time_str:
+            try:
+                close_time = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
+                now_utc = datetime.now(timezone.utc)
+                hours_until_close = (close_time - now_utc).total_seconds() / 3600
+                if 0 < hours_until_close <= config.SETTLEMENT_PROXIMITY_HOURS:
+                    if edge <= config.SETTLEMENT_PROXIMITY_EDGE_OVERRIDE:
+                        return False, f"Too close to settlement ({hours_until_close:.1f}h, edge {edge:.0%} < {config.SETTLEMENT_PROXIMITY_EDGE_OVERRIDE:.0%})"
+            except (ValueError, TypeError):
+                pass  # Graceful degradation if close_time is unparseable
 
         # All checks passed
         return True, "All risk checks passed"

@@ -88,6 +88,10 @@ MAX_DAILY_TRADES = 20
 # Cooldown between trades (seconds)
 TRADE_COOLDOWN = 180                # 3 minutes (faster for weather)
 
+# Settlement proximity: no new positions within N hours of close
+SETTLEMENT_PROXIMITY_HOURS = 2
+SETTLEMENT_PROXIMITY_EDGE_OVERRIDE = 0.20  # Exceptional edge overrides
+
 # ═══════════════════════════════════════════════════════
 # STRATEGY SETTINGS
 # ═══════════════════════════════════════════════════════
