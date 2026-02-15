@@ -73,7 +73,7 @@ body {
 }
 
 .grid { display: grid; gap: 16px; }
-.grid-top { grid-template-columns: repeat(5, 1fr); }
+.grid-top { grid-template-columns: repeat(6, 1fr); }
 .grid-main { grid-template-columns: 1fr 1fr; }
 .grid-full { grid-template-columns: 1fr; }
 
@@ -325,6 +325,11 @@ tr:hover td { background: rgba(255,255,255,0.03); }
     <div class="card-value" id="winRate">-</div>
     <div class="card-sub" id="winRateSub">all time</div>
   </div>
+  <div class="card">
+    <div class="card-title">Projected P&L</div>
+    <div class="card-value green" id="projectedPnl">$0.00</div>
+    <div class="card-sub" id="projectedPnlSub">expected from open positions</div>
+  </div>
 </div>
 
 <!-- Performance Chart + Bot Status -->
@@ -372,7 +377,7 @@ tr:hover td { background: rgba(255,255,255,0.03); }
     <div class="card-title">Active Positions</div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Ticker</th><th>Side</th><th>Cost</th><th>Qty</th><th>City</th><th>Opened</th></tr></thead>
+        <thead><tr><th>Description</th><th>Side</th><th>Cost</th><th>Qty</th><th>Edge</th><th>Exp. Profit</th><th>Opened</th></tr></thead>
         <tbody id="positionsBody"></tbody>
       </table>
     </div>
@@ -386,7 +391,7 @@ tr:hover td { background: rgba(255,255,255,0.03); }
     <div class="card-title">Trade History</div>
     <div class="table-wrap" style="max-height: 400px; overflow-y: auto;">
       <table>
-        <thead><tr><th>Time</th><th>Ticker</th><th>Side</th><th>Price</th><th>Edge</th><th>Conf</th><th>Status</th></tr></thead>
+        <thead><tr><th>Time</th><th>Description</th><th>Side</th><th>Price</th><th>Edge</th><th>Conf</th><th>Status</th></tr></thead>
         <tbody id="tradesBody"></tbody>
       </table>
     </div>
@@ -475,6 +480,11 @@ function updateDashboard(data) {
   document.getElementById('exposure').textContent = '$' + totalExp.toFixed(2);
   document.getElementById('exposureSub').textContent = positions.length + ' / 15 positions';
 
+  // Projected P&L
+  const projPnl = (bot.total_expected_profit_cents || 0) / 100;
+  document.getElementById('projectedPnl').textContent = (projPnl >= 0 ? '+$' : '-$') + Math.abs(projPnl).toFixed(2);
+  document.getElementById('projectedPnl').className = 'card-value ' + (projPnl >= 0 ? 'green' : 'red');
+
   document.getElementById('todayTrades').textContent = risk.daily_trade_count || 0;
   document.getElementById('todayTradesSub').textContent = 'of 20 max';
 
@@ -492,12 +502,17 @@ function updateDashboard(data) {
     posEmpty.style.display = 'none';
     posBody.innerHTML = positions.map(p => {
       const age = timeSince(p.timestamp);
+      const desc = p.market_description || p.title || shortTicker(p.ticker);
+      const edgePct = p.edge ? (p.edge * 100).toFixed(1) + '%' : '-';
+      const expProfit = p.expected_profit_cents ? ((p.expected_profit_cents >= 0 ? '+$' : '-$') + Math.abs(p.expected_profit_cents / 100).toFixed(2)) : '-';
+      const expClass = (p.expected_profit_cents || 0) >= 0 ? 'green' : 'amber';
       return `<tr>
-        <td style="font-weight:600">${shortTicker(p.ticker)}</td>
+        <td style="font-weight:600">${desc}</td>
         <td>${(p.side||'').toUpperCase()}</td>
         <td>$${(p.cost_cents/100).toFixed(2)}</td>
         <td>${p.contracts}</td>
-        <td>${p.city_code||'-'}</td>
+        <td>${edgePct}</td>
+        <td class="${expClass}">${expProfit}</td>
         <td style="color:var(--text-secondary)">${age}</td>
       </tr>`;
     }).join('');
@@ -524,7 +539,7 @@ function updateDashboard(data) {
       else statusBadge = '<span class="badge badge-dry">' + (t.status||'open') + '</span>';
       return `<tr>
         <td style="color:var(--text-secondary);font-size:12px">${time}</td>
-        <td style="font-weight:600;font-size:12px">${shortTicker(t.ticker)}</td>
+        <td style="font-weight:600;font-size:12px" title="${t.ticker}">${t.market_description || t.title || shortTicker(t.ticker)}</td>
         <td>${(t.side||'').toUpperCase()}</td>
         <td>${t.price_cents}c x${t.contracts}</td>
         <td>${(t.edge*100).toFixed(1)}%</td>

@@ -415,11 +415,19 @@ def _execute_trade(client, risk, signal, trade_log, market):
     yes_bid = market.get("yes_bid", 0) or 0
     spread_at_entry = (yes_ask - yes_bid) if (yes_ask > 0 and yes_bid > 0) else 0
 
+    # Build human-readable description from ticker
+    market_description = _build_market_description(ticker, signal.get("city_code", ""), market.get("title", ""))
+
+    # Expected profit: edge * contracts * 100 (simplified expected value in cents)
+    edge = signal.get("edge", 0)
+    expected_profit_cents = round(edge * contracts * 100)
+
     # Record trade
     trade_entry = {
         "timestamp": datetime.now().isoformat(),
         "ticker": ticker,
         "title": market.get("title", ""),
+        "market_description": market_description,
         "side": side,
         "price_cents": price,
         "contracts": contracts,
@@ -434,14 +442,19 @@ def _execute_trade(client, risk, signal, trade_log, market):
         "reasoning": signal.get("reasoning", ""),
         "settled": False,
         "spread_at_entry_cents": spread_at_entry,
+        "expected_profit_cents": expected_profit_cents,
     }
 
     trade_log.append(trade_entry)
     _save_trade_log(trade_log)
 
-    # Record with risk manager
+    # Record with risk manager (include extra fields for dashboard)
     city_code = signal.get("city_code", "")
-    risk.record_trade(ticker, side, cost, contracts, city_code)
+    risk.record_trade(ticker, side, cost, contracts, city_code,
+                      title=market.get("title", ""),
+                      edge=signal.get("edge", 0),
+                      expected_profit_cents=expected_profit_cents,
+                      market_description=market_description)
 
     return True
 
@@ -580,6 +593,17 @@ def _write_bot_status(cycle, skip_reasons, trades_this_cycle, strategy, client=N
     for city in config.WEATHER_CITIES:
         model_weights[city] = strategy.quant.get_model_weights(city)
 
+    # Calculate total expected profit from open positions
+    risk_state = {}
+    try:
+        if os.path.exists(config.RISK_STATE_FILE):
+            with open(config.RISK_STATE_FILE) as f:
+                risk_state = json.load(f)
+    except Exception:
+        pass
+    positions = risk_state.get("positions", [])
+    total_expected_profit_cents = sum(p.get("expected_profit_cents", 0) for p in positions)
+
     # Fetch live balance from Kalshi API
     balance_cents = None
     if client and config.API_KEY_ID != "YOUR_API_KEY_ID_HERE":
@@ -602,6 +626,7 @@ def _write_bot_status(cycle, skip_reasons, trades_this_cycle, strategy, client=N
         "balance_cents": balance_cents,
         "observation_mode": observation_mode,
         "observation_reason": observation_reason,
+        "total_expected_profit_cents": total_expected_profit_cents,
     }
     try:
         with open("bot_status.json", "w") as f:
@@ -697,6 +722,33 @@ def _generate_daily_report(trade_log, strategy):
 
     print(f"  [REPORT] Daily report generated for {yesterday}")
     print(f"           Trades: {len(day_trades)}, W/L: {len(wins)}/{len(losses)}, P&L: ${total_pnl/100:.2f}")
+
+
+def _build_market_description(ticker, city_code, title):
+    """Build a human-readable description like 'NYC 42-46F Feb 15' from ticker."""
+    city_names = {"NYC": "NYC", "CHI": "Chicago", "MIA": "Miami", "AUS": "Austin"}
+    try:
+        parts = ticker.split("-")
+        if len(parts) >= 3:
+            date_str = parts[1]  # e.g. 26FEB15
+            bucket = parts[2]    # e.g. B42.5
+            # Parse date
+            months = {"JAN":"Jan","FEB":"Feb","MAR":"Mar","APR":"Apr","MAY":"May","JUN":"Jun",
+                       "JUL":"Jul","AUG":"Aug","SEP":"Sep","OCT":"Oct","NOV":"Nov","DEC":"Dec"}
+            month = months.get(date_str[2:5].upper(), "")
+            day = date_str[5:7].lstrip("0")
+            # Parse bucket: B42.5 → temp threshold
+            city_name = city_names.get(city_code, city_code)
+            if bucket.startswith("B"):
+                temp = bucket[1:]
+                return f"{city_name} {temp}+F {month} {day}"
+            elif bucket.startswith("T"):
+                temp = bucket[1:]
+                return f"{city_name} {temp}F {month} {day}"
+            return f"{city_name} {bucket} {month} {day}"
+    except Exception:
+        pass
+    return title or ticker
 
 
 def _reconcile_positions(client, risk):

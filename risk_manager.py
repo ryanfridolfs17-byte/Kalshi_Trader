@@ -134,7 +134,8 @@ class RiskManager:
     # RECORD KEEPING
     # ═══════════════════════════════════════════════════════
 
-    def record_trade(self, ticker, side, cost_cents, contracts, city_code=""):
+    def record_trade(self, ticker, side, cost_cents, contracts, city_code="",
+                     title="", edge=0, expected_profit_cents=0, market_description=""):
         """Record a new position."""
         self.state["positions"].append({
             "ticker": ticker,
@@ -143,6 +144,10 @@ class RiskManager:
             "contracts": contracts,
             "city_code": city_code,
             "timestamp": datetime.now().isoformat(),
+            "title": title,
+            "edge": edge,
+            "expected_profit_cents": expected_profit_cents,
+            "market_description": market_description,
         })
         self.state["last_trade_time"] = datetime.now().isoformat()
         self.state["daily_trade_count"] += 1
