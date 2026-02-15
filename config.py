@@ -26,11 +26,40 @@ import os
 API_KEY_ID = os.environ.get("KALSHI_API_KEY_ID", "YOUR_API_KEY_ID_HERE")
 PRIVATE_KEY_PATH = "kalshi_private_key.pem"
 
-# If the full PEM key is in an env var (Railway), write it to a file at startup
+# If the full PEM key is in an env var (Railway), write it to a file at startup.
+# Railway env vars mangle newlines in PEM keys. Handle both formats:
+#   - Literal \n characters (Railway pastes them as backslash-n)
+#   - Actual newlines (if preserved)
+#   - Single-line blob with no newlines at all
 _private_key_env = os.environ.get("KALSHI_PRIVATE_KEY", "")
 if _private_key_env:
+    # Replace literal \n with actual newlines
+    _key_content = _private_key_env.replace("\\n", "\n")
+
+    # If no newlines exist at all (fully mangled), try to reconstruct PEM format
+    if "\n" not in _key_content.strip():
+        # Strip PEM headers/footers if present, then re-add with proper formatting
+        _stripped = _key_content
+        for _tag in ["-----BEGIN RSA PRIVATE KEY-----", "-----END RSA PRIVATE KEY-----",
+                      "-----BEGIN PRIVATE KEY-----", "-----END PRIVATE KEY-----",
+                      "-----BEGIN EC PRIVATE KEY-----", "-----END EC PRIVATE KEY-----"]:
+            _stripped = _stripped.replace(_tag, "")
+        _stripped = _stripped.replace(" ", "")
+
+        # Detect key type from original content
+        if "EC PRIVATE" in _key_content:
+            _header, _footer = "-----BEGIN EC PRIVATE KEY-----", "-----END EC PRIVATE KEY-----"
+        elif "RSA PRIVATE" in _key_content:
+            _header, _footer = "-----BEGIN RSA PRIVATE KEY-----", "-----END RSA PRIVATE KEY-----"
+        else:
+            _header, _footer = "-----BEGIN PRIVATE KEY-----", "-----END PRIVATE KEY-----"
+
+        # Split base64 into 64-char lines (PEM standard)
+        _lines = [_stripped[i:i+64] for i in range(0, len(_stripped), 64)]
+        _key_content = _header + "\n" + "\n".join(_lines) + "\n" + _footer + "\n"
+
     with open(PRIVATE_KEY_PATH, "w") as _f:
-        _f.write(_private_key_env)
+        _f.write(_key_content)
 
 # ═══════════════════════════════════════════════════════
 # ENVIRONMENT
