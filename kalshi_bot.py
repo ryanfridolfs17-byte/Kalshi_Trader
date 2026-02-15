@@ -76,6 +76,9 @@ def main():
 
     trade_log = _load_trade_log()
 
+    # ─── RECONCILE WITH EXCHANGE ───
+    _reconcile_positions(client, risk)
+
     # ─── STARTUP CLEANUP ───
     # If DRY_RUN, expire all unsettled positions from previous sessions.
     # Dry-run positions are never placed on the exchange, so they should
@@ -670,6 +673,69 @@ def _generate_daily_report(trade_log, strategy):
 
     print(f"  [REPORT] Daily report generated for {yesterday}")
     print(f"           Trades: {len(day_trades)}, W/L: {len(wins)}/{len(losses)}, P&L: ${total_pnl/100:.2f}")
+
+
+def _reconcile_positions(client, risk):
+    """Reconcile local risk state with Kalshi exchange positions on startup."""
+    if config.API_KEY_ID == "YOUR_API_KEY_ID_HERE" or config.DRY_RUN:
+        return
+
+    print("  [RECONCILE] Checking exchange positions...")
+    try:
+        result = client.get_positions()
+        if result is None:
+            print("  [RECONCILE] Could not fetch positions — skipping")
+            return
+
+        api_positions = result.get("market_positions", [])
+        api_tickers = {p.get("ticker", "") for p in api_positions if p.get("ticker")}
+        local_tickers = {p.get("ticker", "") for p in risk.state["positions"] if p.get("ticker")}
+
+        added = 0
+        removed = 0
+        matched = 0
+
+        # API has it, local doesn't → add to local
+        for pos in api_positions:
+            ticker = pos.get("ticker", "")
+            if not ticker:
+                continue
+            if ticker not in local_tickers:
+                risk.state["positions"].append({
+                    "ticker": ticker,
+                    "side": "yes" if pos.get("market_exposure", 0) > 0 else "no",
+                    "cost_cents": abs(pos.get("total_traded", 0)),
+                    "contracts": abs(pos.get("position", 0)),
+                    "city_code": "",
+                    "timestamp": datetime.now().isoformat(),
+                })
+                added += 1
+                print(f"  [RECONCILE] +Added from exchange: {ticker}")
+
+        # Local has it, API doesn't → remove (already settled/cancelled)
+        for local_pos in list(risk.state["positions"]):
+            ticker = local_pos.get("ticker", "")
+            if ticker and ticker not in api_tickers:
+                risk.state["positions"] = [
+                    p for p in risk.state["positions"] if p.get("ticker") != ticker
+                ]
+                removed += 1
+                print(f"  [RECONCILE] -Removed stale: {ticker}")
+
+        matched = len(api_tickers & local_tickers)
+
+        # Recalculate city exposure after reconciliation
+        risk.state["city_exposure"] = {}
+        for p in risk.state["positions"]:
+            city = p.get("city_code", "")
+            if city:
+                risk.state["city_exposure"][city] = risk.state["city_exposure"].get(city, 0) + p.get("cost_cents", 0)
+
+        risk._save_state()
+        print(f"  [RECONCILE] Done: {matched} matched, {added} added, {removed} removed")
+
+    except Exception as e:
+        print(f"  [RECONCILE] Error: {e}")
 
 
 def _load_trade_log():
