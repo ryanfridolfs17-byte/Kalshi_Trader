@@ -67,6 +67,10 @@ body {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
 }
+@keyframes pulse-border {
+  0%, 100% { border-color: rgba(248,113,113,0.4); }
+  50% { border-color: rgba(248,113,113,0.8); }
+}
 
 .grid { display: grid; gap: 16px; }
 .grid-top { grid-template-columns: repeat(5, 1fr); }
@@ -274,6 +278,17 @@ tr:hover td { background: rgba(255,255,255,0.03); }
   <div class="status-pill">
     <div class="status-dot" id="statusDot"></div>
     <span id="statusText">Connecting...</span>
+  </div>
+</div>
+
+<!-- Observation Mode Banner -->
+<div class="pending-banner" id="observationBanner" style="background:rgba(248,113,113,0.1);border-color:rgba(248,113,113,0.4);display:none;">
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+    <div>
+      <div class="card-title" style="color:var(--accent-red);margin-bottom:4px;">OBSERVATION MODE ACTIVE</div>
+      <div style="font-size:14px;color:var(--text-secondary);" id="observationReason">Kill switch triggered</div>
+    </div>
+    <button class="btn btn-approve" onclick="resumeTrading()" style="flex:none;padding:10px 20px;">Resume Trading</button>
   </div>
 </div>
 
@@ -547,6 +562,16 @@ function updateDashboard(data) {
     mwDiv.innerHTML = '<span>No data yet</span>';
   }
 
+  // Observation mode banner
+  const obsBanner = document.getElementById('observationBanner');
+  if (bot.observation_mode) {
+    obsBanner.style.display = 'block';
+    obsBanner.style.animation = 'pulse-border 2s ease-in-out infinite';
+    document.getElementById('observationReason').textContent = bot.observation_reason || 'Kill switch triggered';
+  } else {
+    obsBanner.style.display = 'none';
+  }
+
   // Pending trades
   const banner = document.getElementById('pendingBanner');
   const pendingListEl = document.getElementById('pendingList');
@@ -661,6 +686,11 @@ async function approveTrade(id) {
   btn.textContent = '...';
   btn.disabled = true;
   await fetch('/api/approve', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({id}) });
+  fetchState();
+}
+
+async function resumeTrading() {
+  await fetch('/api/resume', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
   fetchState();
 }
 

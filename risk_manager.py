@@ -192,6 +192,67 @@ class RiskManager:
         self.remove_position(ticker)
 
     # ═══════════════════════════════════════════════════════
+    # KILL SWITCH / OBSERVATION MODE
+    # ═══════════════════════════════════════════════════════
+
+    def check_kill_switch(self, trade_log):
+        """Check if the bot should enter observation mode.
+        Returns (is_observation, reason)."""
+        # Manual override from config
+        if config.OBSERVATION_MODE:
+            self.state["observation_mode"] = True
+            self.state["observation_reason"] = "Manual override (config)"
+            self._save_state()
+            return True, "Manual override (config)"
+
+        # Already in observation mode (persisted)
+        if self.state.get("observation_mode"):
+            return True, self.state.get("observation_reason", "Kill switch active")
+
+        # Check 1: Consecutive losses
+        if self.state["consecutive_losses"] >= config.KILL_SWITCH_CONSECUTIVE_LOSSES:
+            reason = f"{self.state['consecutive_losses']} consecutive losses"
+            self.state["observation_mode"] = True
+            self.state["observation_reason"] = reason
+            self._save_state()
+            return True, reason
+
+        # Check 2: 7-day Sharpe ratio
+        settled = [
+            t for t in trade_log
+            if t.get("settled") and t.get("profit_cents") is not None
+            and t.get("result") not in ("expired_dry_run",)
+        ]
+        now = datetime.now()
+        recent = [
+            t for t in settled
+            if t.get("timestamp") and
+            (now - datetime.fromisoformat(t["timestamp"])).days <= 7
+        ]
+        if len(recent) >= 3:
+            pnls = [t["profit_cents"] / 100.0 for t in recent]
+            mean_pnl = sum(pnls) / len(pnls)
+            variance = sum((p - mean_pnl) ** 2 for p in pnls) / len(pnls)
+            stdev = variance ** 0.5
+            sharpe = mean_pnl / stdev if stdev > 0 else 0
+            if sharpe < config.KILL_SWITCH_MIN_SHARPE_7D:
+                reason = f"7-day Sharpe {sharpe:.2f} < {config.KILL_SWITCH_MIN_SHARPE_7D}"
+                self.state["observation_mode"] = True
+                self.state["observation_reason"] = reason
+                self._save_state()
+                return True, reason
+
+        return False, ""
+
+    def resume_trading(self):
+        """Reset observation mode and consecutive losses to resume trading."""
+        self.state["observation_mode"] = False
+        self.state["observation_reason"] = ""
+        self.state["consecutive_losses"] = 0
+        self.state["loss_pause_until"] = None
+        self._save_state()
+
+    # ═══════════════════════════════════════════════════════
     # STATUS
     # ═══════════════════════════════════════════════════════
 

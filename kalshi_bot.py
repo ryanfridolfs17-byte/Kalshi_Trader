@@ -151,6 +151,14 @@ def main():
             trade_count_this_cycle = 0
 
             # ═══════════════════════════════════════════════
+            # KILL SWITCH CHECK
+            # ═══════════════════════════════════════════════
+            observation_mode, obs_reason = risk.check_kill_switch(trade_log)
+            if observation_mode:
+                print(f"\n  [OBSERVATION] Kill switch active: {obs_reason}")
+                print(f"  [OBSERVATION] Bot will scan and log but NOT trade")
+
+            # ═══════════════════════════════════════════════
             # STEP 0: CHECK SETTLEMENTS & EXITS
             # ═══════════════════════════════════════════════
             print("\n  [STEP 0a] Checking settlements...")
@@ -262,6 +270,12 @@ def main():
                         print(f"    ✗ BLOCKED: {reason}")
                         continue
 
+                    # Kill switch: log but don't execute
+                    if observation_mode:
+                        cost = signal["price_cents"] * signal["suggested_contracts"]
+                        print(f"    [OBSERVATION] Would trade {signal['suggested_contracts']}x {signal['side'].upper()} @ {signal['price_cents']}c = ${cost/100:.2f} but kill switch active")
+                        continue
+
                     # ═══════════════════════════════════════
                     # STEP 6: EXECUTE (or queue for approval)
                     # ═══════════════════════════════════════
@@ -329,7 +343,8 @@ def main():
             _print_performance(trade_log)
 
             # Write bot status for dashboard
-            _write_bot_status(cycle, skip_reasons, trade_count_this_cycle, strategy, client)
+            _write_bot_status(cycle, skip_reasons, trade_count_this_cycle, strategy, client,
+                              observation_mode=observation_mode, observation_reason=obs_reason)
 
             # Wait for next cycle
             print(f"  Next scan in {config.SCAN_INTERVAL // 60} minutes...")
@@ -551,7 +566,8 @@ def _process_approved_trades(client, risk, trade_log):
             print(f"  [PENDING] Executed {executed} approved trade(s)")
 
 
-def _write_bot_status(cycle, skip_reasons, trades_this_cycle, strategy, client=None):
+def _write_bot_status(cycle, skip_reasons, trades_this_cycle, strategy, client=None,
+                      observation_mode=False, observation_reason=""):
     """Write bot status JSON for the dashboard to read."""
     now = datetime.now(tz=timezone.utc)
     model_weights = {}
@@ -578,6 +594,8 @@ def _write_bot_status(cycle, skip_reasons, trades_this_cycle, strategy, client=N
         "environment": config.ENVIRONMENT,
         "dry_run": config.DRY_RUN,
         "balance_cents": balance_cents,
+        "observation_mode": observation_mode,
+        "observation_reason": observation_reason,
     }
     try:
         with open("bot_status.json", "w") as f:

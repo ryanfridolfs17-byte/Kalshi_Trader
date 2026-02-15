@@ -122,6 +122,13 @@ HIGH_EDGE_APPROVAL_THRESHOLD = 0.28
 PENDING_TRADES_FILE = "pending_trades.json"
 
 # ═══════════════════════════════════════════════════════
+# KILL SWITCH / OBSERVATION MODE
+# ═══════════════════════════════════════════════════════
+OBSERVATION_MODE = False  # Manual override; also auto-set by kill switch
+KILL_SWITCH_CONSECUTIVE_LOSSES = 3
+KILL_SWITCH_MIN_SHARPE_7D = 0.0
+
+# ═══════════════════════════════════════════════════════
 # LOGGING & STATE FILES
 # ═══════════════════════════════════════════════════════
 TRADE_LOG_FILE = "trade_history.json"

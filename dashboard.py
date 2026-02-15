@@ -149,6 +149,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             else:
                 self._send_json({"error": "Trade not found or already processed"}, 404)
 
+        elif path == "/api/resume":
+            # Resume trading: clear observation mode in risk_state.json
+            risk = _read_json(STATE_FILES["risk"], default={})
+            risk["observation_mode"] = False
+            risk["observation_reason"] = ""
+            risk["consecutive_losses"] = 0
+            risk["loss_pause_until"] = None
+            _write_json(STATE_FILES["risk"], risk)
+            self._send_json({"ok": True, "action": "resumed"})
+
         else:
             self.send_error(404)
 
