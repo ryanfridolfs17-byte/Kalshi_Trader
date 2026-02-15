@@ -182,6 +182,27 @@ class RiskManager:
                 self.state["city_exposure"][city] = self.state["city_exposure"].get(city, 0) + p["cost_cents"]
         self._save_state()
 
+    def reduce_position(self, ticker, sell_contracts, released_cost_cents):
+        """Reduce a position's contract count and cost after a partial sell.
+        If contracts reach 0, removes the position entirely."""
+        for pos in self.state["positions"]:
+            if pos.get("ticker") == ticker:
+                pos["contracts"] = max(0, pos["contracts"] - sell_contracts)
+                pos["cost_cents"] = max(0, pos["cost_cents"] - released_cost_cents)
+
+                if pos["contracts"] <= 0:
+                    self.remove_position(ticker)
+                else:
+                    # Update city exposure
+                    city = pos.get("city_code", "")
+                    if city and city in self.state.get("city_exposure", {}):
+                        self.state["city_exposure"][city] = max(
+                            0, self.state["city_exposure"][city] - released_cost_cents
+                        )
+                    self._save_state()
+                return
+        # Position not found — nothing to reduce
+
     def release_exposure(self, ticker, cost_cents, city_code=""):
         """Release exposure when a trade settles or expires."""
         # Reduce total exposure

@@ -112,6 +112,25 @@ TRADE_COOLDOWN = 180                # 3 minutes (faster for weather)
 SETTLEMENT_PROXIMITY_HOURS = 2
 SETTLEMENT_PROXIMITY_EDGE_OVERRIDE = 0.20  # Exceptional edge overrides
 
+# ═══════════════════════════════════════════════════════
+# PORTFOLIO REVIEW SETTINGS
+# ═══════════════════════════════════════════════════════
+# Continuously re-evaluate open positions and take action
+# when model forecasts change throughout the day.
+PORTFOLIO_REVIEW_ENABLED = True
+
+# Pare when edge drops below this fraction of entry edge
+EDGE_DECAY_PARE_THRESHOLD = 0.50    # 50% decay → start paring
+
+# Full exit or hedge when edge reverses past this point
+EDGE_REVERSAL_THRESHOLD = -0.05     # -5% = edge flipped
+
+# Take profit when unrealized gain exceeds this
+TAKE_PROFIT_PCT = 0.30              # 30%
+
+# Don't review positions younger than this (avoid whipsaw on fresh trades)
+MIN_REVIEW_AGE_MINUTES = 10
+
 # Liquidity tiers for position sizing (by open_interest)
 LIQUIDITY_TIER_1_OI = 50    # open_interest < 50 → max 1 contract
 LIQUIDITY_TIER_2_OI = 200   # open_interest < 200 → max 2 contracts

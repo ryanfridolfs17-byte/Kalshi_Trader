@@ -184,6 +184,269 @@ class TradeIntelligence:
         return exits
 
     # ═══════════════════════════════════════════════════════
+    # 1b. PORTFOLIO REVIEW (graduated position management)
+    # ═══════════════════════════════════════════════════════
+
+    def review_portfolio(self, open_positions, weather_engine,
+                         volatility_engine=None, signal_confirmer=None,
+                         spx_confirmer=None):
+        """
+        Full re-evaluation of every open position using fresh model data.
+        Returns a list of action recommendations:
+          hold  — edge still healthy, do nothing
+          pare  — edge decaying, sell some contracts
+          full_exit — edge gone or reversed, sell everything
+          hedge — exit via opposite side (better liquidity path)
+        """
+        actions = []
+
+        for pos in open_positions:
+            ticker = pos.get("ticker", "")
+            side = pos.get("side", "")
+            city_code = pos.get("city_code", "")
+            contracts = pos.get("contracts", 1)
+            cost_cents = pos.get("cost_cents", 0)
+            entry_edge = pos.get("edge", 0)
+            entry_price = cost_cents / max(contracts, 1)
+
+            if not ticker:
+                continue
+
+            # Skip positions that are too young (avoid whipsaw)
+            timestamp = pos.get("timestamp")
+            if timestamp:
+                try:
+                    placed_at = datetime.fromisoformat(timestamp)
+                    age_minutes = (datetime.now() - placed_at).total_seconds() / 60
+                    if age_minutes < config.MIN_REVIEW_AGE_MINUTES:
+                        continue
+                except Exception:
+                    pass
+
+            # Determine market type
+            is_weather = city_code and city_code in CITIES
+            is_sp500 = city_code == "SP500"
+
+            if not is_weather and not is_sp500:
+                continue
+
+            # Get current market price
+            current_price = self._get_current_price(ticker, side)
+            if current_price is None:
+                continue
+
+            # ─── WEATHER-SPECIFIC CHECKS (preserve existing rules) ───
+            if is_weather:
+                # Take profit check
+                if side == "yes" and current_price > 0 and entry_price > 0:
+                    profit_pct = (current_price - entry_price) / max(entry_price, 1)
+                    if profit_pct >= config.TAKE_PROFIT_PCT:
+                        actions.append({
+                            "ticker": ticker, "action": "full_exit", "urgency": "medium",
+                            "reason": f"Take profit: up {profit_pct:.0%} (entry {entry_price:.0f}c, now {current_price}c)",
+                            "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
+                            "city_code": city_code, "side": side, "contracts": contracts,
+                            "cost_cents": cost_cents,
+                        })
+                        continue
+
+                # Intraday temp elimination check
+                actual_temp = self.get_current_temperature(city_code)
+                if actual_temp is not None and weather_engine:
+                    parsed = weather_engine.parse_market_bucket(
+                        {"ticker": ticker, "title": "", "subtitle": "", "event_ticker": ticker}
+                    )
+                    if parsed:
+                        temp_low = parsed["temp_low"]
+                        temp_high = parsed["temp_high"]
+                        now_hour = datetime.now().hour
+
+                        if side == "yes" and now_hour >= 15 and actual_temp < temp_low - 3:
+                            actions.append({
+                                "ticker": ticker, "action": "full_exit", "urgency": "high",
+                                "reason": f"Temp {actual_temp}F at {now_hour}:00, bucket needs {temp_low}-{temp_high}F",
+                                "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
+                                "city_code": city_code, "side": side, "contracts": contracts,
+                                "cost_cents": cost_cents,
+                            })
+                            continue
+
+                        if side == "no" and temp_low <= actual_temp <= temp_high and now_hour >= 12:
+                            actions.append({
+                                "ticker": ticker, "action": "full_exit", "urgency": "high",
+                                "reason": f"Temp {actual_temp}F is IN bucket {temp_low}-{temp_high}F at {now_hour}:00",
+                                "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
+                                "city_code": city_code, "side": side, "contracts": contracts,
+                                "cost_cents": cost_cents,
+                            })
+                            continue
+
+            # ─── FRESH PROBABILITY RE-EVALUATION ───
+            new_prob = None
+
+            if is_weather and weather_engine:
+                parsed = weather_engine.parse_market_bucket(
+                    {"ticker": ticker, "title": "", "subtitle": "", "event_ticker": ticker}
+                )
+                if parsed:
+                    dist = weather_engine.get_temperature_distribution(
+                        city_code, parsed.get("target_date")
+                    )
+                    if dist:
+                        dist = self.apply_bias_to_distribution(dist, city_code)
+                        new_prob = weather_engine.calculate_bucket_probability(
+                            dist, parsed["temp_low"], parsed["temp_high"]
+                        )
+
+            elif is_sp500 and volatility_engine:
+                parsed = volatility_engine.parse_market_bracket(
+                    {"ticker": ticker, "title": "", "subtitle": "", "event_ticker": ticker}
+                )
+                if parsed:
+                    dist = volatility_engine.get_price_distribution(parsed.get("target_date"))
+                    if dist:
+                        new_prob = volatility_engine.calculate_bracket_probability(
+                            dist, parsed["price_low"], parsed["price_high"]
+                        )
+
+            if new_prob is None:
+                continue
+
+            # Calculate current edge based on position side
+            market_prob = current_price / 100.0
+            if side == "yes":
+                new_edge = new_prob - market_prob
+            else:
+                # For NO positions: our edge is (1 - bucket_prob) vs what we paid
+                new_edge = (1.0 - new_prob) - market_prob
+
+            # Default entry_edge if not recorded
+            if entry_edge <= 0:
+                entry_edge = config.MIN_EDGE
+
+            # ─── GRADUATED RESPONSE ───
+            edge_decay_pct = max(0, min(1.0, (entry_edge - new_edge) / entry_edge)) if entry_edge > 0 else 1.0
+
+            base = {
+                "ticker": ticker, "current_price": current_price,
+                "new_edge": new_edge, "entry_edge": entry_edge,
+                "city_code": city_code, "side": side, "contracts": contracts,
+                "cost_cents": cost_cents,
+            }
+
+            if new_edge >= entry_edge * config.EDGE_DECAY_PARE_THRESHOLD:
+                # Edge still healthy — hold
+                actions.append({**base, "action": "hold", "urgency": "low",
+                    "reason": f"Edge healthy: {new_edge:.1%} (was {entry_edge:.1%})"})
+
+            elif new_edge > 0:
+                # Edge decayed significantly but still positive — pare down
+                sell_count = self._calculate_pare_contracts(pos, edge_decay_pct)
+                actions.append({**base, "action": "pare", "urgency": "medium",
+                    "reason": f"Edge decayed: {new_edge:.1%} (was {entry_edge:.1%}, {edge_decay_pct:.0%} decay)",
+                    "sell_contracts": sell_count})
+
+            elif new_edge > config.EDGE_REVERSAL_THRESHOLD:
+                # Edge gone (near zero) — full exit
+                actions.append({**base, "action": "full_exit", "urgency": "medium",
+                    "reason": f"Edge gone: {new_edge:.1%} (was {entry_edge:.1%})"})
+
+            else:
+                # Edge reversed hard — choose best exit path
+                hedge_info = self._evaluate_hedge(ticker, pos, current_price)
+                if hedge_info["use_hedge"]:
+                    actions.append({**base, "action": "hedge", "urgency": "high",
+                        "reason": f"Edge reversed to {new_edge:.1%} — exiting via opposite side",
+                        "hedge_side": hedge_info["hedge_side"],
+                        "hedge_price": hedge_info["hedge_price"],
+                        "hedge_contracts": min(hedge_info["hedge_contracts"], contracts)})
+                else:
+                    actions.append({**base, "action": "full_exit", "urgency": "high",
+                        "reason": f"Edge reversed to {new_edge:.1%} (was {entry_edge:.1%})"})
+
+        return actions
+
+    def _calculate_pare_contracts(self, position, edge_decay_pct):
+        """Calculate how many contracts to sell in a partial exit.
+        Sells proportional to edge decay, always keeps at least 1 contract."""
+        total = position.get("contracts", 1)
+        if total <= 1:
+            return 1  # Only 1 contract — full exit is the only option
+
+        sell_fraction = min(0.75, edge_decay_pct)  # Cap at 75%
+        sell_count = max(1, round(total * sell_fraction))
+        sell_count = min(sell_count, total - 1)  # Keep at least 1
+        return sell_count
+
+    def _get_market_prices(self, ticker):
+        """Fetch both sides' current prices for a ticker."""
+        if not self.client:
+            return None
+        try:
+            data = self.client.get_market(ticker)
+            if data:
+                market = data.get("market", {})
+                return {
+                    "yes_bid": market.get("yes_bid", 0) or 0,
+                    "yes_ask": market.get("yes_ask", 0) or 0,
+                    "no_bid": market.get("no_bid", 0) or 0,
+                    "no_ask": market.get("no_ask", 0) or 0,
+                }
+        except Exception:
+            pass
+        return None
+
+    def _evaluate_hedge(self, ticker, position, current_price):
+        """Evaluate whether exiting via the opposite side is better than selling.
+
+        On Kalshi, buying the opposite side when you hold a position effectively
+        closes it. This is useful when our side's bid is thin but the opposite
+        side's ask has liquidity.
+        """
+        side = position.get("side", "yes")
+        contracts = position.get("contracts", 1)
+
+        prices = self._get_market_prices(ticker)
+        if not prices:
+            return {"use_hedge": False}
+
+        if side == "yes":
+            our_bid = prices["yes_bid"]
+            opp_ask = prices["no_ask"]
+            hedge_side = "no"
+        else:
+            our_bid = prices["no_bid"]
+            opp_ask = prices["yes_ask"]
+            hedge_side = "yes"
+
+        # Prefer opposite side when:
+        # 1. Our bid is 0 (can't sell directly)
+        # 2. Opposite ask offers a better effective exit
+        #    Selling YES at yes_bid=40 gives us 40c back
+        #    Buying NO at no_ask=55 costs 55c but pays 100c if NO wins (locking in 100-55=45c)
+        #    The "lock-in" value of buying opposite = 100 - opp_ask
+        if our_bid == 0 and opp_ask > 0 and opp_ask < 95:
+            return {
+                "use_hedge": True,
+                "hedge_side": hedge_side,
+                "hedge_price": opp_ask,
+                "hedge_contracts": contracts,
+            }
+
+        if our_bid > 0 and opp_ask > 0:
+            sell_value = our_bid
+            hedge_lock_value = 100 - opp_ask  # guaranteed payout minus cost
+            if hedge_lock_value > sell_value:
+                return {
+                    "use_hedge": True,
+                    "hedge_side": hedge_side,
+                    "hedge_price": opp_ask,
+                    "hedge_contracts": contracts,
+                }
+
+        return {"use_hedge": False}
+
+    # ═══════════════════════════════════════════════════════
     # 2. BIAS CORRECTION
     # ═══════════════════════════════════════════════════════
 

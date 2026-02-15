@@ -245,23 +245,31 @@ def main():
             print("  [STEP 0b] Checking intraday temperatures...")
             intel.print_intraday_temps()
 
-            print("  [STEP 0c] Checking exit opportunities...")
-            exits = intel.check_exits(risk.state.get("positions", []), strategy.weather)
-            for exit_rec in exits:
-                print(f"  ⚡ EXIT: {exit_rec['ticker']} — {exit_rec['reason']}")
-
-                if config.DRY_RUN:
-                    print(f"    [DRY RUN] Would exit {exit_rec['ticker']} ({exit_rec['urgency']} urgency)")
-                    continue
-
-                should_exit = exit_rec["urgency"] == "high" or (
-                    exit_rec["urgency"] == "medium" and not sys.stdin.isatty()
+            print("  [STEP 0c] Portfolio review...")
+            if config.PORTFOLIO_REVIEW_ENABLED:
+                reviews = intel.review_portfolio(
+                    risk.state.get("positions", []),
+                    weather_engine=strategy.weather,
+                    volatility_engine=strategy.vol_engine,
+                    signal_confirmer=strategy.confirmer,
+                    spx_confirmer=strategy.spx_confirmer,
                 )
-
-                if should_exit:
-                    _execute_exit(client, risk, trade_log, exit_rec)
-                elif exit_rec["urgency"] == "medium":
-                    print(f"    → Consider exiting manually")
+                for review in reviews:
+                    _process_portfolio_action(client, risk, trade_log, review)
+            else:
+                exits = intel.check_exits(risk.state.get("positions", []), strategy.weather)
+                for exit_rec in exits:
+                    print(f"  ⚡ EXIT: {exit_rec['ticker']} — {exit_rec['reason']}")
+                    if config.DRY_RUN:
+                        print(f"    [DRY RUN] Would exit {exit_rec['ticker']} ({exit_rec['urgency']} urgency)")
+                        continue
+                    should_exit = exit_rec["urgency"] == "high" or (
+                        exit_rec["urgency"] == "medium" and not sys.stdin.isatty()
+                    )
+                    if should_exit:
+                        _execute_exit(client, risk, trade_log, exit_rec)
+                    elif exit_rec["urgency"] == "medium":
+                        print(f"    → Consider exiting manually")
 
             # ═══════════════════════════════════════════════
             # STEP 1: SCAN WEATHER MARKETS
@@ -954,6 +962,190 @@ def _execute_exit(client, risk, trade_log, exit_rec):
             print(f"    ✗ Exit order returned no result")
     except Exception as e:
         print(f"    ✗ Exit order failed: {e}")
+
+
+def _process_portfolio_action(client, risk, trade_log, review):
+    """Process a portfolio review recommendation."""
+    ticker = review["ticker"]
+    action = review["action"]
+
+    if action == "hold":
+        if review.get("urgency") == "medium":
+            print(f"  [REVIEW] HOLD {ticker} — {review['reason']}")
+        return
+
+    print(f"  [REVIEW] {action.upper()} {ticker} — {review['reason']}")
+
+    if action == "pare":
+        _execute_partial_sell(client, risk, trade_log, review)
+    elif action == "full_exit":
+        exit_rec = {
+            "ticker": ticker,
+            "reason": review["reason"],
+            "action": "sell",
+            "urgency": review["urgency"],
+            "current_price": review["current_price"],
+        }
+        _execute_exit(client, risk, trade_log, exit_rec)
+    elif action == "hedge":
+        _execute_hedge(client, risk, trade_log, review)
+
+
+def _execute_partial_sell(client, risk, trade_log, review):
+    """Sell a portion of a position to reduce exposure."""
+    ticker = review["ticker"]
+    sell_count = review.get("sell_contracts", 1)
+    current_price = review.get("current_price", 50)
+
+    # Find position
+    position = None
+    for p in risk.state.get("positions", []):
+        if p.get("ticker") == ticker:
+            position = p
+            break
+    if not position:
+        print(f"    Position {ticker} not found")
+        return
+
+    side = position["side"]
+    total_contracts = position["contracts"]
+
+    if config.DRY_RUN:
+        print(f"    [DRY RUN] Would PARE {ticker}: sell {sell_count}/{total_contracts} {side.upper()} @ ~{current_price}c")
+        return
+
+    price_kwargs = {"yes_price": current_price} if side == "yes" else {"no_price": current_price}
+    try:
+        result = client.sell_order(
+            ticker=ticker, side=side, count=sell_count,
+            type="limit", **price_kwargs,
+        )
+        if result:
+            order_id = result.get("order", {}).get("order_id", "OK")
+            print(f"    ✓ Partial sell submitted: {sell_count}/{total_contracts} — {order_id}")
+
+            cost_per_contract = position["cost_cents"] / max(total_contracts, 1)
+            released_cost = int(cost_per_contract * sell_count)
+            sell_value = current_price * sell_count
+            partial_pnl = sell_value - released_cost
+
+            risk.reduce_position(ticker, sell_count, released_cost)
+
+            # Log the partial exit
+            trade_log.append({
+                "timestamp": datetime.now().isoformat(),
+                "ticker": ticker,
+                "side": side,
+                "price_cents": current_price,
+                "contracts": sell_count,
+                "cost_cents": released_cost,
+                "strategy": "PARE",
+                "edge": review.get("new_edge", 0),
+                "city_code": review.get("city_code", ""),
+                "status": "partial_exit",
+                "reasoning": review.get("reason", ""),
+                "settled": True,
+                "result": "exit_win" if partial_pnl > 0 else "exit_loss",
+                "profit_cents": partial_pnl,
+            })
+            _save_trade_log(trade_log)
+
+            if partial_pnl > 0:
+                risk.record_win(partial_pnl)
+            else:
+                risk.record_loss(abs(partial_pnl))
+
+            print(f"    P&L: {'+'if partial_pnl>=0 else ''}${partial_pnl/100:.2f} (kept {total_contracts - sell_count} contracts)")
+        else:
+            print(f"    ✗ Partial sell returned no result")
+    except Exception as e:
+        print(f"    ✗ Partial sell failed: {e}")
+
+
+def _execute_hedge(client, risk, trade_log, review):
+    """Exit a position by buying the opposite side (better liquidity path).
+    On Kalshi, buying the opposite side when you hold a position closes it."""
+    ticker = review["ticker"]
+    hedge_side = review.get("hedge_side", "")
+    hedge_price = review.get("hedge_price", 50)
+    hedge_contracts = review.get("hedge_contracts", 1)
+    original_side = review.get("side", "")
+    city_code = review.get("city_code", "")
+    cost_cents = review.get("cost_cents", 0)
+    contracts = review.get("contracts", 1)
+
+    if config.DRY_RUN:
+        print(f"    [DRY RUN] Would HEDGE {ticker}: buy {hedge_contracts}x {hedge_side.upper()} @ {hedge_price}c")
+        return
+
+    try:
+        result = client.create_order(
+            ticker=ticker, side=hedge_side, count=hedge_contracts,
+            type="limit",
+            yes_price=hedge_price if hedge_side == "yes" else None,
+            no_price=hedge_price if hedge_side == "no" else None,
+        )
+        if result:
+            order_id = result.get("order", {}).get("order_id", "OK")
+            print(f"    ✓ Hedge order submitted: {hedge_contracts}x {hedge_side.upper()} @ {hedge_price}c — {order_id}")
+
+            # The hedge locks in value: we pay hedge_price per contract,
+            # but one side is guaranteed to pay out 100c.
+            # Net P&L per contract = 100 - entry_price_per_contract - hedge_price
+            entry_per_contract = cost_cents / max(contracts, 1)
+            net_per_contract = 100 - entry_per_contract - hedge_price
+            total_pnl = int(net_per_contract * hedge_contracts)
+
+            # Update risk state
+            if hedge_contracts >= contracts:
+                # Full hedge = position fully closed
+                risk.release_exposure(ticker, cost_cents, city_code)
+            else:
+                # Partial hedge
+                released_cost = int(entry_per_contract * hedge_contracts)
+                risk.reduce_position(ticker, hedge_contracts, released_cost)
+
+            # Log the hedge exit
+            trade_log.append({
+                "timestamp": datetime.now().isoformat(),
+                "ticker": ticker,
+                "side": hedge_side,
+                "price_cents": hedge_price,
+                "contracts": hedge_contracts,
+                "cost_cents": hedge_price * hedge_contracts,
+                "strategy": "HEDGE",
+                "edge": review.get("new_edge", 0),
+                "city_code": city_code,
+                "status": "hedge_exit",
+                "reasoning": review.get("reason", ""),
+                "settled": True,
+                "result": "exit_win" if total_pnl > 0 else "exit_loss",
+                "profit_cents": total_pnl,
+            })
+            _save_trade_log(trade_log)
+
+            if total_pnl > 0:
+                risk.record_win(total_pnl)
+            else:
+                risk.record_loss(abs(total_pnl))
+
+            print(f"    P&L: {'+'if total_pnl>=0 else ''}${total_pnl/100:.2f}")
+        else:
+            print(f"    ✗ Hedge order returned no result — falling back to direct sell")
+            exit_rec = {
+                "ticker": ticker, "reason": review["reason"],
+                "action": "sell", "urgency": "high",
+                "current_price": review["current_price"],
+            }
+            _execute_exit(client, risk, trade_log, exit_rec)
+    except Exception as e:
+        print(f"    ✗ Hedge order failed: {e} — falling back to direct sell")
+        exit_rec = {
+            "ticker": ticker, "reason": review["reason"],
+            "action": "sell", "urgency": "high",
+            "current_price": review["current_price"],
+        }
+        _execute_exit(client, risk, trade_log, exit_rec)
 
 
 def _build_market_description(ticker, city_code, title):
