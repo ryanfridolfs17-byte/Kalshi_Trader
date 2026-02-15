@@ -358,6 +358,72 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "removed_tickers": [t.get("ticker") for t in failed_trades],
             })
 
+        elif path == "/api/sync-positions":
+            # Consolidate fragmented position entries and remove phantoms
+            risk = _read_json(STATE_FILES["risk"], default={})
+            positions = risk.get("positions", [])
+            trades = _read_json(STATE_FILES["trades"], default=[])
+
+            # Build set of tickers that have live_filled trades
+            filled_tickers = {t["ticker"] for t in trades if t.get("status") == "live_filled"}
+
+            # Group positions by (ticker, side) and merge
+            merged = {}
+            for p in positions:
+                ticker = p.get("ticker", "")
+                side = p.get("side", "")
+                # Skip phantom positions with no matching filled trade
+                if ticker not in filled_tickers:
+                    continue
+                key = (ticker, side)
+                if key in merged:
+                    merged[key]["contracts"] += p.get("contracts", 1)
+                    merged[key]["cost_cents"] += p.get("cost_cents", 0)
+                    merged[key]["expected_profit_cents"] = merged[key].get("expected_profit_cents", 0) + p.get("expected_profit_cents", 0)
+                else:
+                    merged[key] = dict(p)  # copy
+
+            # Also merge trades into positions: count filled trades per (ticker, side)
+            trade_totals = {}
+            for t in trades:
+                if t.get("status") != "live_filled":
+                    continue
+                key = (t["ticker"], t["side"])
+                if key not in trade_totals:
+                    trade_totals[key] = {"contracts": 0, "cost_cents": 0}
+                trade_totals[key]["contracts"] += t.get("contracts", 1)
+                trade_totals[key]["cost_cents"] += t.get("cost_cents", 0)
+
+            # Reconcile: use trade totals as source of truth for contracts/cost
+            for key, totals in trade_totals.items():
+                if key in merged:
+                    merged[key]["contracts"] = totals["contracts"]
+                    merged[key]["cost_cents"] = totals["cost_cents"]
+
+            consolidated = list(merged.values())
+            risk["positions"] = consolidated
+
+            # Recalculate city exposure
+            risk["city_exposure"] = {}
+            for p in consolidated:
+                city = p.get("city_code", "")
+                if city:
+                    risk["city_exposure"][city] = risk["city_exposure"].get(city, 0) + p.get("cost_cents", 0)
+
+            _write_json(STATE_FILES["risk"], risk)
+            self._send_json({
+                "ok": True,
+                "action": "sync_positions",
+                "before": len(positions),
+                "after": len(consolidated),
+                "positions": [{
+                    "ticker": p["ticker"],
+                    "side": p["side"],
+                    "contracts": p["contracts"],
+                    "cost_cents": p["cost_cents"],
+                } for p in consolidated],
+            })
+
         elif path == "/api/reset":
             # Wipe all runtime state files to start fresh
             from datetime import datetime as _dt

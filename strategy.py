@@ -150,8 +150,8 @@ class Strategy:
                 return self._skip("Already hold this exact position")
             if corr_mult < 1.0:
                 contracts = max(1, int(contracts * corr_mult))
-        except Exception:
-            pass  # Don't let correlation check block trades
+        except Exception as e:
+            print(f"  [STRATEGY] Correlation check error (trade proceeds): {e}")
 
         best["suggested_contracts"] = contracts
         best["ticker"] = ticker
