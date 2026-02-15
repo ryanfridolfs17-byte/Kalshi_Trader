@@ -143,6 +143,13 @@ class Strategy:
             contracts = self.quality.adjust_contracts_for_quality(contracts, market, quality_score)
             best["suggested_contracts"] = contracts
 
+        # Liquidity-adjusted sizing: cap contracts for low open_interest markets
+        oi = market.get("open_interest", 0) or 0
+        if oi < config.LIQUIDITY_TIER_1_OI:
+            best["suggested_contracts"] = min(best["suggested_contracts"], 1)
+        elif oi < config.LIQUIDITY_TIER_2_OI:
+            best["suggested_contracts"] = min(best["suggested_contracts"], 2)
+
         return best
 
     # ═══════════════════════════════════════════════════════

@@ -95,6 +95,11 @@ TRADE_COOLDOWN = 180                # 3 minutes (faster for weather)
 SETTLEMENT_PROXIMITY_HOURS = 2
 SETTLEMENT_PROXIMITY_EDGE_OVERRIDE = 0.20  # Exceptional edge overrides
 
+# Liquidity tiers for position sizing (by open_interest)
+LIQUIDITY_TIER_1_OI = 50    # open_interest < 50 → max 1 contract
+LIQUIDITY_TIER_2_OI = 200   # open_interest < 200 → max 2 contracts
+LIQUIDITY_FULL_OI = 500     # open_interest >= 500 → full sizing
+
 # ═══════════════════════════════════════════════════════
 # STRATEGY SETTINGS
 # ═══════════════════════════════════════════════════════
