@@ -82,8 +82,10 @@ class KalshiClient:
         from cryptography.hazmat.primitives.asymmetric import padding
 
         timestamp = str(int(datetime.datetime.now().timestamp() * 1000))
-        # Strip query params from path for signing
-        path_for_signing = path.split("?")[0]
+        # Kalshi requires the FULL path including /trade-api/v2 prefix for signing
+        # Our paths are relative (e.g., /portfolio/balance), so prepend the API prefix
+        full_path = "/trade-api/v2" + path
+        path_for_signing = full_path.split("?")[0]
         message = f"{timestamp}{method}{path_for_signing}"
 
         signature = self.private_key.sign(
