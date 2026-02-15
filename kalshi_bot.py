@@ -184,9 +184,17 @@ def main():
             exits = intel.check_exits(risk.state.get("positions", []), strategy.weather)
             for exit_rec in exits:
                 print(f"  ⚡ EXIT: {exit_rec['ticker']} — {exit_rec['reason']}")
-                if not config.DRY_RUN and exit_rec["urgency"] == "high":
-                    print(f"    → Auto-exiting (high urgency)")
-                    # TODO: Place sell order via client
+
+                if config.DRY_RUN:
+                    print(f"    [DRY RUN] Would exit {exit_rec['ticker']} ({exit_rec['urgency']} urgency)")
+                    continue
+
+                should_exit = exit_rec["urgency"] == "high" or (
+                    exit_rec["urgency"] == "medium" and not sys.stdin.isatty()
+                )
+
+                if should_exit:
+                    _execute_exit(client, risk, trade_log, exit_rec)
                 elif exit_rec["urgency"] == "medium":
                     print(f"    → Consider exiting manually")
 
@@ -722,6 +730,79 @@ def _generate_daily_report(trade_log, strategy):
 
     print(f"  [REPORT] Daily report generated for {yesterday}")
     print(f"           Trades: {len(day_trades)}, W/L: {len(wins)}/{len(losses)}, P&L: ${total_pnl/100:.2f}")
+
+
+def _execute_exit(client, risk, trade_log, exit_rec):
+    """Execute a position exit (sell order) on Kalshi."""
+    ticker = exit_rec["ticker"]
+    current_price = exit_rec.get("current_price")
+
+    # Find the matching position to get side and contracts
+    position = None
+    for p in risk.state.get("positions", []):
+        if p.get("ticker") == ticker:
+            position = p
+            break
+
+    if not position:
+        print(f"    ✗ EXIT: Position {ticker} not found in risk state")
+        return
+
+    side = position.get("side", "yes")
+    contracts = position.get("contracts", 1)
+    cost_cents = position.get("cost_cents", 0)
+    city_code = position.get("city_code", "")
+
+    # Use market order for high urgency, limit for medium
+    if exit_rec["urgency"] == "high":
+        order_type = "market"
+        price_kwargs = {}
+        print(f"    → Selling {contracts}x {side.upper()} @ MARKET (high urgency)")
+    else:
+        order_type = "limit"
+        sell_price = current_price if current_price else 50
+        price_kwargs = {"yes_price": sell_price} if side == "yes" else {"no_price": sell_price}
+        print(f"    → Selling {contracts}x {side.upper()} @ {sell_price}c LIMIT")
+
+    try:
+        result = client.sell_order(
+            ticker=ticker,
+            side=side,
+            count=contracts,
+            type=order_type,
+            **price_kwargs,
+        )
+        if result:
+            order_id = result.get("order", {}).get("order_id", "OK")
+            print(f"    ✓ Exit order submitted: {order_id}")
+
+            # Calculate approximate P&L
+            sell_value = (current_price or 50) * contracts
+            profit_cents = sell_value - cost_cents
+
+            # Update trade log — mark the original trade as exited
+            for trade in trade_log:
+                if trade.get("ticker") == ticker and not trade.get("settled"):
+                    trade["settled"] = True
+                    trade["result"] = "exit_win" if profit_cents > 0 else "exit_loss"
+                    trade["profit_cents"] = profit_cents
+                    trade["exit_reason"] = exit_rec.get("reason", "")
+                    trade["exit_price_cents"] = current_price
+                    break
+            _save_trade_log(trade_log)
+
+            # Release exposure in risk manager
+            risk.release_exposure(ticker, cost_cents, city_code)
+            if profit_cents > 0:
+                risk.record_win(profit_cents)
+            else:
+                risk.record_loss(abs(profit_cents))
+
+            print(f"    P&L: {'+'if profit_cents>=0 else ''}${profit_cents/100:.2f}")
+        else:
+            print(f"    ✗ Exit order returned no result")
+    except Exception as e:
+        print(f"    ✗ Exit order failed: {e}")
 
 
 def _build_market_description(ticker, city_code, title):

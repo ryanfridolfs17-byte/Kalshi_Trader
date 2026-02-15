@@ -212,6 +212,26 @@ class KalshiClient:
 
         return self._request("POST", "/portfolio/orders", data=order_data, authenticated=True)
 
+    def sell_order(self, ticker, side, count, type="market", yes_price=None, no_price=None):
+        """
+        Sell (exit) a position on Kalshi.
+        Same as create_order but with action="sell".
+        """
+        order_data = {
+            "ticker": ticker,
+            "action": "sell",
+            "side": side,
+            "count": count,
+            "type": type,
+        }
+        if type == "limit":
+            if yes_price is not None:
+                order_data["yes_price"] = yes_price
+            if no_price is not None:
+                order_data["no_price"] = no_price
+
+        return self._request("POST", "/portfolio/orders", data=order_data, authenticated=True)
+
     def cancel_order(self, order_id):
         """Cancel a pending order."""
         return self._request("DELETE", f"/portfolio/orders/{order_id}", authenticated=True)
