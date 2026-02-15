@@ -300,6 +300,12 @@ tr:hover td { background: rgba(255,255,255,0.03); }
   </div>
 </div>
 
+<!-- Admin Actions -->
+<div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;" id="adminActions">
+  <button class="btn" onclick="clearFailedTrades()" style="flex:none;padding:8px 16px;font-size:13px;background:rgba(248,113,113,0.15);color:var(--accent-red);border:1px solid rgba(248,113,113,0.3);">Clear Failed Trades</button>
+  <button class="btn" onclick="resetAll()" style="flex:none;padding:8px 16px;font-size:13px;background:rgba(255,255,255,0.06);color:var(--text-secondary);border:1px solid var(--glass-border);">Reset All State</button>
+</div>
+
 <!-- Pending Trades Banner -->
 <div class="pending-banner" id="pendingBanner">
   <div class="card-title" style="color: var(--accent-amber);">Pending Approval</div>
@@ -801,6 +807,20 @@ async function rejectTrade(id) {
   btn.textContent = '...';
   btn.disabled = true;
   await fetch('/api/reject', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({id}) });
+  fetchState();
+}
+
+async function clearFailedTrades() {
+  if (!confirm('Remove all trades that failed to execute on Kalshi? This clears phantom positions too.')) return;
+  const res = await fetch('/api/clear-failed', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+  const data = await res.json();
+  if (data.ok) alert('Removed ' + data.removed + ' failed trades. ' + data.remaining + ' remaining.');
+  fetchState();
+}
+
+async function resetAll() {
+  if (!confirm('WARNING: This wipes ALL trades, positions, and P&L data. Are you sure?')) return;
+  await fetch('/api/reset', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
   fetchState();
 }
 

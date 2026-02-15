@@ -226,4 +226,4 @@ PENDING_ALERT_MINUTES = 30   # alert if pending trade unapproved this long
 # API BASE URLS (used by kalshi_client.py)
 # ═══════════════════════════════════════════════════════
 DEMO_API_URL = "https://demo-api.kalshi.co/trade-api/v2"
-PROD_API_URL = "https://api.kalshi.com/trade-api/v2"
+PROD_API_URL = "https://api.elections.kalshi.com/trade-api/v2"

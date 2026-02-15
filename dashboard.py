@@ -323,6 +323,39 @@ class DashboardHandler(BaseHTTPRequestHandler):
             _clear_alert("observation")
             self._send_json({"ok": True, "action": "resumed"})
 
+        elif path == "/api/clear-failed":
+            # Remove trades that were logged but never actually placed on Kalshi
+            # (status: live_submitted, demo_submitted — not live_filled)
+            trades = _read_json(STATE_FILES["trades"], default=[])
+            original_count = len(trades)
+            failed_statuses = {"live_submitted", "demo_submitted", "live_error"}
+            failed_trades = [t for t in trades if t.get("status") in failed_statuses]
+            kept_trades = [t for t in trades if t.get("status") not in failed_statuses]
+            removed_count = original_count - len(kept_trades)
+            _write_json(STATE_FILES["trades"], kept_trades)
+
+            # Also clean up risk state: remove positions for failed trades
+            failed_tickers = {t.get("ticker") for t in failed_trades}
+            risk = _read_json(STATE_FILES["risk"], default={})
+            positions = risk.get("positions", [])
+            risk["positions"] = [p for p in positions if p.get("ticker") not in failed_tickers]
+            # Recalculate city exposure from remaining positions
+            risk["city_exposure"] = {}
+            for p in risk["positions"]:
+                city = p.get("city_code", "")
+                if city:
+                    risk["city_exposure"][city] = risk["city_exposure"].get(city, 0) + p.get("cost_cents", 0)
+            risk["daily_trade_count"] = max(0, risk.get("daily_trade_count", 0) - removed_count)
+            _write_json(STATE_FILES["risk"], risk)
+
+            self._send_json({
+                "ok": True,
+                "action": "clear_failed",
+                "removed": removed_count,
+                "remaining": len(kept_trades),
+                "removed_tickers": [t.get("ticker") for t in failed_trades],
+            })
+
         elif path == "/api/reset":
             # Wipe all runtime state files to start fresh
             from datetime import datetime as _dt
