@@ -136,19 +136,33 @@ class RiskManager:
 
     def record_trade(self, ticker, side, cost_cents, contracts, city_code="",
                      title="", edge=0, expected_profit_cents=0, market_description=""):
-        """Record a new position."""
-        self.state["positions"].append({
-            "ticker": ticker,
-            "side": side,
-            "cost_cents": cost_cents,
-            "contracts": contracts,
-            "city_code": city_code,
-            "timestamp": datetime.now().isoformat(),
-            "title": title,
-            "edge": edge,
-            "expected_profit_cents": expected_profit_cents,
-            "market_description": market_description,
-        })
+        """Record a new position, or merge into existing if same ticker (scale-in)."""
+        # Check if we already hold this ticker — merge if so
+        existing = None
+        for p in self.state["positions"]:
+            if p.get("ticker") == ticker:
+                existing = p
+                break
+
+        if existing:
+            existing["contracts"] += contracts
+            existing["cost_cents"] += cost_cents
+            existing["edge"] = edge  # Update to latest edge
+            existing["expected_profit_cents"] += expected_profit_cents
+        else:
+            self.state["positions"].append({
+                "ticker": ticker,
+                "side": side,
+                "cost_cents": cost_cents,
+                "contracts": contracts,
+                "city_code": city_code,
+                "timestamp": datetime.now().isoformat(),
+                "title": title,
+                "edge": edge,
+                "expected_profit_cents": expected_profit_cents,
+                "market_description": market_description,
+            })
+
         self.state["last_trade_time"] = datetime.now().isoformat()
         self.state["daily_trade_count"] += 1
 

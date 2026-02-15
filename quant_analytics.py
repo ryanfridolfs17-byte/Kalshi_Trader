@@ -406,13 +406,9 @@ class QuantAnalytics:
         the new position is correlated. Reduce size to avoid
         concentration risk.
 
-        Example: If we hold NYC 35-39°F YES and want to buy
-        NYC 40-44°F YES, these are negatively correlated
-        (if one wins, the other loses). So the combined risk
-        is actually lower, and we can size normally.
-
-        But if we hold NYC 35-39°F YES and NYC 35-39°F YES
-        (same bucket), that's perfect correlation → don't add.
+        Same-ticker scaling: allows adding to an existing position
+        ONLY when the new price is strictly better (lower cost for
+        our side) and we're under MAX_CONTRACTS_PER_TICKER.
         """
         new_city = signal.get("city_code", "")
         new_ticker = signal.get("ticker", "")
@@ -431,7 +427,27 @@ class QuantAnalytics:
         # Check if same ticker (identical position)
         same_ticker = [p for p in same_city_positions if p.get("ticker") == new_ticker]
         if same_ticker:
-            return 0.0  # Already have this exact position
+            existing = same_ticker[0]
+            existing_contracts = sum(p.get("contracts", 1) for p in same_ticker)
+            existing_avg_cost = existing.get("cost_cents", 0) / max(existing.get("contracts", 1), 1)
+            new_cost = signal.get("price_cents", 100)
+
+            # Allow scale-in only if:
+            #   1. Under per-ticker contract cap
+            #   2. New price is strictly better (lower cost = better odds)
+            if (existing_contracts < config.MAX_CONTRACTS_PER_TICKER
+                    and new_cost < existing_avg_cost):
+                print(f"  [CORR] Scale-in allowed: {new_ticker} "
+                      f"({existing_contracts} held, new {new_cost}c < avg {existing_avg_cost:.0f}c)")
+                return 1.0  # Allow the add
+            else:
+                reason = []
+                if existing_contracts >= config.MAX_CONTRACTS_PER_TICKER:
+                    reason.append(f"{existing_contracts}/{config.MAX_CONTRACTS_PER_TICKER} contracts")
+                if new_cost >= existing_avg_cost:
+                    reason.append(f"price {new_cost}c >= avg {existing_avg_cost:.0f}c")
+                print(f"  [CORR] Scale-in blocked: {new_ticker} ({', '.join(reason)})")
+                return 0.0  # Block — already positioned, no improvement
 
         # Different buckets in same city/date: negatively correlated
         # This is actually fine — they hedge each other

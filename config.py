@@ -127,6 +127,9 @@ MAX_PER_CITY_CENTS = 800            # $8.00 per city
 # Max positions per city+date combination
 MAX_CORRELATED_POSITIONS = 3
 
+# Max contracts per single ticker (scaling in at better prices)
+MAX_CONTRACTS_PER_TICKER = 3
+
 # Pause after this many consecutive losses
 CONSECUTIVE_LOSS_PAUSE = 5
 CONSECUTIVE_LOSS_PAUSE_MINUTES = 30
