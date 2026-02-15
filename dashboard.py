@@ -23,6 +23,7 @@ STATE_FILES = {
     "pending": "pending_trades.json",
     "reports": "daily_reports.json",
     "backtest": "backtest_results.json",
+    "attribution": "edge_attribution.json",
 }
 
 DASHBOARD_PORT = int(os.environ.get("PORT", 8050))
@@ -88,6 +89,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 elif key == "pending":
                     state[key] = _read_json(filepath, default=[])
                 elif key == "reports":
+                    state[key] = _read_json(filepath, default=[])
+                elif key == "attribution":
                     state[key] = _read_json(filepath, default=[])
                 else:
                     state[key] = _read_json(filepath, default={})

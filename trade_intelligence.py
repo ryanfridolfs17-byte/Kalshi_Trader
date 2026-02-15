@@ -505,12 +505,99 @@ class TradeIntelligence:
                         quant, city_code, actual_temp
                     )
 
+            # Build edge attribution record
+            self._record_attribution(trade, settlement)
+
             settled.append(trade)
 
         # Save updated P&L
         self._save_json(PNL_DATA_FILE, self.pnl_data)
 
         return settled
+
+    def _record_attribution(self, trade, settlement):
+        """Record edge attribution data for a settled trade."""
+        try:
+            ticker = trade.get("ticker", "")
+            city_code = trade.get("city_code", "")
+            actual_temp = settlement.get("actual_temp") if settlement else None
+            entry_ts = trade.get("timestamp", "")
+            now_iso = datetime.now(timezone.utc).isoformat()
+
+            # Calculate holding hours
+            holding_hours = 0
+            if entry_ts:
+                try:
+                    entry_dt = datetime.fromisoformat(entry_ts)
+                    holding_hours = round((datetime.now() - entry_dt).total_seconds() / 3600, 1)
+                except Exception:
+                    pass
+
+            # Fetch deterministic model forecasts for comparison
+            forecast_sources = {}
+            ensemble_mean = trade.get("predicted_high")
+            if city_code and city_code in CITIES:
+                city = CITIES[city_code]
+                trade_date = self._extract_date_from_ticker(ticker)
+                if trade_date:
+                    for model_key, api_url in _DETERMINISTIC_APIS.items():
+                        try:
+                            params = {
+                                "latitude": city["lat"],
+                                "longitude": city["lon"],
+                                "daily": "temperature_2m_max",
+                                "temperature_unit": "fahrenheit",
+                                "timezone": city.get("timezone", "auto"),
+                                "start_date": trade_date,
+                                "end_date": trade_date,
+                            }
+                            resp = requests.get(api_url, params=params, timeout=10)
+                            if resp.status_code == 200:
+                                temps = resp.json().get("daily", {}).get("temperature_2m_max", [])
+                                if temps and temps[0] is not None:
+                                    forecast = round(temps[0])
+                                    correct = False
+                                    if actual_temp is not None:
+                                        # "Correct" = within 2°F of actual
+                                        correct = abs(forecast - actual_temp) <= 2
+                                    forecast_sources[model_key] = {
+                                        "forecast": forecast,
+                                        "correct": correct,
+                                    }
+                        except Exception:
+                            continue
+
+            # Forecast error
+            forecast_error = None
+            if ensemble_mean is not None and actual_temp is not None:
+                forecast_error = round(abs(ensemble_mean - actual_temp), 1)
+
+            record = {
+                "ticker": ticker,
+                "timestamp_entry": entry_ts,
+                "timestamp_settled": now_iso,
+                "holding_hours": holding_hours,
+                "side": trade.get("side", ""),
+                "entry_price_cents": trade.get("price_cents", 0),
+                "cost_cents": trade.get("cost_cents", 0),
+                "result": trade.get("result", ""),
+                "profit_cents": trade.get("profit_cents", 0),
+                "edge_at_entry": trade.get("edge", 0),
+                "forecast_sources": forecast_sources,
+                "actual_high": actual_temp,
+                "ensemble_mean": ensemble_mean,
+                "forecast_error_f": forecast_error,
+                "spread_at_entry_cents": trade.get("spread_at_entry_cents", 0),
+                "city_code": city_code,
+                "confirmation_verdict": trade.get("confirmation", ""),
+            }
+
+            # Append to attribution file
+            attr_data = self._load_json(config.EDGE_ATTRIBUTION_FILE, default=[])
+            attr_data.append(record)
+            self._save_json(config.EDGE_ATTRIBUTION_FILE, attr_data)
+        except Exception:
+            pass  # Don't let attribution errors block settlement
 
     def _check_market_settlement(self, ticker):
         """

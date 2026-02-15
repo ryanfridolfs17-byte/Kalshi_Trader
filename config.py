@@ -131,6 +131,7 @@ KILL_SWITCH_MIN_SHARPE_7D = 0.0
 # ═══════════════════════════════════════════════════════
 # LOGGING & STATE FILES
 # ═══════════════════════════════════════════════════════
+EDGE_ATTRIBUTION_FILE = "edge_attribution.json"
 TRADE_LOG_FILE = "trade_history.json"
 RISK_STATE_FILE = "risk_state.json"
 DAILY_REPORTS_FILE = "daily_reports.json"

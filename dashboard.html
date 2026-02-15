@@ -400,6 +400,21 @@ tr:hover td { background: rgba(255,255,255,0.03); }
   </div>
 </div>
 
+<!-- Trade Forensics -->
+<div class="grid grid-full" style="margin-bottom: 16px;">
+  <div class="card">
+    <div class="card-title">Trade Forensics</div>
+    <div id="forensicsSummary" style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px;"></div>
+    <div class="table-wrap" style="max-height: 400px; overflow-y: auto;">
+      <table>
+        <thead><tr><th>Ticker</th><th>Side</th><th>Edge</th><th>Hold (h)</th><th>Profit</th><th>Fcst Err</th><th>Sources Correct</th></tr></thead>
+        <tbody id="forensicsBody"></tbody>
+      </table>
+    </div>
+    <div id="forensicsEmpty" style="text-align:center; padding:20px; color: var(--text-secondary); font-size: 13px;">No settled trades with attribution yet</div>
+  </div>
+</div>
+
 <!-- Daily Reports -->
 <div class="grid grid-full" style="margin-bottom: 60px;">
   <div class="card">
@@ -592,6 +607,54 @@ function updateDashboard(data) {
     `).join('');
   } else {
     banner.classList.remove('visible');
+  }
+
+  // Trade forensics
+  const attribution = data.attribution || [];
+  const forensicsBody = document.getElementById('forensicsBody');
+  const forensicsEmpty = document.getElementById('forensicsEmpty');
+  const forensicsSummary = document.getElementById('forensicsSummary');
+  if (attribution.length > 0) {
+    forensicsEmpty.style.display = 'none';
+    // Summary stats
+    const avgHold = (attribution.reduce((s,a) => s + (a.holding_hours||0), 0) / attribution.length).toFixed(1);
+    const avgErr = attribution.filter(a => a.forecast_error_f != null);
+    const avgErrVal = avgErr.length > 0 ? (avgErr.reduce((s,a) => s + a.forecast_error_f, 0) / avgErr.length).toFixed(1) : '-';
+    // Source accuracy
+    const srcStats = {};
+    attribution.forEach(a => {
+      Object.entries(a.forecast_sources || {}).forEach(([src, info]) => {
+        if (!srcStats[src]) srcStats[src] = {correct: 0, total: 0};
+        srcStats[src].total++;
+        if (info.correct) srcStats[src].correct++;
+      });
+    });
+    const srcAccHtml = Object.entries(srcStats).map(([s, d]) =>
+      `<span style="font-size:12px">${s}: ${d.total > 0 ? Math.round(d.correct/d.total*100) : 0}%</span>`
+    ).join(' | ');
+    forensicsSummary.innerHTML = `
+      <div class="status-item"><div class="status-item-label">Avg Hold</div><div class="status-item-value">${avgHold}h</div></div>
+      <div class="status-item"><div class="status-item-label">Avg Fcst Error</div><div class="status-item-value">${avgErrVal}&deg;F</div></div>
+      <div class="status-item" style="flex:2"><div class="status-item-label">Source Accuracy</div><div class="status-item-value" style="font-size:13px">${srcAccHtml || '-'}</div></div>
+    `;
+    // Table
+    forensicsBody.innerHTML = attribution.slice(-30).reverse().map(a => {
+      const profitClass = (a.profit_cents||0) >= 0 ? 'green' : 'red';
+      const srcCorrect = Object.entries(a.forecast_sources||{}).filter(([,v])=>v.correct).map(([k])=>k.replace('nws_','')).join(', ') || '-';
+      return `<tr>
+        <td style="font-weight:600;font-size:12px">${shortTicker(a.ticker)}</td>
+        <td>${(a.side||'').toUpperCase()}</td>
+        <td>${((a.edge_at_entry||0)*100).toFixed(1)}%</td>
+        <td>${(a.holding_hours||0).toFixed(1)}</td>
+        <td class="${profitClass}">${(a.profit_cents||0) >= 0 ? '+' : ''}$${((a.profit_cents||0)/100).toFixed(2)}</td>
+        <td>${a.forecast_error_f != null ? a.forecast_error_f + '°F' : '-'}</td>
+        <td style="font-size:12px">${srcCorrect}</td>
+      </tr>`;
+    }).join('');
+  } else {
+    forensicsEmpty.style.display = 'block';
+    forensicsBody.innerHTML = '';
+    forensicsSummary.innerHTML = '';
   }
 
   // Daily reports

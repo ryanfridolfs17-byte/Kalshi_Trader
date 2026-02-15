@@ -410,6 +410,11 @@ def _execute_trade(client, risk, signal, trade_log, market):
             print(f"    ✗ LIVE order failed: {e}")
             status = "live_error"
 
+    # Calculate spread at entry
+    yes_ask = market.get("yes_ask", 0) or 0
+    yes_bid = market.get("yes_bid", 0) or 0
+    spread_at_entry = (yes_ask - yes_bid) if (yes_ask > 0 and yes_bid > 0) else 0
+
     # Record trade
     trade_entry = {
         "timestamp": datetime.now().isoformat(),
@@ -428,6 +433,7 @@ def _execute_trade(client, risk, signal, trade_log, market):
         "status": status,
         "reasoning": signal.get("reasoning", ""),
         "settled": False,
+        "spread_at_entry_cents": spread_at_entry,
     }
 
     trade_log.append(trade_entry)
