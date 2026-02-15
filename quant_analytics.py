@@ -25,8 +25,8 @@ import config
 # ═══════════════════════════════════════════════════════════
 # DATA FILES (persistent learning)
 # ═══════════════════════════════════════════════════════════
-MODEL_ACCURACY_FILE = "model_accuracy.json"
-BACKTEST_RESULTS_FILE = "backtest_results.json"
+MODEL_ACCURACY_FILE = os.path.join(config.STATE_DIR, "model_accuracy.json")
+BACKTEST_RESULTS_FILE = config.BACKTEST_RESULTS_FILE
 
 
 class QuantAnalytics:

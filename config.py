@@ -119,7 +119,6 @@ MIN_VOLUME = 1
 #   3. Confirmation is STRONG
 # All other trades auto-execute.
 HIGH_EDGE_APPROVAL_THRESHOLD = 0.28
-PENDING_TRADES_FILE = "pending_trades.json"
 
 # ═══════════════════════════════════════════════════════
 # KILL SWITCH / OBSERVATION MODE
@@ -129,12 +128,21 @@ KILL_SWITCH_CONSECUTIVE_LOSSES = 3
 KILL_SWITCH_MIN_SHARPE_7D = 0.0
 
 # ═══════════════════════════════════════════════════════
-# LOGGING & STATE FILES
+# STATE PERSISTENCE
 # ═══════════════════════════════════════════════════════
-EDGE_ATTRIBUTION_FILE = "edge_attribution.json"
-TRADE_LOG_FILE = "trade_history.json"
-RISK_STATE_FILE = "risk_state.json"
-DAILY_REPORTS_FILE = "daily_reports.json"
+# All JSON state files live here. On Railway, mount a Volume at /data
+# so state survives redeploys. Locally defaults to current directory.
+STATE_DIR = os.environ.get("STATE_DIR", ".")
+os.makedirs(STATE_DIR, exist_ok=True)
+
+EDGE_ATTRIBUTION_FILE = os.path.join(STATE_DIR, "edge_attribution.json")
+TRADE_LOG_FILE = os.path.join(STATE_DIR, "trade_history.json")
+RISK_STATE_FILE = os.path.join(STATE_DIR, "risk_state.json")
+DAILY_REPORTS_FILE = os.path.join(STATE_DIR, "daily_reports.json")
+PENDING_TRADES_FILE = os.path.join(STATE_DIR, "pending_trades.json")
+BOT_STATUS_FILE = os.path.join(STATE_DIR, "bot_status.json")
+PNL_HISTORY_FILE = os.path.join(STATE_DIR, "pnl_history.json")
+BACKTEST_RESULTS_FILE = os.path.join(STATE_DIR, "backtest_results.json")
 LOG_LEVEL = "DEBUG"  # "DEBUG" for verbose output
 
 # ═══════════════════════════════════════════════════════

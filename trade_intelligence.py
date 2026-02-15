@@ -37,8 +37,8 @@ import config
 NWS_OBS_API = "https://api.weather.gov/stations/{station}/observations/latest"
 
 # Files for persistent learning data
-BIAS_DATA_FILE = "bias_history.json"
-PNL_DATA_FILE = "pnl_history.json"
+BIAS_DATA_FILE = os.path.join(config.STATE_DIR, "bias_history.json")
+PNL_DATA_FILE = config.PNL_HISTORY_FILE
 
 
 class TradeIntelligence:

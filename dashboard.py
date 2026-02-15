@@ -21,16 +21,16 @@ from urllib.parse import urlparse
 
 import config
 
-# State file paths (relative to bot working directory)
+# State file paths — all routed through config.STATE_DIR for persistence
 STATE_FILES = {
-    "trades": "trade_history.json",
-    "risk": "risk_state.json",
-    "pnl": "pnl_history.json",
-    "bot_status": "bot_status.json",
-    "pending": "pending_trades.json",
-    "reports": "daily_reports.json",
-    "backtest": "backtest_results.json",
-    "attribution": "edge_attribution.json",
+    "trades": config.TRADE_LOG_FILE,
+    "risk": config.RISK_STATE_FILE,
+    "pnl": config.PNL_HISTORY_FILE,
+    "bot_status": config.BOT_STATUS_FILE,
+    "pending": config.PENDING_TRADES_FILE,
+    "reports": config.DAILY_REPORTS_FILE,
+    "backtest": config.BACKTEST_RESULTS_FILE,
+    "attribution": config.EDGE_ATTRIBUTION_FILE,
 }
 
 DASHBOARD_PORT = int(os.environ.get("PORT", 8050))

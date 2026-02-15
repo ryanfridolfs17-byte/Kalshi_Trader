@@ -629,7 +629,7 @@ def _write_bot_status(cycle, skip_reasons, trades_this_cycle, strategy, client=N
         "total_expected_profit_cents": total_expected_profit_cents,
     }
     try:
-        with open("bot_status.json", "w") as f:
+        with open(config.BOT_STATUS_FILE, "w") as f:
             json.dump(status, f, indent=2)
     except Exception:
         pass
