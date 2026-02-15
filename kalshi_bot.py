@@ -27,6 +27,65 @@ from datetime import datetime, timedelta, timezone
 import config
 
 
+def _check_environment_switch():
+    """Detect environment change (e.g. demo → production) and wipe stale state.
+
+    Reads the last-known environment from bot_status.json. If it differs from
+    the current config.ENVIRONMENT, all runtime state files are reset so that
+    demo positions/trades don't pollute a production session (or vice-versa).
+    """
+    prev_env = None
+    try:
+        if os.path.exists(config.BOT_STATUS_FILE):
+            with open(config.BOT_STATUS_FILE) as f:
+                prev_status = json.load(f)
+                prev_env = prev_status.get("environment")
+    except Exception:
+        pass
+
+    if prev_env is None or prev_env == config.ENVIRONMENT:
+        return  # First run or same environment — nothing to do
+
+    print(f"\n  [ENV SWITCH] Detected environment change: {prev_env} → {config.ENVIRONMENT}")
+    print(f"  [ENV SWITCH] Wiping stale state files to start clean...\n")
+
+    # Define clean defaults for each state file
+    clean_state = {
+        config.TRADE_LOG_FILE: [],
+        config.RISK_STATE_FILE: {
+            "daily_loss_cents": 0,
+            "daily_trade_count": 0,
+            "last_reset_date": datetime.now().strftime("%Y-%m-%d"),
+            "last_trade_time": None,
+            "positions": [],
+            "consecutive_losses": 0,
+            "loss_pause_until": None,
+            "city_exposure": {},
+            "total_exposure_cents": 0,
+        },
+        config.PNL_HISTORY_FILE: {
+            "trades": [],
+            "total_invested_cents": 0,
+            "total_returned_cents": 0,
+            "total_profit_cents": 0,
+            "wins": 0,
+            "losses": 0,
+        },
+        config.PENDING_TRADES_FILE: [],
+        config.BOT_STATUS_FILE: {},
+    }
+
+    for filepath, default in clean_state.items():
+        try:
+            with open(filepath, "w") as f:
+                json.dump(default, f, indent=2)
+            print(f"  [ENV SWITCH] Reset {os.path.basename(filepath)}")
+        except Exception as e:
+            print(f"  [ENV SWITCH] Failed to reset {os.path.basename(filepath)}: {e}")
+
+    print(f"  [ENV SWITCH] Clean slate ready for {config.ENVIRONMENT}\n")
+
+
 def main():
     """Main entry point."""
 
@@ -36,6 +95,9 @@ def main():
     from dashboard import start_dashboard_server
     port = int(os.environ.get("PORT", 8050))
     start_dashboard_server(port)
+
+    # ─── CHECK FOR ENVIRONMENT SWITCH ───
+    _check_environment_switch()
 
     # ─── STARTUP BANNER ───
     print()

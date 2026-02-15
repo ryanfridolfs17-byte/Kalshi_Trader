@@ -323,6 +323,38 @@ class DashboardHandler(BaseHTTPRequestHandler):
             _clear_alert("observation")
             self._send_json({"ok": True, "action": "resumed"})
 
+        elif path == "/api/reset":
+            # Wipe all runtime state files to start fresh
+            from datetime import datetime as _dt
+            clean_state = {
+                "trades": [],
+                "risk": {
+                    "daily_loss_cents": 0,
+                    "daily_trade_count": 0,
+                    "last_reset_date": _dt.now().strftime("%Y-%m-%d"),
+                    "last_trade_time": None,
+                    "positions": [],
+                    "consecutive_losses": 0,
+                    "loss_pause_until": None,
+                    "city_exposure": {},
+                    "total_exposure_cents": 0,
+                },
+                "pnl": {
+                    "trades": [],
+                    "total_invested_cents": 0,
+                    "total_returned_cents": 0,
+                    "total_profit_cents": 0,
+                    "wins": 0,
+                    "losses": 0,
+                },
+                "pending": [],
+                "bot_status": {},
+            }
+            for key, default in clean_state.items():
+                if key in STATE_FILES:
+                    _write_json(STATE_FILES[key], default)
+            self._send_json({"ok": True, "action": "reset", "cleared": list(clean_state.keys())})
+
         else:
             self.send_error(404)
 
