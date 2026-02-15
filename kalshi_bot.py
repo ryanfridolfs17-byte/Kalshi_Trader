@@ -271,10 +271,10 @@ def main():
                             print(f"    ⏳ QUEUED for dashboard approval (needs manual approval)")
                             continue
 
-                    # High-edge + STRONG signals go to dashboard for approval
-                    if _should_require_approval(signal):
+                    # Only queue for approval if over position limit + exceptional edge + STRONG
+                    if _should_require_approval(signal, risk):
                         _add_pending_trade(signal, market)
-                        print(f"    ⏳ QUEUED for dashboard approval (edge {signal['edge']:.1%} > 15%, STRONG)")
+                        print(f"    ⏳ QUEUED for dashboard approval (over {config.MAX_OPEN_POSITIONS} positions, edge {signal['edge']:.1%}, STRONG)")
                         continue
 
                     # Execute the trade
@@ -441,12 +441,21 @@ def _print_performance(trade_log):
     print(f"  └──────────────────────────────────────────────\n")
 
 
-def _should_require_approval(signal):
-    """Check if a signal needs dashboard approval instead of auto-execution."""
-    return (
-        signal.get("edge", 0) > config.HIGH_EDGE_APPROVAL_THRESHOLD
-        and signal.get("confirmation_verdict") == "STRONG"
-    )
+def _should_require_approval(signal, risk):
+    """Check if a signal needs dashboard approval instead of auto-execution.
+
+    Only require approval when ALL three conditions are met:
+      1. Adding this trade would exceed MAX_OPEN_POSITIONS
+      2. Edge is exceptionally high (> 28%)
+      3. Confirmation is STRONG
+
+    All other trades auto-execute without approval.
+    """
+    positions = risk.state.get("positions", [])
+    would_exceed = len(positions) >= config.MAX_OPEN_POSITIONS
+    exceptional_edge = signal.get("edge", 0) > config.HIGH_EDGE_APPROVAL_THRESHOLD
+    strong_confirm = signal.get("confirmation_verdict") == "STRONG"
+    return would_exceed and exceptional_edge and strong_confirm
 
 
 def _load_pending():

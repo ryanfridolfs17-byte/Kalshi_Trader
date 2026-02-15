@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>Kalshi Weather Bot</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <style>
@@ -29,6 +29,7 @@ body {
   min-height: 100vh;
   padding: 24px;
   line-height: 1.5;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .header {
@@ -67,8 +68,8 @@ body {
   50% { opacity: 0.4; }
 }
 
-.grid { display: grid; gap: 20px; }
-.grid-top { grid-template-columns: repeat(4, 1fr); }
+.grid { display: grid; gap: 16px; }
+.grid-top { grid-template-columns: repeat(5, 1fr); }
 .grid-main { grid-template-columns: 1fr 1fr; }
 .grid-full { grid-template-columns: 1fr; }
 
@@ -78,27 +79,27 @@ body {
   -webkit-backdrop-filter: blur(var(--blur));
   border: 1px solid var(--glass-border);
   border-radius: var(--radius);
-  padding: 20px;
+  padding: 16px;
   transition: background 0.2s;
 }
 .card:hover { background: var(--glass-hover); }
 .card-title {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 1px;
   color: var(--text-secondary);
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 .card-value {
-  font-size: 28px;
+  font-size: 26px;
   font-weight: 700;
   letter-spacing: -1px;
 }
 .card-sub {
-  font-size: 13px;
+  font-size: 12px;
   color: var(--text-secondary);
-  margin-top: 4px;
+  margin-top: 2px;
 }
 .green { color: var(--accent-green); }
 .red { color: var(--accent-red); }
@@ -110,32 +111,35 @@ body {
   background: rgba(251,191,36,0.1);
   border: 1px solid rgba(251,191,36,0.3);
   border-radius: var(--radius);
-  padding: 16px 20px;
-  margin-bottom: 20px;
+  padding: 16px;
+  margin-bottom: 16px;
   display: none;
 }
 .pending-banner.visible { display: block; }
 .pending-card {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 0;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 0;
   border-bottom: 1px solid rgba(255,255,255,0.06);
 }
 .pending-card:last-child { border-bottom: none; }
-.pending-info { flex: 1; }
+.pending-info { font-size: 14px; }
 .pending-info strong { color: var(--accent-amber); }
-.pending-actions { display: flex; gap: 8px; }
+.pending-info .pending-detail { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
+.pending-actions { display: flex; gap: 10px; }
 .btn {
-  padding: 6px 16px;
-  border-radius: 8px;
+  padding: 12px 24px;
+  border-radius: 10px;
   border: none;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
   cursor: pointer;
   transition: transform 0.1s, opacity 0.2s;
+  flex: 1;
+  text-align: center;
 }
-.btn:active { transform: scale(0.96); }
+.btn:active { transform: scale(0.96); opacity: 0.8; }
 .btn-approve { background: var(--accent-green); color: #000; }
 .btn-reject { background: rgba(248,113,113,0.2); color: var(--accent-red); border: 1px solid rgba(248,113,113,0.3); }
 
@@ -144,6 +148,7 @@ body {
   display: flex;
   gap: 4px;
   margin-bottom: 16px;
+  overflow-x: auto;
 }
 .tab {
   padding: 6px 14px;
@@ -155,6 +160,7 @@ body {
   color: var(--text-secondary);
   border: 1px solid transparent;
   transition: all 0.2s;
+  white-space: nowrap;
 }
 .tab.active {
   background: var(--glass-bg);
@@ -163,20 +169,23 @@ body {
 }
 
 /* Tables */
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th {
   text-align: left;
-  padding: 8px 12px;
+  padding: 8px 10px;
   font-weight: 600;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--text-secondary);
   border-bottom: 1px solid var(--glass-border);
+  white-space: nowrap;
 }
 td {
-  padding: 8px 12px;
+  padding: 8px 10px;
   border-bottom: 1px solid rgba(255,255,255,0.04);
+  white-space: nowrap;
 }
 tr:hover td { background: rgba(255,255,255,0.03); }
 
@@ -197,62 +206,25 @@ tr:hover td { background: rgba(255,255,255,0.03); }
 .chart-container { position: relative; height: 220px; }
 
 /* Skip reasons */
-.skip-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 0;
-}
-.skip-label { font-size: 13px; flex: 1; }
+.skip-bar { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+.skip-label { font-size: 13px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .skip-count { font-size: 13px; font-weight: 600; color: var(--text-secondary); min-width: 30px; text-align: right; }
-.skip-fill {
-  height: 6px;
-  border-radius: 3px;
-  background: rgba(96,165,250,0.3);
-  flex: 2;
-}
-.skip-fill-inner {
-  height: 100%;
-  border-radius: 3px;
-  background: var(--accent-blue);
-  transition: width 0.3s;
-}
+.skip-fill { height: 6px; border-radius: 3px; background: rgba(96,165,250,0.3); flex: 2; }
+.skip-fill-inner { height: 100%; border-radius: 3px; background: var(--accent-blue); transition: width 0.3s; }
 
 /* Bot status grid */
-.status-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
-.status-item {
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: rgba(255,255,255,0.04);
-}
-.status-item-label {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--text-secondary);
-}
-.status-item-value {
-  font-size: 15px;
-  font-weight: 600;
-  margin-top: 2px;
-}
+.status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.status-item { padding: 10px 12px; border-radius: 10px; background: rgba(255,255,255,0.04); }
+.status-item-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary); }
+.status-item-value { font-size: 15px; font-weight: 600; margin-top: 2px; }
 
 /* Daily reports */
-.report-card {
-  padding: 12px;
-  border-radius: 10px;
-  background: rgba(255,255,255,0.04);
-  margin-bottom: 8px;
-}
+.report-card { padding: 12px; border-radius: 10px; background: rgba(255,255,255,0.04); margin-bottom: 8px; }
 
 .refresh-bar {
   position: fixed;
-  bottom: 16px;
-  right: 16px;
+  bottom: 12px;
+  right: 12px;
   font-size: 11px;
   color: var(--text-secondary);
   backdrop-filter: blur(var(--blur));
@@ -260,11 +232,38 @@ tr:hover td { background: rgba(255,255,255,0.03); }
   border: 1px solid var(--glass-border);
   border-radius: 8px;
   padding: 6px 12px;
+  z-index: 10;
 }
 
-@media (max-width: 900px) {
-  .grid-top { grid-template-columns: repeat(2, 1fr); }
+/* ═══ MOBILE RESPONSIVE ═══ */
+@media (max-width: 768px) {
+  body { padding: 12px; }
+  .header h1 { font-size: 18px; }
+  .grid-top { grid-template-columns: repeat(3, 1fr); }
   .grid-main { grid-template-columns: 1fr; }
+  .card { padding: 14px; }
+  .card-value { font-size: 22px; }
+  .chart-container { height: 180px; }
+  .status-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+}
+
+@media (max-width: 480px) {
+  body { padding: 8px; }
+  .header { flex-direction: column; gap: 10px; align-items: flex-start; }
+  .header h1 { font-size: 20px; }
+  .grid-top { grid-template-columns: repeat(2, 1fr); }
+  .grid { gap: 10px; }
+  .card { padding: 12px; border-radius: 12px; }
+  .card-value { font-size: 20px; }
+  .card-title { font-size: 10px; margin-bottom: 6px; }
+  .card-sub { font-size: 11px; }
+  .btn { padding: 14px 20px; font-size: 16px; border-radius: 12px; }
+  .pending-card { gap: 12px; }
+  .pending-info { font-size: 13px; }
+  .chart-container { height: 160px; }
+  .tab { padding: 8px 12px; font-size: 12px; }
+  th, td { padding: 6px 8px; font-size: 12px; }
+  .refresh-bar { bottom: 8px; right: 8px; font-size: 10px; }
 }
 </style>
 </head>
@@ -285,7 +284,7 @@ tr:hover td { background: rgba(255,255,255,0.03); }
 </div>
 
 <!-- Bankroll Cards -->
-<div class="grid grid-top" style="margin-bottom: 20px; grid-template-columns: repeat(5, 1fr);">
+<div class="grid grid-top" style="margin-bottom: 16px;">
   <div class="card">
     <div class="card-title">Balance</div>
     <div class="card-value green" id="balance">$20.00</div>
@@ -314,7 +313,7 @@ tr:hover td { background: rgba(255,255,255,0.03); }
 </div>
 
 <!-- Performance Chart + Bot Status -->
-<div class="grid grid-main" style="margin-bottom: 20px;">
+<div class="grid grid-main" style="margin-bottom: 16px;">
   <div class="card">
     <div class="card-title">Performance</div>
     <div class="tabs">
@@ -345,7 +344,7 @@ tr:hover td { background: rgba(255,255,255,0.03); }
         <div class="status-item-value" id="bsRegime">-</div>
       </div>
     </div>
-    <div style="margin-top: 16px;">
+    <div style="margin-top: 14px;">
       <div class="card-title">Model Weights</div>
       <div id="modelWeights" style="font-size: 13px; color: var(--text-secondary);"></div>
     </div>
@@ -353,24 +352,26 @@ tr:hover td { background: rgba(255,255,255,0.03); }
 </div>
 
 <!-- Active Positions -->
-<div class="grid grid-full" style="margin-bottom: 20px;">
+<div class="grid grid-full" style="margin-bottom: 16px;">
   <div class="card">
     <div class="card-title">Active Positions</div>
-    <table>
-      <thead><tr><th>Ticker</th><th>Side</th><th>Cost</th><th>Contracts</th><th>City</th><th>Opened</th></tr></thead>
-      <tbody id="positionsBody"></tbody>
-    </table>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Ticker</th><th>Side</th><th>Cost</th><th>Qty</th><th>City</th><th>Opened</th></tr></thead>
+        <tbody id="positionsBody"></tbody>
+      </table>
+    </div>
     <div id="positionsEmpty" style="text-align:center; padding:20px; color: var(--text-secondary); font-size: 13px;">No open positions</div>
   </div>
 </div>
 
 <!-- Trade History + Passed Signals -->
-<div class="grid grid-main" style="margin-bottom: 20px;">
+<div class="grid grid-main" style="margin-bottom: 16px;">
   <div class="card">
     <div class="card-title">Trade History</div>
-    <div style="max-height: 400px; overflow-y: auto;">
+    <div class="table-wrap" style="max-height: 400px; overflow-y: auto;">
       <table>
-        <thead><tr><th>Time</th><th>Ticker</th><th>Side</th><th>Price</th><th>Edge</th><th>Confirm</th><th>Status</th></tr></thead>
+        <thead><tr><th>Time</th><th>Ticker</th><th>Side</th><th>Price</th><th>Edge</th><th>Conf</th><th>Status</th></tr></thead>
         <tbody id="tradesBody"></tbody>
       </table>
     </div>
@@ -462,7 +463,7 @@ function updateDashboard(data) {
     posBody.innerHTML = positions.map(p => {
       const age = timeSince(p.timestamp);
       return `<tr>
-        <td style="font-weight:600">${p.ticker}</td>
+        <td style="font-weight:600">${shortTicker(p.ticker)}</td>
         <td>${(p.side||'').toUpperCase()}</td>
         <td>$${(p.cost_cents/100).toFixed(2)}</td>
         <td>${p.contracts}</td>
@@ -548,15 +549,15 @@ function updateDashboard(data) {
 
   // Pending trades
   const banner = document.getElementById('pendingBanner');
-  const pendingList = document.getElementById('pendingList');
+  const pendingListEl = document.getElementById('pendingList');
   const pendingActive = pending.filter(p => p.status === 'pending');
   if (pendingActive.length > 0) {
     banner.classList.add('visible');
-    pendingList.innerHTML = pendingActive.map(p => `
+    pendingListEl.innerHTML = pendingActive.map(p => `
       <div class="pending-card">
         <div class="pending-info">
-          <strong>${p.ticker}</strong> &mdash; ${(p.side||'').toUpperCase()} @ ${p.price_cents}c x${p.contracts}
-          &mdash; Edge: ${(p.edge*100).toFixed(1)}% &mdash; ${p.city_code||''}
+          <strong>${shortTicker(p.ticker)}</strong> &mdash; ${(p.side||'').toUpperCase()} @ ${p.price_cents}c x${p.contracts}
+          <div class="pending-detail">Edge: ${(p.edge*100).toFixed(1)}% | ${p.confirmation} | ${p.city_code||''} | $${(p.cost_cents/100).toFixed(2)}</div>
         </div>
         <div class="pending-actions">
           <button class="btn btn-approve" onclick="approveTrade('${p.id}')">Approve</button>
@@ -656,11 +657,17 @@ function setChartRange(range) {
 }
 
 async function approveTrade(id) {
+  const btn = event.target;
+  btn.textContent = '...';
+  btn.disabled = true;
   await fetch('/api/approve', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({id}) });
   fetchState();
 }
 
 async function rejectTrade(id) {
+  const btn = event.target;
+  btn.textContent = '...';
+  btn.disabled = true;
   await fetch('/api/reject', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({id}) });
   fetchState();
 }

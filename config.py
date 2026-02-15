@@ -101,10 +101,12 @@ MIN_VOLUME = 1
 # ═══════════════════════════════════════════════════════
 # TRADE APPROVAL
 # ═══════════════════════════════════════════════════════
-# Signals above this edge AND with STRONG confirmation go to
-# pending_trades.json for dashboard approval instead of auto-executing.
-# Signals with edge 8-15% still auto-execute normally.
-HIGH_EDGE_APPROVAL_THRESHOLD = 0.15
+# Trades only require dashboard approval when ALL of these are true:
+#   1. Adding the trade would exceed MAX_OPEN_POSITIONS
+#   2. Edge > 28% (20% above the 8% minimum)
+#   3. Confirmation is STRONG
+# All other trades auto-execute.
+HIGH_EDGE_APPROVAL_THRESHOLD = 0.28
 PENDING_TRADES_FILE = "pending_trades.json"
 
 # ═══════════════════════════════════════════════════════
