@@ -132,12 +132,13 @@ class WeatherEngine:
         if target_date is None:
             target_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        # Check cache (30 min TTL)
+        # Check cache — models update every 6 hours, so 5-min cache is plenty.
+        # At 2-min scan interval this saves ~60% of Open-Meteo API calls.
         cache_key = f"{city_code}_{target_date}"
         if cache_key in self._cache:
             cached = self._cache[cache_key]
             age = (datetime.now() - cached["fetched_at"]).total_seconds()
-            if age < 1800:  # 30 minutes
+            if age < 300:  # 5 minutes
                 return cached["data"]
 
         # Fetch from all ensemble sources

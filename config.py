@@ -76,8 +76,9 @@ DRY_RUN = os.environ.get("KALSHI_DRY_RUN", "true").lower() == "true"
 # SCAN SETTINGS
 # ═══════════════════════════════════════════════════════
 # How often to scan for trades (seconds)
-# Weather markets move fast — 5 minutes is ideal
-SCAN_INTERVAL = 300  # 5 minutes
+# 2 minutes catches confirmed outcomes and arbitrage quickly.
+# Ensemble data is cached (not re-fetched every scan).
+SCAN_INTERVAL = 120  # 2 minutes
 
 # Which cities to trade weather for
 # Options: "NYC", "CHI", "MIA", "AUS"

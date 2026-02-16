@@ -621,12 +621,21 @@ class TradeIntelligence:
         """
         Fetch recent observations and find today's high so far.
         More reliable than a single latest reading.
+        Cached for 5 minutes — high can only go up, so stale data is safe.
         """
         city = CITIES.get(city_code)
         if not city:
             return None
 
         station = city["nws_station"]
+
+        # Cache for 5 minutes (high temp can only increase, so stale = conservative)
+        cache_key = f"high_{station}"
+        if cache_key in self._obs_cache:
+            cached = self._obs_cache[cache_key]
+            age = (datetime.now() - cached["fetched_at"]).total_seconds()
+            if age < 300:  # 5 min
+                return cached["temp"]
 
         try:
             # Get last 24 hours of observations
@@ -658,7 +667,12 @@ class TradeIntelligence:
                         todays_temps.append(temp_f)
 
             if todays_temps:
-                return max(todays_temps)
+                high = max(todays_temps)
+                self._obs_cache[cache_key] = {
+                    "temp": high,
+                    "fetched_at": datetime.now(),
+                }
+                return high
 
         except Exception:
             pass
