@@ -10,9 +10,8 @@ CHECKS:
   3. Max open positions
   4. Per-city exposure limit (weather)
   5. Consecutive loss pause
-  6. Daily trade count limit
-  7. Cooldown between trades
-  8. Manual approval threshold
+  6. Cooldown between trades
+  7. Manual approval threshold
 """
 
 import json
@@ -79,12 +78,13 @@ class RiskManager:
         if cost > max_per_position:
             return False, f"Per-position cap: ${cost/100:.2f} > ${max_per_position/100:.2f} (20% of ${balance/100:.2f})"
 
-        # 2d. Liquidity reserve: keep minimum cash for morning trading
+        # 2d. Liquidity reserve: keep % of bankroll liquid for next-day overnight edge window
+        reserve_cents = int(balance * config.LIQUIDITY_RESERVE_PCT)
         available = config.MAX_TOTAL_EXPOSURE_CENTS - active_exposure
-        if available - cost < config.LIQUIDITY_RESERVE_CENTS:
+        if available - cost < reserve_cents:
             if edge < 0.20:  # Override for exceptional edge
                 return False, (f"Liquidity reserve: ${available/100:.2f} available, "
-                               f"trade costs ${cost/100:.2f}, need ${config.LIQUIDITY_RESERVE_CENTS/100:.2f} reserve")
+                               f"trade costs ${cost/100:.2f}, need ${reserve_cents/100:.2f} reserve (25% of bankroll)")
 
         # 3. Max positions (count only active, pending are settling out)
         if len(classified["active"]) >= config.MAX_OPEN_POSITIONS:
@@ -124,22 +124,18 @@ class RiskManager:
             self._save_state()
             return False, f"{config.CONSECUTIVE_LOSS_PAUSE} losses in a row — pausing {config.CONSECUTIVE_LOSS_PAUSE_MINUTES} min"
 
-        # 6. Daily trade count
-        if self.state["daily_trade_count"] >= config.MAX_DAILY_TRADES:
-            return False, f"Max {config.MAX_DAILY_TRADES} trades/day reached"
-
-        # 7. Cooldown
+        # 6. Cooldown
         if self.state["last_trade_time"]:
             elapsed = (datetime.now() - datetime.fromisoformat(self.state["last_trade_time"])).total_seconds()
             if elapsed < config.TRADE_COOLDOWN:
                 remaining = config.TRADE_COOLDOWN - elapsed
                 return False, f"Cooldown: {remaining:.0f}s remaining"
 
-        # 8. Manual approval
+        # 7. Manual approval
         if cost > config.APPROVAL_THRESHOLD_CENTS:
             return "NEEDS_APPROVAL", f"Trade costs ${cost/100:.2f} > ${config.APPROVAL_THRESHOLD_CENTS/100:.2f} — needs approval"
 
-        # 9. Settlement proximity — no new positions within N hours of close
+        # 8. Settlement proximity — no new positions within N hours of close
         close_time_str = signal.get("close_time")
         if close_time_str:
             try:
@@ -407,7 +403,7 @@ class RiskManager:
             print(f"  │  Total committed: ${(active_exp + pending_exp)/100:.2f}")
         pending_note = f" (+{n_pending} settling)" if n_pending > 0 else ""
         print(f"  │  Positions:      {n_active}{pending_note} / {config.MAX_OPEN_POSITIONS}")
-        print(f"  │  Trades today:   {self.state['daily_trade_count']} / {config.MAX_DAILY_TRADES}")
+        print(f"  │  Trades today:   {self.state['daily_trade_count']}")
         print(f"  │  Loss streak:    {self.state['consecutive_losses']}")
 
         if self.state["city_exposure"]:

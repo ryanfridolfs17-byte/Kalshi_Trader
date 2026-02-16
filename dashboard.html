@@ -335,7 +335,7 @@ tr:hover td { background: rgba(255,255,255,0.03); }
   <div class="card">
     <div class="card-title">Today's Trades</div>
     <div class="card-value" id="todayTrades">0</div>
-    <div class="card-sub" id="todayTradesSub">of 20 max</div>
+    <div class="card-sub" id="todayTradesSub">no limit</div>
   </div>
   <div class="card">
     <div class="card-title">Win Rate</div>
@@ -388,6 +388,35 @@ tr:hover td { background: rgba(255,255,255,0.03); }
     <div style="margin-top: 14px;">
       <div class="card-title">Model Weights</div>
       <div id="modelWeights" style="font-size: 13px; color: var(--text-secondary);"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Seasonal Confidence -->
+<div class="grid grid-full" style="margin-bottom: 16px;">
+  <div class="card">
+    <div class="card-title">Seasonal Confidence</div>
+    <div id="seasonalGrid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;">
+      <div style="text-align:center;padding:10px;border-radius:10px;background:rgba(255,255,255,0.04);" id="seasonalNYC">
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-secondary);">NYC</div>
+        <div style="font-size:22px;font-weight:700;margin:4px 0;" id="seasonalNYCVal">-</div>
+        <div style="font-size:11px;color:var(--text-secondary);" id="seasonalNYCRegime">-</div>
+      </div>
+      <div style="text-align:center;padding:10px;border-radius:10px;background:rgba(255,255,255,0.04);" id="seasonalCHI">
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-secondary);">CHI</div>
+        <div style="font-size:22px;font-weight:700;margin:4px 0;" id="seasonalCHIVal">-</div>
+        <div style="font-size:11px;color:var(--text-secondary);" id="seasonalCHIRegime">-</div>
+      </div>
+      <div style="text-align:center;padding:10px;border-radius:10px;background:rgba(255,255,255,0.04);" id="seasonalMIA">
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-secondary);">MIA</div>
+        <div style="font-size:22px;font-weight:700;margin:4px 0;" id="seasonalMIAVal">-</div>
+        <div style="font-size:11px;color:var(--text-secondary);" id="seasonalMIARegime">-</div>
+      </div>
+      <div style="text-align:center;padding:10px;border-radius:10px;background:rgba(255,255,255,0.04);" id="seasonalAUS">
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-secondary);">AUS</div>
+        <div style="font-size:22px;font-weight:700;margin:4px 0;" id="seasonalAUSVal">-</div>
+        <div style="font-size:11px;color:var(--text-secondary);" id="seasonalAUSRegime">-</div>
+      </div>
     </div>
   </div>
 </div>
@@ -527,7 +556,7 @@ function updateDashboard(data) {
   document.getElementById('projectedPnl').className = 'card-value ' + (projPnl >= 0 ? 'green' : 'red');
 
   document.getElementById('todayTrades').textContent = risk.daily_trade_count || 0;
-  document.getElementById('todayTradesSub').textContent = 'of 20 max';
+  document.getElementById('todayTradesSub').textContent = 'today';
 
   const totalTrades = (pnl.wins || 0) + (pnl.losses || 0);
   if (totalTrades > 0) {
@@ -650,6 +679,22 @@ function updateDashboard(data) {
   } else {
     mwDiv.innerHTML = '<span>No data yet</span>';
   }
+
+  // Seasonal confidence
+  const seasonal = bot.seasonal_confidence || {};
+  ['NYC','CHI','MIA','AUS'].forEach(city => {
+    const info = seasonal[city];
+    const valEl = document.getElementById('seasonal' + city + 'Val');
+    const regimeEl = document.getElementById('seasonal' + city + 'Regime');
+    if (info && valEl) {
+      const mult = info.combined || info.base_multiplier || 1.0;
+      valEl.textContent = mult.toFixed(2) + 'x';
+      valEl.style.color = mult >= 1.0 ? 'var(--accent-green)' : mult >= 0.8 ? 'var(--accent-amber)' : 'var(--accent-red)';
+      const regime = info.regime || 'normal';
+      const learned = info.is_learned ? ' (learned)' : '';
+      regimeEl.textContent = regime + learned;
+    }
+  });
 
   // Observation mode banner
   const obsBanner = document.getElementById('observationBanner');

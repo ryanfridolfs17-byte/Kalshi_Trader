@@ -822,6 +822,14 @@ def _write_bot_status(cycle, skip_reasons, trades_this_cycle, strategy, client=N
         except Exception:
             pass
 
+    # Seasonal confidence multipliers for dashboard
+    seasonal_confidence = {}
+    try:
+        from seasonal_confidence import get_all_multipliers
+        seasonal_confidence = get_all_multipliers()
+    except Exception:
+        pass
+
     status = {
         "cycle": cycle,
         "timestamp": now.isoformat(),
@@ -840,6 +848,7 @@ def _write_bot_status(cycle, skip_reasons, trades_this_cycle, strategy, client=N
         "total_expected_profit_cents": total_expected_profit_cents,
         "active_markets": [k for k, v in config.MARKET_TYPES.items() if v],
         "exposure_breakdown": exposure_breakdown,
+        "seasonal_confidence": seasonal_confidence,
     }
     try:
         with open(config.BOT_STATUS_FILE, "w") as f:

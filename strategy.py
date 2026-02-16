@@ -22,6 +22,7 @@ from signal_confirmer import SignalConfirmer
 from trade_intelligence import TradeIntelligence
 from quant_analytics import QuantAnalytics
 from market_quality import MarketQualityFilter
+from seasonal_confidence import get_seasonal_multiplier, detect_regime as detect_seasonal_regime
 import config
 
 
@@ -265,7 +266,15 @@ class Strategy:
         regime_mult = regime["size_multiplier"]
         print(f"    [QUANT] Regime: {regime['regime']} ({regime_mult}x) — {regime['reason']}")
 
-        # Step 4d: Smart order pricing
+        # Step 4d: Seasonal confidence — adjust sizing for city/month/regime
+        forecast_high = distribution.get("forecasted_high_mean")
+        current_month = datetime.now().month
+        seasonal_regime = detect_seasonal_regime(city_code, current_month, forecast_high)
+        seasonal_mult = get_seasonal_multiplier(city_code, current_month, seasonal_regime)
+        print(f"    [SEASONAL] {city_code} month={current_month}: "
+              f"regime={seasonal_regime}, multiplier={seasonal_mult:.2f}")
+
+        # Step 4e: Smart order pricing
         smart_price = self.quant.calculate_optimal_price(market, "yes" if edge > 0 else "no", abs(edge))
 
         # Step 5: Build signal
@@ -278,9 +287,11 @@ class Strategy:
                 "edge": edge,
                 "confidence": min(0.75, distribution["confidence"] * 0.8 + abs(edge)),
                 "price_cents": price,
-                "confirmation_multiplier": confirmation["size_multiplier"] * time_mult * regime_mult,
+                "confirmation_multiplier": confirmation["size_multiplier"] * time_mult * regime_mult * seasonal_mult,
                 "confirmation_verdict": confirmation["verdict"],
                 "predicted_high": distribution["forecasted_high_mean"],
+                "seasonal_regime": seasonal_regime,
+                "seasonal_multiplier": seasonal_mult,
                 "reasoning": (
                     f"[WEATHER] {city_code} {target_date}: "
                     f"Ensemble says {our_prob:.0%} for {temp_low}-{temp_high}°F, "
@@ -289,6 +300,7 @@ class Strategy:
                     f"Confirmed: {confirmation['verdict']} ({confirmation['agree_count']} agree). "
                     f"{distribution['total_members']} members. "
                     f"Time: {time_reason} ({time_mult}x). "
+                    f"Seasonal: {seasonal_regime} ({seasonal_mult:.2f}x). "
                     + (f"Bias adj: {bias_applied:+.1f}°F. " if bias_applied else "")
                 ),
                 "strategy": "S1-Weather",
@@ -302,9 +314,11 @@ class Strategy:
                 "edge": abs(edge),
                 "confidence": min(0.75, distribution["confidence"] * 0.8 + abs(edge)),
                 "price_cents": no_price,
-                "confirmation_multiplier": confirmation["size_multiplier"] * time_mult * regime_mult,
+                "confirmation_multiplier": confirmation["size_multiplier"] * time_mult * regime_mult * seasonal_mult,
                 "confirmation_verdict": confirmation["verdict"],
                 "predicted_high": distribution["forecasted_high_mean"],
+                "seasonal_regime": seasonal_regime,
+                "seasonal_multiplier": seasonal_mult,
                 "reasoning": (
                     f"[WEATHER] {city_code} {target_date}: "
                     f"Ensemble says {our_prob:.0%} for {temp_low}-{temp_high}°F, "
@@ -313,6 +327,7 @@ class Strategy:
                     f"Confirmed: {confirmation['verdict']}. "
                     f"{distribution['total_members']} members. "
                     f"Time: {time_reason} ({time_mult}x). "
+                    f"Seasonal: {seasonal_regime} ({seasonal_mult:.2f}x). "
                     + (f"Bias adj: {bias_applied:+.1f}°F. " if bias_applied else "")
                 ),
                 "strategy": "S1-Weather",
@@ -559,6 +574,7 @@ class Strategy:
                 "      → 4-source confirmation voting before every trade",
                 "      → Statistical significance test (z-test, p<0.10)",
                 "      → Regime detection (stable/transitional/volatile)",
+                "      → Seasonal confidence sizing (city+month+anomaly)",
                 "      → Bias correction (learns from past accuracy)",
                 "      → Quarter-Kelly x all multipliers",
                 "      → Limit orders only (maker strategy)",

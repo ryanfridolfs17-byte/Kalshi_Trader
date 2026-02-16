@@ -137,9 +137,6 @@ MAX_CORRELATED_POSITIONS = 3
 CONSECUTIVE_LOSS_PAUSE = 5
 CONSECUTIVE_LOSS_PAUSE_MINUTES = 30
 
-# Max trades per day
-MAX_DAILY_TRADES = 20
-
 # Cooldown between trades (seconds)
 TRADE_COOLDOWN = 180                # 3 minutes (faster for weather)
 
@@ -152,9 +149,14 @@ SETTLEMENT_PROXIMITY_EDGE_OVERRIDE = 0.20  # Exceptional edge overrides
 # ═══════════════════════════════════════════════════════
 # Kalshi weather markets settle at 10 AM ET the day after the market date.
 # Capital is locked between market close and settlement. These settings
-# ensure the bot has cash available for the morning edge window (6-9 AM).
+# ensure the bot has cash available for the overnight/morning edge window.
+#
+# NEXT-DAY TRADING WINDOWS (ET, ranked by edge):
+#   00Z cascade: 12:30 AM - 6:30 AM  (all 143 ensemble members fresh, market asleep)
+#   06Z pulse:   6:00 AM - 9:00 AM   (supplementary GFS/ECMWF runs)
+#   12Z cascade: 2:30 PM - 6:30 PM   (second full refresh, new listings from 10 AM)
 SETTLEMENT_HOUR_ET = 10             # Hour (ET) when settlements process
-LIQUIDITY_RESERVE_CENTS = 500       # $5.00 — minimum cash floor, never invest past this
+LIQUIDITY_RESERVE_PCT = 0.25        # 25% of bankroll — reserve for next-day overnight edge window
 PRE_SETTLEMENT_SIZING_MULT = 0.6    # 60% sizing before settlements clear
 
 # ═══════════════════════════════════════════════════════
@@ -180,6 +182,17 @@ MIN_REVIEW_AGE_MINUTES = 10
 LIQUIDITY_TIER_1_OI = 50    # open_interest < 50 → max 1 contract
 LIQUIDITY_TIER_2_OI = 200   # open_interest < 200 → max 2 contracts
 LIQUIDITY_FULL_OI = 500     # open_interest >= 500 → full sizing
+
+# ═══════════════════════════════════════════════════════
+# SEASONAL SIZING
+# ═══════════════════════════════════════════════════════
+SEASONAL_SIZING_ENABLED = True
+SEASONAL_MULTIPLIER_MIN = 0.5
+SEASONAL_MULTIPLIER_MAX = 1.3
+REGIME_DETECTION_ENABLED = True
+ANOMALY_THRESHOLD_F = 15             # °F departure from normal to trigger regime
+ADAPTIVE_LEARNING_MIN_TRADES = 30    # Min trades per city-month before adjusting
+ADAPTIVE_LEARNING_BLEND = 0.3        # Weight given to empirical data vs theoretical
 
 # ═══════════════════════════════════════════════════════
 # STRATEGY SETTINGS
