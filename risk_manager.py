@@ -56,14 +56,39 @@ class RiskManager:
         if self.state["daily_loss_cents"] >= config.DAILY_LOSS_LIMIT_CENTS:
             return False, f"Daily loss limit hit (${self.state['daily_loss_cents']/100:.2f})"
 
-        # 2. Total exposure
-        total_exposure = sum(p.get("cost_cents", 0) for p in self.state["positions"])
-        if total_exposure + cost > config.MAX_TOTAL_EXPOSURE_CENTS:
-            return False, f"Exposure cap: ${total_exposure/100:.2f} + ${cost/100:.2f} > ${config.MAX_TOTAL_EXPOSURE_CENTS/100:.2f}"
+        # 2. Exposure checks (settlement-aware)
+        classified = self.classify_positions()
+        active_exposure = classified["active_exposure_cents"]
+        pending_exposure = classified["pending_exposure_cents"]
 
-        # 3. Max positions
-        if len(self.state["positions"]) >= config.MAX_OPEN_POSITIONS:
-            return False, f"Max {config.MAX_OPEN_POSITIONS} positions reached"
+        # 2a. Active exposure cap: only active positions gate new trades
+        if active_exposure + cost > config.MAX_TOTAL_EXPOSURE_CENTS:
+            return False, (f"Active exposure cap: ${active_exposure/100:.2f} + ${cost/100:.2f} "
+                           f"> ${config.MAX_TOTAL_EXPOSURE_CENTS/100:.2f}"
+                           f" (+${pending_exposure/100:.2f} pending settlement)")
+
+        # 2b. Hard ceiling: active + pending can't grow unbounded
+        hard_ceiling = config.MAX_TOTAL_EXPOSURE_CENTS * 2
+        if active_exposure + pending_exposure + cost > hard_ceiling:
+            return False, (f"Total capital guard: ${(active_exposure + pending_exposure)/100:.2f} "
+                           f"+ ${cost/100:.2f} > ${hard_ceiling/100:.2f}")
+
+        # 2c. Dynamic per-position cap: never more than 20% of capital in one trade
+        balance = self.state.get("balance_cents", config.MAX_TOTAL_EXPOSURE_CENTS)
+        max_per_position = int(balance * config.MAX_POSITION_PCT)
+        if cost > max_per_position:
+            return False, f"Per-position cap: ${cost/100:.2f} > ${max_per_position/100:.2f} (20% of ${balance/100:.2f})"
+
+        # 2d. Liquidity reserve: keep minimum cash for morning trading
+        available = config.MAX_TOTAL_EXPOSURE_CENTS - active_exposure
+        if available - cost < config.LIQUIDITY_RESERVE_CENTS:
+            if edge < 0.20:  # Override for exceptional edge
+                return False, (f"Liquidity reserve: ${available/100:.2f} available, "
+                               f"trade costs ${cost/100:.2f}, need ${config.LIQUIDITY_RESERVE_CENTS/100:.2f} reserve")
+
+        # 3. Max positions (count only active, pending are settling out)
+        if len(classified["active"]) >= config.MAX_OPEN_POSITIONS:
+            return False, f"Max {config.MAX_OPEN_POSITIONS} active positions reached"
 
         # 4. Per-city exposure (weather strategy)
         city = signal.get("city_code", "")
@@ -293,18 +318,95 @@ class RiskManager:
         self._save_state()
 
     # ═══════════════════════════════════════════════════════
+    # SETTLEMENT-AWARE CAPITAL MANAGEMENT
+    # ═══════════════════════════════════════════════════════
+
+    def _parse_market_date(self, ticker):
+        """Parse market date from ticker. Returns date object or None.
+        Ticker format: KXHIGHNY-26FEB14-B46.5 → Feb 14, 2026."""
+        parts = ticker.split("-") if ticker else []
+        if len(parts) >= 2:
+            try:
+                return datetime.strptime(parts[1], "%y%b%d").date()
+            except ValueError:
+                pass
+        return None
+
+    def classify_positions(self):
+        """Split positions into active (tradeable) vs pending settlement (locked).
+
+        Active: market date is today or future.
+        Pending settlement: market date has passed, awaiting 10 AM ET settlement.
+        """
+        today = datetime.now().date()
+        active = []
+        pending = []
+
+        for p in self.state["positions"]:
+            market_date = self._parse_market_date(p.get("ticker", ""))
+            if market_date is not None and market_date < today:
+                pending.append(p)
+            else:
+                active.append(p)
+
+        return {
+            "active": active,
+            "pending_settlement": pending,
+            "active_exposure_cents": sum(p.get("cost_cents", 0) for p in active),
+            "pending_exposure_cents": sum(p.get("cost_cents", 0) for p in pending),
+        }
+
+    def is_pre_settlement_window(self):
+        """Check if pending settlements exist and it's before settlement hour."""
+        classified = self.classify_positions()
+        if not classified["pending_settlement"]:
+            return False
+        # Approximate ET: UTC - 5 (matches existing codebase pattern)
+        utc_now = datetime.now(timezone.utc)
+        et_hour = (utc_now.hour - 5) % 24
+        return et_hour < config.SETTLEMENT_HOUR_ET
+
+    def get_exposure_breakdown(self):
+        """Return structured exposure data for the dashboard."""
+        classified = self.classify_positions()
+        return {
+            "active_exposure_cents": classified["active_exposure_cents"],
+            "pending_settlement_cents": classified["pending_exposure_cents"],
+            "active_positions": len(classified["active"]),
+            "pending_positions": len(classified["pending_settlement"]),
+            "is_pre_settlement": self.is_pre_settlement_window(),
+        }
+
+    def update_balance(self, balance_cents):
+        """Store the current Kalshi account balance for dynamic sizing."""
+        if balance_cents is not None:
+            self.state["balance_cents"] = balance_cents
+            self._save_state()
+
+    # ═══════════════════════════════════════════════════════
     # STATUS
     # ═══════════════════════════════════════════════════════
 
     def print_status(self):
         """Print current risk state."""
         self._maybe_reset_daily()
-        total_exp = sum(p.get("cost_cents", 0) for p in self.state["positions"])
+        classified = self.classify_positions()
+        active_exp = classified["active_exposure_cents"]
+        pending_exp = classified["pending_exposure_cents"]
+        n_active = len(classified["active"])
+        n_pending = len(classified["pending_settlement"])
+        balance = self.state.get("balance_cents")
 
         print(f"\n  ┌─ Risk Status ─────────────────────────────────")
+        if balance is not None:
+            print(f"  │  Balance:        ${balance/100:.2f}")
         print(f"  │  Daily loss:     ${self.state['daily_loss_cents']/100:.2f} / ${config.DAILY_LOSS_LIMIT_CENTS/100:.2f}")
-        print(f"  │  Exposure:       ${total_exp/100:.2f} / ${config.MAX_TOTAL_EXPOSURE_CENTS/100:.2f}")
-        print(f"  │  Positions:      {len(self.state['positions'])} / {config.MAX_OPEN_POSITIONS}")
+        print(f"  │  Active exposure: ${active_exp/100:.2f} / ${config.MAX_TOTAL_EXPOSURE_CENTS/100:.2f}")
+        if pending_exp > 0:
+            print(f"  │  Pending settle:  ${pending_exp/100:.2f} (locked until {config.SETTLEMENT_HOUR_ET} AM ET)")
+            print(f"  │  Total committed: ${(active_exp + pending_exp)/100:.2f}")
+        pending_note = f" (+{n_pending} settling)" if n_pending > 0 else ""
+        print(f"  │  Positions:      {n_active}{pending_note} / {config.MAX_OPEN_POSITIONS}")
         print(f"  │  Trades today:   {self.state['daily_trade_count']} / {config.MAX_DAILY_TRADES}")
         print(f"  │  Loss streak:    {self.state['consecutive_losses']}")
 

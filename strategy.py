@@ -497,6 +497,10 @@ class Strategy:
         """
         Quarter-Kelly position sizing.
         Accounts for the binary nature of prediction markets.
+
+        Uses actual Kalshi balance when available for dynamic sizing.
+        Per-position cap = MAX_POSITION_PCT (20%) of bankroll.
+        No hard contract count cap — size is governed by percentage of capital.
         """
         if edge <= 0 or confidence <= 0 or price_cents <= 0:
             return 0
@@ -514,12 +518,16 @@ class Strategy:
         if quarter_kelly <= 0:
             return 0
 
-        bankroll_cents = config.MAX_TOTAL_EXPOSURE_CENTS
+        # Use actual balance if available, fall back to exposure cap
+        bankroll_cents = getattr(self, 'balance_cents', None) or config.MAX_TOTAL_EXPOSURE_CENTS
         bet_cents = quarter_kelly * bankroll_cents
-        bet_cents = min(bet_cents, config.MAX_AUTO_TRADE_CENTS)
+
+        # Cap at per-position max (20% of bankroll) and auto-trade limit
+        max_per_position = int(bankroll_cents * config.MAX_POSITION_PCT)
+        bet_cents = min(bet_cents, max_per_position, config.MAX_AUTO_TRADE_CENTS)
 
         contracts = max(1, int(bet_cents / price_cents))
-        return min(contracts, 15)
+        return contracts
 
     # ═══════════════════════════════════════════════════════
     # UTILITY

@@ -109,12 +109,12 @@ def main():
 
     # Show mode
     if config.DRY_RUN:
-        print("  MODE: 🔍 DRY RUN (analysis only, no orders)")
+        print("  MODE: [DRY RUN] Analysis only, no orders")
     elif config.ENVIRONMENT == "demo":
-        print("  MODE: 🧪 DEMO (practice money, real orders)")
+        print("  MODE: [DEMO] Practice money, real orders")
     else:
-        print("  MODE: 💰 PRODUCTION (REAL MONEY)")
-        print("  ⚠️  WARNING: Trades will use REAL FUNDS")
+        print("  MODE: [PRODUCTION] REAL MONEY")
+        print("  WARNING: Trades will use REAL FUNDS")
         if sys.stdin.isatty():
             resp = input("  Type 'yes' to confirm: ")
             if resp.lower() != "yes":
@@ -140,6 +140,9 @@ def main():
 
     # ─── RECONCILE WITH EXCHANGE ───
     _reconcile_positions(client, risk)
+
+    # ─── SYNC BALANCE ───
+    _sync_balance(client, risk, strategy)
 
     # ─── STARTUP CLEANUP ───
     # If DRY_RUN, expire all unsettled positions from previous sessions.
@@ -224,9 +227,18 @@ def main():
                 print(f"  [OBSERVATION] Bot will scan and log but NOT trade")
 
             # ═══════════════════════════════════════════════
-            # SYNC POSITIONS WITH KALSHI
+            # SYNC POSITIONS & BALANCE WITH KALSHI
             # ═══════════════════════════════════════════════
             _reconcile_positions(client, risk)
+            _sync_balance(client, risk, strategy)
+
+            # Log settlement status
+            breakdown = risk.get_exposure_breakdown()
+            if breakdown["pending_positions"] > 0:
+                print(f"  [SETTLEMENT] {breakdown['pending_positions']} positions pending settlement "
+                      f"(${breakdown['pending_settlement_cents']/100:.2f} locked)")
+                if breakdown["is_pre_settlement"]:
+                    print(f"  [SETTLEMENT] Pre-settlement window — sizing reduced to {config.PRE_SETTLEMENT_SIZING_MULT:.0%}")
 
             # ═══════════════════════════════════════════════
             # STEP 0: CHECK SETTLEMENTS & EXITS
@@ -384,6 +396,13 @@ def main():
                         print(f"    ⏳ QUEUED for dashboard approval (over {config.MAX_OPEN_POSITIONS} positions, edge {signal['edge']:.1%}, STRONG)")
                         continue
 
+                    # Pre-settlement sizing reduction
+                    if risk.is_pre_settlement_window():
+                        orig = signal["suggested_contracts"]
+                        signal["suggested_contracts"] = max(1, int(orig * config.PRE_SETTLEMENT_SIZING_MULT))
+                        if signal["suggested_contracts"] < orig:
+                            print(f"    [SETTLE] Reduced {orig} → {signal['suggested_contracts']} contracts (pre-settlement)")
+
                     # Execute the trade
                     trade_result = _execute_trade(
                         client, risk, signal, trade_log, market
@@ -471,6 +490,13 @@ def main():
                             print(f"    QUEUED for dashboard approval (SP500)")
                             continue
 
+                        # Pre-settlement sizing reduction
+                        if risk.is_pre_settlement_window():
+                            orig = signal["suggested_contracts"]
+                            signal["suggested_contracts"] = max(1, int(orig * config.PRE_SETTLEMENT_SIZING_MULT))
+                            if signal["suggested_contracts"] < orig:
+                                print(f"    [SETTLE] Reduced {orig} → {signal['suggested_contracts']} contracts (pre-settlement)")
+
                         trade_result = _execute_trade(
                             client, risk, signal, trade_log, market
                         )
@@ -515,7 +541,8 @@ def main():
 
             # Write bot status for dashboard
             _write_bot_status(cycle, skip_reasons, trade_count_this_cycle, strategy, client,
-                              observation_mode=observation_mode, observation_reason=obs_reason)
+                              observation_mode=observation_mode, observation_reason=obs_reason,
+                              risk_manager=risk)
 
             # Wait for next cycle
             print(f"  Next scan in {config.SCAN_INTERVAL // 60} minutes...")
@@ -757,7 +784,7 @@ def _process_approved_trades(client, risk, trade_log):
 
 
 def _write_bot_status(cycle, skip_reasons, trades_this_cycle, strategy, client=None,
-                      observation_mode=False, observation_reason=""):
+                      observation_mode=False, observation_reason="", risk_manager=None):
     """Write bot status JSON for the dashboard to read."""
     now = datetime.now(tz=timezone.utc)
     model_weights = {}
@@ -787,6 +814,14 @@ def _write_bot_status(cycle, skip_reasons, trades_this_cycle, strategy, client=N
         except Exception:
             pass
 
+    # Exposure breakdown from risk manager
+    exposure_breakdown = {}
+    if risk_manager:
+        try:
+            exposure_breakdown = risk_manager.get_exposure_breakdown()
+        except Exception:
+            pass
+
     status = {
         "cycle": cycle,
         "timestamp": now.isoformat(),
@@ -804,6 +839,7 @@ def _write_bot_status(cycle, skip_reasons, trades_this_cycle, strategy, client=N
         "observation_reason": observation_reason,
         "total_expected_profit_cents": total_expected_profit_cents,
         "active_markets": [k for k, v in config.MARKET_TYPES.items() if v],
+        "exposure_breakdown": exposure_breakdown,
     }
     try:
         with open(config.BOT_STATUS_FILE, "w") as f:
@@ -1211,6 +1247,21 @@ def _city_from_ticker(ticker):
     if prefix.startswith("KXINX"):
         return "SP500"
     return _TICKER_TO_CITY.get(prefix, "")
+
+
+def _sync_balance(client, risk, strategy):
+    """Fetch current Kalshi balance and pass it to risk manager and strategy for dynamic sizing."""
+    if config.API_KEY_ID == "YOUR_API_KEY_ID_HERE" or config.DRY_RUN:
+        return
+    try:
+        bal_resp = client.get_balance()
+        if bal_resp and isinstance(bal_resp, dict):
+            balance_cents = bal_resp.get("balance")
+            if balance_cents is not None:
+                risk.update_balance(balance_cents)
+                strategy.balance_cents = balance_cents
+    except Exception:
+        pass
 
 
 def _reconcile_positions(client, risk):

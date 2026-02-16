@@ -208,6 +208,8 @@ tr:hover td { background: rgba(255,255,255,0.03); }
 .badge-loss { background: rgba(248,113,113,0.15); color: var(--accent-red); }
 .badge-weather { background: rgba(96,165,250,0.15); color: var(--accent-blue); }
 .badge-sp500 { background: rgba(52,211,153,0.15); color: var(--accent-green); }
+.badge-active { background: rgba(52,211,153,0.12); color: var(--accent-green); }
+.badge-settling { background: rgba(251,191,36,0.15); color: var(--accent-amber); }
 
 .chart-container { position: relative; height: 220px; }
 
@@ -302,6 +304,7 @@ tr:hover td { background: rgba(255,255,255,0.03); }
 
 <!-- Admin Actions -->
 <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;" id="adminActions">
+  <button class="btn" onclick="recordManualTrade()" style="flex:none;padding:8px 16px;font-size:13px;background:rgba(96,165,250,0.15);color:var(--accent-blue);border:1px solid rgba(96,165,250,0.3);">Record Manual Trade</button>
   <button class="btn" onclick="clearFailedTrades()" style="flex:none;padding:8px 16px;font-size:13px;background:rgba(248,113,113,0.15);color:var(--accent-red);border:1px solid rgba(248,113,113,0.3);">Clear Failed Trades</button>
   <button class="btn" onclick="resetAll()" style="flex:none;padding:8px 16px;font-size:13px;background:rgba(255,255,255,0.06);color:var(--text-secondary);border:1px solid var(--glass-border);">Reset All State</button>
 </div>
@@ -320,7 +323,7 @@ tr:hover td { background: rgba(255,255,255,0.03); }
     <div class="card-sub" id="balanceSub">Kalshi account</div>
   </div>
   <div class="card">
-    <div class="card-title">Total P&L</div>
+    <div class="card-title">Realized P&L</div>
     <div class="card-value" id="totalPnl">$0.00</div>
     <div class="card-sub" id="winLoss">0W / 0L</div>
   </div>
@@ -340,7 +343,7 @@ tr:hover td { background: rgba(255,255,255,0.03); }
     <div class="card-sub" id="winRateSub">all time</div>
   </div>
   <div class="card">
-    <div class="card-title">Projected P&L</div>
+    <div class="card-title">Unrealized P&L</div>
     <div class="card-value green" id="projectedPnl">$0.00</div>
     <div class="card-sub" id="projectedPnlSub">expected from open positions</div>
   </div>
@@ -395,7 +398,7 @@ tr:hover td { background: rgba(255,255,255,0.03); }
     <div class="card-title">Active Positions</div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Type</th><th>Description</th><th>Side</th><th>Cost</th><th>Qty</th><th>Edge</th><th>Exp. Profit</th><th>Opened</th></tr></thead>
+        <thead><tr><th>Type</th><th>Description</th><th>Side</th><th>Cost</th><th>Qty</th><th>Edge</th><th>Exp. Profit</th><th>Status</th><th>Opened</th><th>Action</th></tr></thead>
         <tbody id="positionsBody"></tbody>
       </table>
     </div>
@@ -494,16 +497,29 @@ function updateDashboard(data) {
     document.getElementById('balanceSub').textContent = (bot.environment || 'demo') + ' account' + portStr;
   }
 
-  // Bankroll
+  // Realized P&L
   const totalPnl = (pnl.total_profit_cents || 0) / 100;
-  document.getElementById('totalPnl').textContent = '$' + totalPnl.toFixed(2);
+  document.getElementById('totalPnl').textContent = (totalPnl >= 0 ? '+$' : '-$') + Math.abs(totalPnl).toFixed(2);
   document.getElementById('totalPnl').className = 'card-value ' + (totalPnl >= 0 ? 'green' : 'red');
-  document.getElementById('winLoss').textContent = (pnl.wins || 0) + 'W / ' + (pnl.losses || 0) + 'L';
+  document.getElementById('winLoss').textContent = (pnl.wins || 0) + 'W / ' + (pnl.losses || 0) + 'L (settled)';
 
   const positions = risk.positions || [];
-  const totalExp = positions.reduce((s, p) => s + (p.cost_cents || 0), 0) / 100;
-  document.getElementById('exposure').textContent = '$' + totalExp.toFixed(2);
-  document.getElementById('exposureSub').textContent = positions.length + ' / 15 positions';
+  const eb = bot.exposure_breakdown || {};
+  const activeExp = (eb.active_exposure_cents || positions.reduce((s, p) => s + (p.cost_cents || 0), 0)) / 100;
+  const pendingExp = (eb.pending_settlement_cents || 0) / 100;
+  const nActive = eb.active_positions != null ? eb.active_positions : positions.length;
+  const nPending = eb.pending_positions || 0;
+
+  document.getElementById('exposure').textContent = '$' + activeExp.toFixed(2);
+  let expSub = nActive + ' active';
+  if (nPending > 0) expSub += ' + ' + nPending + ' settling ($' + pendingExp.toFixed(2) + ')';
+  expSub += ' / 20 positions';
+  document.getElementById('exposureSub').textContent = expSub;
+  if (eb.is_pre_settlement) {
+    document.getElementById('exposure').className = 'card-value amber';
+  } else {
+    document.getElementById('exposure').className = 'card-value';
+  }
 
   // Projected P&L
   const projPnl = (bot.total_expected_profit_cents || 0) / 100;
@@ -533,6 +549,10 @@ function updateDashboard(data) {
       const expClass = (p.expected_profit_cents || 0) >= 0 ? 'green' : 'amber';
       const mtype = (p.city_code === 'SP500' || (p.ticker||'').startsWith('KXINX')) ? 'sp500' : 'weather';
       const mtypeLabel = mtype === 'sp500' ? 'S&P' : 'WX';
+      const posStatus = classifyPosition(p);
+      const statusBadge = posStatus === 'settling'
+        ? '<span class="badge badge-settling">Settling</span>'
+        : '<span class="badge badge-active">Active</span>';
       return `<tr>
         <td><span class="badge badge-${mtype}">${mtypeLabel}</span></td>
         <td style="font-weight:600">${desc}</td>
@@ -541,7 +561,9 @@ function updateDashboard(data) {
         <td>${p.contracts}</td>
         <td>${edgePct}</td>
         <td class="${expClass}">${expProfit}</td>
+        <td>${statusBadge}</td>
         <td style="color:var(--text-secondary)">${age}</td>
+        <td><button class="btn" onclick="closePosition('${p.ticker}', ${p.contracts}, ${p.cost_cents})" style="padding:4px 10px;font-size:11px;background:rgba(248,113,113,0.15);color:var(--accent-red);border:1px solid rgba(248,113,113,0.3);flex:none;">Close</button></td>
       </tr>`;
     }).join('');
   } else {
@@ -572,9 +594,9 @@ function updateDashboard(data) {
         <td style="color:var(--text-secondary);font-size:12px">${time}</td>
         <td style="font-weight:600;font-size:12px" title="${t.ticker}">${t.market_description || t.title || shortTicker(t.ticker)}</td>
         <td>${(t.side||'').toUpperCase()}</td>
-        <td>${t.price_cents}c x${t.contracts}</td>
-        <td>${(t.edge*100).toFixed(1)}%</td>
-        <td><span class="badge ${confClass}">${conf||'-'}</span></td>
+        <td>${t.price_cents}¢ x${t.contracts}</td>
+        <td>${t.edge ? (t.edge*100).toFixed(1)+'%' : '-'}</td>
+        <td>${t.strategy === 'MANUAL_EXIT' ? '<span class="badge badge-dry">EXIT</span>' : '<span class="badge '+confClass+'">'+(conf||'-')+'</span>'}</td>
         <td>${statusBadge}</td>
       </tr>`;
     }).join('');
@@ -829,6 +851,101 @@ async function resetAll() {
   if (!confirm('WARNING: This wipes ALL trades, positions, and P&L data. Are you sure?')) return;
   await fetch('/api/reset', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
   fetchState();
+}
+
+async function closePosition(ticker, contracts, costCents) {
+  const input = prompt(
+    `Close ${ticker}\n` +
+    `${contracts} contracts, total cost $${(costCents/100).toFixed(2)}\n\n` +
+    `Enter the TOTAL PAYOUT you received (in dollars).\n` +
+    `This is the "Total payout" shown on Kalshi.\n` +
+    `Enter 0 if the position expired worthless.`
+  );
+  if (input === null) return;
+
+  const payoutDollars = parseFloat(input);
+  if (isNaN(payoutDollars) || payoutDollars < 0) {
+    alert('Invalid amount. Enter a dollar amount like 1.29');
+    return;
+  }
+
+  const payoutCents = Math.round(payoutDollars * 100);
+  const pnl = payoutCents - costCents;
+  const pnlStr = (pnl >= 0 ? '+' : '-') + '$' + Math.abs(pnl / 100).toFixed(2);
+
+  if (!confirm(`Confirm close:\n${contracts}x ${ticker}\nCost: $${(costCents/100).toFixed(2)}\nPayout: $${payoutDollars.toFixed(2)}\nRealized P&L: ${pnlStr}`)) return;
+
+  const res = await fetch('/api/close-position', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ ticker, total_payout_cents: payoutCents })
+  });
+  const data = await res.json();
+  if (data.ok) {
+    const rpnl = data.realized_pnl_cents / 100;
+    alert(`Position closed.\nRealized P&L: ${rpnl >= 0 ? '+' : ''}$${rpnl.toFixed(2)}`);
+  } else {
+    alert('Error: ' + (data.error || 'Unknown error'));
+  }
+  fetchState();
+}
+
+async function recordManualTrade() {
+  const ticker = prompt('Enter the market name or ticker (e.g. "CHI 64-65°F Feb 14"):');
+  if (!ticker) return;
+
+  const costInput = prompt('Enter the TOTAL COST from Kalshi (in dollars):');
+  if (costInput === null) return;
+  const costDollars = parseFloat(costInput);
+  if (isNaN(costDollars) || costDollars < 0) { alert('Invalid cost.'); return; }
+
+  const payoutInput = prompt('Enter the TOTAL PAYOUT from Kalshi (in dollars).\nEnter 0 if it expired worthless:');
+  if (payoutInput === null) return;
+  const payoutDollars = parseFloat(payoutInput);
+  if (isNaN(payoutDollars) || payoutDollars < 0) { alert('Invalid payout.'); return; }
+
+  const pnl = payoutDollars - costDollars;
+  const pnlStr = (pnl >= 0 ? '+' : '-') + '$' + Math.abs(pnl).toFixed(2);
+
+  if (!confirm(`Record manual trade:\n${ticker}\nCost: $${costDollars.toFixed(2)}\nPayout: $${payoutDollars.toFixed(2)}\nRealized P&L: ${pnlStr}`)) return;
+
+  const res = await fetch('/api/record-manual-trade', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      description: ticker,
+      cost_cents: Math.round(costDollars * 100),
+      payout_cents: Math.round(payoutDollars * 100),
+    })
+  });
+  const data = await res.json();
+  if (data.ok) {
+    alert(`Trade recorded.\nRealized P&L: ${pnlStr}`);
+  } else {
+    alert('Error: ' + (data.error || 'Unknown error'));
+  }
+  fetchState();
+}
+
+function classifyPosition(p) {
+  // Parse market date from ticker: KXHIGHNY-26FEB14-B46.5 → "26FEB14"
+  const ticker = p.ticker || '';
+  const parts = ticker.split('-');
+  if (parts.length < 2) return 'active';
+  const dateStr = parts[1]; // e.g. "26FEB14"
+  const months = {JAN:0,FEB:1,MAR:2,APR:3,MAY:4,JUN:5,JUL:6,AUG:7,SEP:8,OCT:9,NOV:10,DEC:11};
+  try {
+    const yr = 2000 + parseInt(dateStr.slice(0, 2));
+    const mon = months[dateStr.slice(2, 5).toUpperCase()];
+    const day = parseInt(dateStr.slice(5, 7));
+    if (isNaN(yr) || mon === undefined || isNaN(day)) return 'active';
+    const marketDate = new Date(yr, mon, day);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return marketDate < today ? 'settling' : 'active';
+  } catch (e) {
+    return 'active';
+  }
 }
 
 function shortTicker(t) {

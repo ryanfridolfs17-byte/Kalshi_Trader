@@ -424,6 +424,159 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 } for p in consolidated],
             })
 
+        elif path == "/api/close-position":
+            # Record a manual position exit (sold outside the bot)
+            # Accepts total_payout_cents (what Kalshi shows as "Total payout")
+            ticker = payload.get("ticker")
+            total_payout_cents = payload.get("total_payout_cents")
+            if not ticker or total_payout_cents is None:
+                self._send_json({"error": "Missing ticker or total_payout_cents"}, 400)
+                return
+
+            total_payout_cents = int(total_payout_cents)
+
+            # Find the position in risk state
+            risk = _read_json(STATE_FILES["risk"], default={})
+            positions = risk.get("positions", [])
+            pos = None
+            pos_idx = None
+            for i, p in enumerate(positions):
+                if p.get("ticker") == ticker:
+                    pos = p
+                    pos_idx = i
+                    break
+
+            if pos is None:
+                self._send_json({"error": f"Position {ticker} not found"}, 404)
+                return
+
+            contracts = pos.get("contracts", 1)
+            cost_cents = pos.get("cost_cents", 0)
+            city_code = pos.get("city_code", "")
+            side = pos.get("side", "")
+
+            # Calculate realized P&L
+            realized_pnl = total_payout_cents - cost_cents
+
+            # Remove position from risk state
+            positions.pop(pos_idx)
+            risk["positions"] = positions
+            # Update city exposure
+            if city_code and city_code in risk.get("city_exposure", {}):
+                risk["city_exposure"][city_code] = max(
+                    0, risk["city_exposure"][city_code] - cost_cents
+                )
+            risk["total_exposure_cents"] = max(
+                0, risk.get("total_exposure_cents", 0) - cost_cents
+            )
+            _write_json(STATE_FILES["risk"], risk)
+
+            # Update P&L history
+            pnl = _read_json(STATE_FILES["pnl"], default={
+                "trades": [], "total_invested_cents": 0,
+                "total_returned_cents": 0, "total_profit_cents": 0,
+                "wins": 0, "losses": 0,
+            })
+            pnl["total_invested_cents"] += cost_cents
+            pnl["total_returned_cents"] += total_payout_cents
+            pnl["total_profit_cents"] += realized_pnl
+            if realized_pnl >= 0:
+                pnl["wins"] += 1
+            else:
+                pnl["losses"] += 1
+            _write_json(STATE_FILES["pnl"], pnl)
+
+            # Add exit record to trade history
+            trades = _read_json(STATE_FILES["trades"], default=[])
+            trades.append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "ticker": ticker,
+                "side": side,
+                "price_cents": total_payout_cents,
+                "contracts": contracts,
+                "cost_cents": cost_cents,
+                "edge": 0,
+                "confidence": 0,
+                "city_code": city_code,
+                "strategy": "MANUAL_EXIT",
+                "status": "closed",
+                "settled": True,
+                "result": "win" if realized_pnl >= 0 else "loss",
+                "profit_cents": realized_pnl,
+                "title": pos.get("title", ""),
+                "market_description": pos.get("market_description", ""),
+            })
+            _write_json(STATE_FILES["trades"], trades)
+
+            self._send_json({
+                "ok": True,
+                "action": "close_position",
+                "ticker": ticker,
+                "contracts": contracts,
+                "cost_cents": cost_cents,
+                "total_payout_cents": total_payout_cents,
+                "realized_pnl_cents": realized_pnl,
+            })
+
+        elif path == "/api/record-manual-trade":
+            # Record a trade that was placed manually on Kalshi (not tracked by bot)
+            description = payload.get("description", "Manual trade")
+            cost_cents = payload.get("cost_cents")
+            payout_cents = payload.get("payout_cents")
+            if cost_cents is None or payout_cents is None:
+                self._send_json({"error": "Missing cost_cents or payout_cents"}, 400)
+                return
+
+            cost_cents = int(cost_cents)
+            payout_cents = int(payout_cents)
+            realized_pnl = payout_cents - cost_cents
+
+            # Update P&L history
+            pnl = _read_json(STATE_FILES["pnl"], default={
+                "trades": [], "total_invested_cents": 0,
+                "total_returned_cents": 0, "total_profit_cents": 0,
+                "wins": 0, "losses": 0,
+            })
+            pnl["total_invested_cents"] += cost_cents
+            pnl["total_returned_cents"] += payout_cents
+            pnl["total_profit_cents"] += realized_pnl
+            if realized_pnl >= 0:
+                pnl["wins"] += 1
+            else:
+                pnl["losses"] += 1
+            _write_json(STATE_FILES["pnl"], pnl)
+
+            # Add to trade history
+            trades = _read_json(STATE_FILES["trades"], default=[])
+            trades.append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "ticker": description,
+                "side": "",
+                "price_cents": payout_cents,
+                "contracts": 0,
+                "cost_cents": cost_cents,
+                "edge": 0,
+                "confidence": 0,
+                "city_code": "",
+                "strategy": "MANUAL_TRADE",
+                "status": "closed",
+                "settled": True,
+                "result": "win" if realized_pnl >= 0 else "loss",
+                "profit_cents": realized_pnl,
+                "title": description,
+                "market_description": description,
+            })
+            _write_json(STATE_FILES["trades"], trades)
+
+            self._send_json({
+                "ok": True,
+                "action": "record_manual_trade",
+                "description": description,
+                "cost_cents": cost_cents,
+                "payout_cents": payout_cents,
+                "realized_pnl_cents": realized_pnl,
+            })
+
         elif path == "/api/reset":
             # Wipe all runtime state files to start fresh
             from datetime import datetime as _dt

@@ -408,7 +408,7 @@ class QuantAnalytics:
 
         Same-ticker scaling: allows adding to an existing position
         ONLY when the new price is strictly better (lower cost for
-        our side) and we're under MAX_CONTRACTS_PER_TICKER.
+        our side) and total position cost is under MAX_POSITION_PCT of bankroll.
         """
         new_city = signal.get("city_code", "")
         new_ticker = signal.get("ticker", "")
@@ -433,17 +433,29 @@ class QuantAnalytics:
             new_cost = signal.get("price_cents", 100)
 
             # Allow scale-in only if:
-            #   1. Under per-ticker contract cap
+            #   1. Total position cost stays under MAX_POSITION_PCT of bankroll
             #   2. New price is strictly better (lower cost = better odds)
-            if (existing_contracts < config.MAX_CONTRACTS_PER_TICKER
-                    and new_cost < existing_avg_cost):
+            existing_total_cost = sum(p.get("cost_cents", 0) for p in same_ticker)
+            # Try to get bankroll from risk state, fall back to exposure cap
+            try:
+                from risk_manager import RiskManager
+                rm = RiskManager()
+                bankroll = rm.state.get("balance_cents", config.MAX_TOTAL_EXPOSURE_CENTS)
+            except Exception:
+                bankroll = config.MAX_TOTAL_EXPOSURE_CENTS
+            max_position_cost = int(bankroll * config.MAX_POSITION_PCT)
+            new_trade_cost = new_cost * signal.get("suggested_contracts", 1)
+            under_cap = (existing_total_cost + new_trade_cost) <= max_position_cost
+
+            if under_cap and new_cost < existing_avg_cost:
                 print(f"  [CORR] Scale-in allowed: {new_ticker} "
-                      f"({existing_contracts} held, new {new_cost}c < avg {existing_avg_cost:.0f}c)")
+                      f"({existing_contracts} held, ${existing_total_cost/100:.2f}/${max_position_cost/100:.2f} cap, "
+                      f"new {new_cost}c < avg {existing_avg_cost:.0f}c)")
                 return 1.0  # Allow the add
             else:
                 reason = []
-                if existing_contracts >= config.MAX_CONTRACTS_PER_TICKER:
-                    reason.append(f"{existing_contracts}/{config.MAX_CONTRACTS_PER_TICKER} contracts")
+                if not under_cap:
+                    reason.append(f"${(existing_total_cost + new_trade_cost)/100:.2f} > ${max_position_cost/100:.2f} (20% cap)")
                 if new_cost >= existing_avg_cost:
                     reason.append(f"price {new_cost}c >= avg {existing_avg_cost:.0f}c")
                 print(f"  [CORR] Scale-in blocked: {new_ticker} ({', '.join(reason)})")

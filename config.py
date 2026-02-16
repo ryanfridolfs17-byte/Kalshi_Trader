@@ -107,28 +107,31 @@ SP500_MAX_EXPOSURE_CENTS = 800       # $8.00 max exposure for SP500 positions
 # RISK PARAMETERS (all in cents, 100 cents = $1.00)
 # ═══════════════════════════════════════════════════════
 # Max cost of a single auto-trade (no approval needed)
-MAX_AUTO_TRADE_CENTS = 300          # $3.00
+MAX_AUTO_TRADE_CENTS = 2000         # $20.00
+
+# Never invest more than this % of total capital into a single position
+MAX_POSITION_PCT = 0.20             # 20% of bankroll
 
 # Trades above this require manual approval
-APPROVAL_THRESHOLD_CENTS = 500      # $5.00
+APPROVAL_THRESHOLD_CENTS = 2500     # $25.00
 
 # Stop trading if daily losses hit this
-DAILY_LOSS_LIMIT_CENTS = 1000       # $10.00
+DAILY_LOSS_LIMIT_CENTS = 2000       # $20.00
 
-# Max total money at risk across all positions
-MAX_TOTAL_EXPOSURE_CENTS = 2000     # $20.00
+# Max total money at risk across all active positions
+MAX_TOTAL_EXPOSURE_CENTS = 8000     # $80.00 (80% of ~$100 bankroll)
 
 # Max open positions at once
-MAX_OPEN_POSITIONS = 15
+MAX_OPEN_POSITIONS = 20
 
 # Max exposure per city (weather)
-MAX_PER_CITY_CENTS = 800            # $8.00 per city
+MAX_PER_CITY_CENTS = 2500           # $25.00 per city
 
 # Max positions per city+date combination
 MAX_CORRELATED_POSITIONS = 3
 
-# Max contracts per single ticker (scaling in at better prices)
-MAX_CONTRACTS_PER_TICKER = 3
+# Max contracts per single ticker: no hard cap — governed by MAX_POSITION_PCT (20% of bankroll)
+# MAX_CONTRACTS_PER_TICKER removed — use percentage-based sizing instead
 
 # Pause after this many consecutive losses
 CONSECUTIVE_LOSS_PAUSE = 5
@@ -143,6 +146,16 @@ TRADE_COOLDOWN = 180                # 3 minutes (faster for weather)
 # Settlement proximity: no new positions within N hours of close
 SETTLEMENT_PROXIMITY_HOURS = 2
 SETTLEMENT_PROXIMITY_EDGE_OVERRIDE = 0.20  # Exceptional edge overrides
+
+# ═══════════════════════════════════════════════════════
+# SETTLEMENT-AWARE CAPITAL MANAGEMENT
+# ═══════════════════════════════════════════════════════
+# Kalshi weather markets settle at 10 AM ET the day after the market date.
+# Capital is locked between market close and settlement. These settings
+# ensure the bot has cash available for the morning edge window (6-9 AM).
+SETTLEMENT_HOUR_ET = 10             # Hour (ET) when settlements process
+LIQUIDITY_RESERVE_CENTS = 500       # $5.00 — minimum cash floor, never invest past this
+PRE_SETTLEMENT_SIZING_MULT = 0.6    # 60% sizing before settlements clear
 
 # ═══════════════════════════════════════════════════════
 # PORTFOLIO REVIEW SETTINGS
