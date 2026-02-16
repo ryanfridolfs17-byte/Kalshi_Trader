@@ -224,6 +224,11 @@ def main():
                 print(f"  [OBSERVATION] Bot will scan and log but NOT trade")
 
             # ═══════════════════════════════════════════════
+            # SYNC POSITIONS WITH KALSHI
+            # ═══════════════════════════════════════════════
+            _reconcile_positions(client, risk)
+
+            # ═══════════════════════════════════════════════
             # STEP 0: CHECK SETTLEMENTS & EXITS
             # ═══════════════════════════════════════════════
             print("\n  [STEP 0a] Checking settlements...")
@@ -1190,67 +1195,111 @@ def _build_market_description(ticker, city_code, title):
     return title or ticker
 
 
+_TICKER_TO_CITY = {
+    "KXHIGHNY": "NYC",
+    "KXHIGHCHI": "CHI",
+    "KXHIGHMIA": "MIA",
+    "KXHIGHAUS": "AUS",
+}
+
+
+def _city_from_ticker(ticker):
+    """Extract city code from a Kalshi weather ticker like KXHIGHNY-26FEB16-B41.5."""
+    if not ticker:
+        return ""
+    prefix = ticker.split("-")[0] if "-" in ticker else ticker
+    if prefix.startswith("KXINX"):
+        return "SP500"
+    return _TICKER_TO_CITY.get(prefix, "")
+
+
 def _reconcile_positions(client, risk):
-    """Reconcile local risk state with Kalshi exchange positions on startup."""
+    """Full sync: replace local positions with Kalshi's actual positions.
+
+    Kalshi is the source of truth. This corrects any drift from state
+    wipes, failed tracking, or missed trades.
+    """
     if config.API_KEY_ID == "YOUR_API_KEY_ID_HERE" or config.DRY_RUN:
         return
 
-    print("  [RECONCILE] Checking exchange positions...")
+    print("  [SYNC] Syncing positions with Kalshi exchange...")
     try:
         result = client.get_positions()
         if result is None:
-            print("  [RECONCILE] Could not fetch positions — skipping")
+            print("  [SYNC] Could not fetch positions — skipping")
             return
 
         api_positions = result.get("market_positions", [])
-        api_tickers = {p.get("ticker", "") for p in api_positions if p.get("ticker")}
-        local_tickers = {p.get("ticker", "") for p in risk.state["positions"] if p.get("ticker")}
 
-        added = 0
-        removed = 0
-        matched = 0
+        # Build local lookup for preserving metadata
+        local_lookup = {}
+        for p in risk.state.get("positions", []):
+            key = (p.get("ticker", ""), p.get("side", ""))
+            local_lookup[key] = p
 
-        # API has it, local doesn't → add to local
+        # Replace local positions entirely from Kalshi data
+        new_positions = []
         for pos in api_positions:
             ticker = pos.get("ticker", "")
-            if not ticker:
+            position_count = pos.get("position", 0)
+            if not ticker or position_count == 0:
                 continue
-            if ticker not in local_tickers:
-                risk.state["positions"].append({
-                    "ticker": ticker,
-                    "side": "yes" if pos.get("market_exposure", 0) > 0 else "no",
-                    "cost_cents": abs(pos.get("total_traded", 0)),
-                    "contracts": abs(pos.get("position", 0)),
-                    "city_code": "",
-                    "timestamp": datetime.now().isoformat(),
-                })
-                added += 1
-                print(f"  [RECONCILE] +Added from exchange: {ticker}")
 
-        # Local has it, API doesn't → remove (already settled/cancelled)
-        for local_pos in list(risk.state["positions"]):
-            ticker = local_pos.get("ticker", "")
-            if ticker and ticker not in api_tickers:
-                risk.state["positions"] = [
-                    p for p in risk.state["positions"] if p.get("ticker") != ticker
-                ]
-                removed += 1
-                print(f"  [RECONCILE] -Removed stale: {ticker}")
+            side = "yes" if position_count > 0 else "no"
+            contracts = abs(position_count)
+            cost_cents = abs(pos.get("market_exposure", 0))
+            city_code = _city_from_ticker(ticker)
 
-        matched = len(api_tickers & local_tickers)
+            # Preserve local metadata (title, edge, etc.) if we have it
+            local = local_lookup.get((ticker, side), {})
 
-        # Recalculate city exposure after reconciliation
+            new_positions.append({
+                "ticker": ticker,
+                "side": side,
+                "cost_cents": cost_cents,
+                "contracts": contracts,
+                "city_code": city_code,
+                "timestamp": local.get("timestamp", datetime.now().isoformat()),
+                "title": local.get("title", ""),
+                "edge": local.get("edge", 0),
+                "expected_profit_cents": local.get("expected_profit_cents", 0),
+                "market_description": local.get("market_description", ""),
+            })
+
+        old_count = len(risk.state.get("positions", []))
+        old_tickers = {p.get("ticker") for p in risk.state.get("positions", [])}
+        new_tickers = {p["ticker"] for p in new_positions}
+
+        # Log changes
+        added = new_tickers - old_tickers
+        removed = old_tickers - new_tickers
+        for t in added:
+            p = next(x for x in new_positions if x["ticker"] == t)
+            print(f"  [SYNC] +Added: {t} {p['side'].upper()} x{p['contracts']} (${p['cost_cents']/100:.2f})")
+        for t in removed:
+            print(f"  [SYNC] -Removed stale: {t}")
+        for p in new_positions:
+            if p["ticker"] in old_tickers:
+                old_p = local_lookup.get((p["ticker"], p["side"]))
+                if old_p and (old_p.get("contracts") != p["contracts"] or old_p.get("cost_cents") != p["cost_cents"]):
+                    print(f"  [SYNC] ~Updated: {p['ticker']} {p['side'].upper()} "
+                          f"x{old_p.get('contracts')}→x{p['contracts']} "
+                          f"${old_p.get('cost_cents',0)/100:.2f}→${p['cost_cents']/100:.2f}")
+
+        # Replace positions and recalculate exposure
+        risk.state["positions"] = new_positions
         risk.state["city_exposure"] = {}
-        for p in risk.state["positions"]:
+        for p in new_positions:
             city = p.get("city_code", "")
             if city:
                 risk.state["city_exposure"][city] = risk.state["city_exposure"].get(city, 0) + p.get("cost_cents", 0)
 
         risk._save_state()
-        print(f"  [RECONCILE] Done: {matched} matched, {added} added, {removed} removed")
+        print(f"  [SYNC] Done: {len(new_positions)} positions "
+              f"(was {old_count}, +{len(added)} -{len(removed)})")
 
     except Exception as e:
-        print(f"  [RECONCILE] Error: {e}")
+        print(f"  [SYNC] Error: {e}")
 
 
 def _load_trade_log():

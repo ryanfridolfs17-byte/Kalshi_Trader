@@ -197,9 +197,13 @@ class KalshiClient:
             print(f"  [API] Account balance: ${balance_cents / 100:.2f}")
         return result
 
-    def get_positions(self):
-        """Get your current open positions."""
-        return self._request("GET", "/portfolio/positions", authenticated=True)
+    def get_positions(self, limit=200, cursor=None):
+        """Get your current open positions (non-zero only)."""
+        params = [f"limit={limit}", "count_filter=position"]
+        if cursor:
+            params.append(f"cursor={cursor}")
+        query = "&".join(params)
+        return self._request("GET", f"/portfolio/positions?{query}", authenticated=True)
 
     def create_order(self, ticker, side, count, type="market",
                      yes_price=None, no_price=None):
