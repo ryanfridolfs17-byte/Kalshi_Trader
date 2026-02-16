@@ -133,6 +133,11 @@ class Strategy:
         if best["edge"] < config.MIN_EDGE:
             return self._skip(f"Best edge {best['edge']:.1%} below {config.MIN_EDGE:.0%} threshold")
 
+        # Confirmed outcomes already have max sizing — skip normal sizing pipeline
+        if best.get("confirmation_verdict") == "CONFIRMED_OUTCOME":
+            best["ticker"] = ticker
+            return best
+
         # Size the position
         contracts = self._kelly_size(
             best["edge"], best["confidence"], best["price_cents"]
@@ -198,6 +203,15 @@ class Strategy:
 
         if target_date is None:
             target_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        # ─── FAST PATH: CONFIRMED OUTCOME DETECTION ───
+        # If NWS observations already show the outcome is determined,
+        # this is near-risk-free profit. Max position sizing.
+        confirmed_signal = self._check_confirmed_outcome(
+            market, city_code, temp_low, temp_high, target_date, ref_price
+        )
+        if confirmed_signal:
+            return confirmed_signal
 
         # Need some activity (but Kalshi weather markets are low-volume)
         if volume == 0 and (market.get("volume_24h", 0) or 0) == 0:
@@ -503,6 +517,128 @@ class Strategy:
             }
 
         return signal
+
+    # ═══════════════════════════════════════════════════════
+    # CONFIRMED OUTCOME DETECTION
+    # ═══════════════════════════════════════════════════════
+
+    def _check_confirmed_outcome(self, market, city_code, temp_low, temp_high, target_date, ref_price):
+        """
+        Check if NWS observations already confirm the outcome is determined.
+
+        Cases where we can take max position:
+        1. Today's observed high ALREADY EXCEEDS the bucket upper bound
+           → NO on this bucket is near-guaranteed (high won't un-happen)
+        2. Today's observed high ALREADY EXCEEDS the bucket lower bound
+           AND we're late in the day → YES on higher buckets is dying
+
+        Returns a max-sized signal or None if outcome is not yet confirmed.
+        """
+        # Only check for today's markets (intraday observations)
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if target_date != today:
+            return None
+
+        todays_high = self.intel.get_todays_high_so_far(city_code)
+        if todays_high is None:
+            return None
+
+        ticker = market.get("ticker", "")
+
+        # CASE 1: High already ABOVE the bucket's upper bound
+        # If observed high is 86°F and bucket is 83-84°F,
+        # the daily high will be >= 86 (it can only go up), so NO on 83-84 wins.
+        if todays_high > temp_high:
+            # NO side is near-guaranteed — the high already exceeded this bucket
+            no_price = market.get("no_ask", 0) or (100 - ref_price)
+            if no_price <= 0 or no_price >= 95:
+                return None  # No reasonable ask, or already priced in
+
+            edge = (100 - no_price) / 100.0  # Guaranteed profit per dollar
+            if edge < 0.05:
+                return None  # Not enough margin to bother
+
+            # Max position: 20% of bankroll
+            bankroll_cents = getattr(self, 'balance_cents', None) or config.MAX_TOTAL_EXPOSURE_CENTS
+            max_bet_cents = int(bankroll_cents * config.MAX_POSITION_PCT)
+            contracts = max(1, int(max_bet_cents / no_price))
+
+            print(f"    [CONFIRMED] {city_code} high already {todays_high}°F > bucket {temp_low}-{temp_high}°F")
+            print(f"    [CONFIRMED] NO @ {no_price}¢ is near-guaranteed → MAX POSITION {contracts} contracts")
+
+            return {
+                "signal": "buy_no",
+                "side": "no",
+                "edge": edge,
+                "confidence": 0.99,
+                "price_cents": no_price,
+                "confirmation_multiplier": 1.0,  # Already at max via contract count
+                "confirmation_verdict": "CONFIRMED_OUTCOME",
+                "predicted_high": todays_high,
+                "suggested_contracts": contracts,
+                "ticker": ticker,
+                "order_type": "limit",
+                "quality_score": 1.0,
+                "seasonal_regime": "confirmed",
+                "seasonal_multiplier": 1.0,
+                "reasoning": (
+                    f"[CONFIRMED] {city_code}: NWS observed high {todays_high}°F already exceeds "
+                    f"bucket {temp_low}-{temp_high}°F. NO @ {no_price}¢ is near-guaranteed. "
+                    f"Max position: {contracts} contracts."
+                ),
+                "strategy": "S1-Weather",
+            }
+
+        # CASE 2: High already BELOW the bucket's lower bound AND it's late afternoon
+        # If it's past 3 PM, temps are falling, and high hasn't reached the bucket
+        utc_now = datetime.now(timezone.utc)
+        city_info = CITIES.get(city_code, {})
+        tz_name = city_info.get("timezone", "America/New_York")
+        offset = -6 if ("Chicago" in tz_name or "Central" in tz_name) else -5
+        local_hour = (utc_now.hour + offset) % 24
+
+        if local_hour >= 16 and todays_high < temp_low - 2:
+            # After 4 PM and high never reached the bucket → NO side wins
+            no_price = market.get("no_ask", 0) or (100 - ref_price)
+            if no_price <= 0 or no_price >= 95:
+                return None
+
+            edge = (100 - no_price) / 100.0
+            if edge < 0.05:
+                return None
+
+            bankroll_cents = getattr(self, 'balance_cents', None) or config.MAX_TOTAL_EXPOSURE_CENTS
+            max_bet_cents = int(bankroll_cents * config.MAX_POSITION_PCT)
+            contracts = max(1, int(max_bet_cents / no_price))
+
+            print(f"    [CONFIRMED] {city_code} high only {todays_high}°F at {local_hour}:00, "
+                  f"bucket {temp_low}-{temp_high}°F unreachable")
+            print(f"    [CONFIRMED] NO @ {no_price}¢ → MAX POSITION {contracts} contracts")
+
+            return {
+                "signal": "buy_no",
+                "side": "no",
+                "edge": edge,
+                "confidence": 0.95,
+                "price_cents": no_price,
+                "confirmation_multiplier": 1.0,
+                "confirmation_verdict": "CONFIRMED_OUTCOME",
+                "predicted_high": todays_high,
+                "suggested_contracts": contracts,
+                "ticker": ticker,
+                "order_type": "limit",
+                "quality_score": 1.0,
+                "seasonal_regime": "confirmed",
+                "seasonal_multiplier": 1.0,
+                "reasoning": (
+                    f"[CONFIRMED] {city_code}: {local_hour}:00 local, high only {todays_high}°F, "
+                    f"bucket {temp_low}-{temp_high}°F unreachable. NO @ {no_price}¢. "
+                    f"Max position: {contracts} contracts."
+                ),
+                "strategy": "S1-Weather",
+            }
+
+        return None
 
     # ═══════════════════════════════════════════════════════
     # POSITION SIZING (Quarter-Kelly)

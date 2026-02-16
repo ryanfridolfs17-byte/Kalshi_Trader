@@ -200,6 +200,7 @@ tr:hover td { background: rgba(255,255,255,0.03); }
   font-size: 11px;
   font-weight: 600;
 }
+.badge-confirmed { background: rgba(52,211,153,0.3); color: var(--accent-green); font-weight: 700; }
 .badge-strong { background: rgba(52,211,153,0.15); color: var(--accent-green); }
 .badge-confirm { background: rgba(96,165,250,0.15); color: var(--accent-blue); }
 .badge-weak { background: rgba(251,191,36,0.15); color: var(--accent-amber); }
@@ -609,7 +610,7 @@ function updateDashboard(data) {
     trBody.innerHTML = recentTrades.map(t => {
       const time = new Date(t.timestamp).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
       const conf = t.confirmation || '';
-      const confClass = conf === 'STRONG' ? 'badge-strong' : conf === 'CONFIRM' ? 'badge-confirm' : 'badge-weak';
+      const confClass = conf === 'CONFIRMED_OUTCOME' ? 'badge-confirmed' : conf === 'STRONG' ? 'badge-strong' : conf === 'CONFIRM' ? 'badge-confirm' : 'badge-weak';
       let statusBadge = '';
       if (t.settled && t.result === 'expired_dry_run') statusBadge = '<span class="badge badge-dry">expired</span>';
       else if (t.settled && (t.profit_cents||0) > 0) statusBadge = '<span class="badge badge-win">+$'+(t.profit_cents/100).toFixed(2)+'</span>';
