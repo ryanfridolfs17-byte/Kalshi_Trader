@@ -130,8 +130,12 @@ class Strategy:
 
         best = max(signals, key=lambda s: s["edge"] * s["confidence"])
 
-        if best["edge"] < config.MIN_EDGE:
-            return self._skip(f"Best edge {best['edge']:.1%} below {config.MIN_EDGE:.0%} threshold")
+        # Time-based edge threshold: be selective early, save capital for
+        # afternoon confirmed outcomes and arbitrage opportunities.
+        # Confirmed outcomes and arbitrage bypass this entirely.
+        min_edge = self._get_time_adjusted_edge_threshold(best)
+        if best["edge"] < min_edge:
+            return self._skip(f"Best edge {best['edge']:.1%} below {min_edge:.0%} threshold ({self._get_edge_period()})")
 
         # Confirmed outcomes already have max sizing — skip normal sizing pipeline
         if best.get("confirmation_verdict") == "CONFIRMED_OUTCOME":
@@ -168,13 +172,6 @@ class Strategy:
         if quality_score < 0.9:
             contracts = self.quality.adjust_contracts_for_quality(contracts, market, quality_score)
             best["suggested_contracts"] = contracts
-
-        # Liquidity-adjusted sizing: cap contracts for low open_interest markets
-        oi = market.get("open_interest", 0) or 0
-        if oi < config.LIQUIDITY_TIER_1_OI:
-            best["suggested_contracts"] = min(best["suggested_contracts"], 1)
-        elif oi < config.LIQUIDITY_TIER_2_OI:
-            best["suggested_contracts"] = min(best["suggested_contracts"], 2)
 
         return best
 
@@ -639,6 +636,55 @@ class Strategy:
             }
 
         return None
+
+    # ═══════════════════════════════════════════════════════
+    # TIME-BASED EDGE THRESHOLDS
+    # ═══════════════════════════════════════════════════════
+
+    def _get_et_hour(self):
+        """Get approximate current hour in Eastern Time."""
+        utc_now = datetime.now(timezone.utc)
+        return (utc_now.hour - 5) % 24
+
+    def _get_edge_period(self):
+        """Return human-readable label for current edge period."""
+        h = self._get_et_hour()
+        if h < 6:
+            return "overnight"
+        elif h < 12:
+            return "morning"
+        elif h < 16:
+            return "afternoon"
+        else:
+            return "evening"
+
+    def _get_time_adjusted_edge_threshold(self, signal):
+        """
+        Require higher edge in the morning to preserve capital for
+        afternoon confirmed outcomes and arbitrage.
+
+        Confirmed outcomes and arbitrage bypass this entirely.
+        Normal forecast-based trades must clear a higher bar early.
+
+        MORNING  (6 AM-12 PM ET): 12% — be selective, save capital
+        AFTERNOON (12-4 PM ET):    8% — confirmed outcomes start appearing
+        EVENING  (4 PM+ ET):       8% — arbitrage and confirmed outcomes
+        OVERNIGHT (12-6 AM ET):   10% — good models but thin liquidity
+        """
+        # Arbitrage and confirmed outcomes always pass at base threshold
+        strategy = signal.get("strategy", "")
+        if strategy == "S2-Arbitrage":
+            return config.MIN_EDGE
+        if signal.get("confirmation_verdict") == "CONFIRMED_OUTCOME":
+            return 0.0  # Always take confirmed outcomes
+
+        h = self._get_et_hour()
+        if h < 6:
+            return 0.10   # Overnight: 10%
+        elif h < 12:
+            return 0.12   # Morning: 12% — be selective
+        else:
+            return config.MIN_EDGE  # Afternoon/evening: base 8%
 
     # ═══════════════════════════════════════════════════════
     # POSITION SIZING (Quarter-Kelly)

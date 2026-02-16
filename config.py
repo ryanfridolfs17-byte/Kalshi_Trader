@@ -179,10 +179,11 @@ TAKE_PROFIT_PCT = 0.30              # 30%
 # Don't review positions younger than this (avoid whipsaw on fresh trades)
 MIN_REVIEW_AGE_MINUTES = 10
 
-# Liquidity tiers for position sizing (by open_interest)
-LIQUIDITY_TIER_1_OI = 50    # open_interest < 50 → max 1 contract
-LIQUIDITY_TIER_2_OI = 200   # open_interest < 200 → max 2 contracts
-LIQUIDITY_FULL_OI = 500     # open_interest >= 500 → full sizing
+# Liquidity tiers (no longer used for position sizing caps — sizing is
+# governed by Kelly + 20% bankroll cap. Kept for market_quality filter.)
+LIQUIDITY_TIER_1_OI = 50
+LIQUIDITY_TIER_2_OI = 200
+LIQUIDITY_FULL_OI = 500
 
 # ═══════════════════════════════════════════════════════
 # SEASONAL SIZING
