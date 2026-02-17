@@ -1291,9 +1291,11 @@ def _sync_balance(client, risk, strategy):
 def _sync_pnl_from_kalshi(client, intel=None):
     """Compute realized P&L from actual Kalshi fills and settlements.
 
-    Fetches all trade fills (buys/sells) and market settlements from the
-    Kalshi API, then computes:
-      total P&L = (sell revenue + settlement revenue) - buy cost
+    Only counts P&L from CLOSED tickers (settled markets or early exits).
+    Open positions are excluded — their buy cost is not a realized loss.
+
+    Per-ticker P&L = (sell fill revenue + settlement revenue) - buy fill cost
+    A ticker is "closed" if it has a settlement OR sell fills.
 
     This is the source of truth — it replaces any internal P&L tracking.
     Must run AFTER check_settlements() so it overwrites the file last.
@@ -1328,50 +1330,73 @@ def _sync_pnl_from_kalshi(client, intel=None):
             if not cursor or not settlements:
                 break
 
-        # Compute cost/revenue from fills
-        total_buy_cost = 0
-        total_sell_revenue = 0
-
+        # Group fills by ticker
+        ticker_flows = {}  # ticker → {buy_cost, sell_revenue}
         for fill in all_fills:
+            ticker = fill.get("ticker", "")
+            if not ticker:
+                continue
+            if ticker not in ticker_flows:
+                ticker_flows[ticker] = {"buy_cost": 0, "sell_revenue": 0}
+
             action = fill.get("action", "")
             side = fill.get("side", "")
             count = fill.get("count", 0)
             price = fill.get("yes_price", 0) if side == "yes" else fill.get("no_price", 0)
 
             if action == "buy":
-                total_buy_cost += price * count
+                ticker_flows[ticker]["buy_cost"] += price * count
             elif action == "sell":
-                total_sell_revenue += price * count
+                ticker_flows[ticker]["sell_revenue"] += price * count
 
-        # Compute revenue from settlements
-        total_settlement_revenue = 0
+        # Build settlement revenue lookup
+        settle_rev = {}  # ticker → revenue
+        for s in all_settlements:
+            ticker = s.get("ticker", "")
+            if ticker:
+                settle_rev[ticker] = (s.get("revenue", 0) or 0)
+
+        # Compute realized P&L: only for tickers that are closed
+        # (have a settlement or have sell fills)
+        settled_tickers = set(settle_rev.keys())
+        total_invested = 0
+        total_returned = 0
         wins = 0
         losses = 0
 
-        for s in all_settlements:
-            revenue = s.get("revenue", 0) or 0
-            yes_cost = s.get("yes_total_cost", 0) or 0
-            no_cost = s.get("no_total_cost", 0) or 0
-            total_cost = yes_cost + no_cost
+        for ticker, flows in ticker_flows.items():
+            has_settlement = ticker in settled_tickers
+            has_sells = flows["sell_revenue"] > 0
 
-            total_settlement_revenue += revenue
+            if not has_settlement and not has_sells:
+                continue  # Open position — skip
 
-            # Count win/loss only for markets where we had a position at settlement
-            if total_cost > 0 or revenue > 0:
-                if revenue > total_cost:
-                    wins += 1
-                else:
-                    losses += 1
+            buy_cost = flows["buy_cost"]
+            sell_revenue = flows["sell_revenue"]
+            settlement_revenue = settle_rev.pop(ticker, 0)
 
-        # Total P&L = sell revenue + settlement revenue - buy cost
-        total_revenue = total_sell_revenue + total_settlement_revenue
-        total_pnl = total_revenue - total_buy_cost
+            ticker_pnl = sell_revenue + settlement_revenue - buy_cost
+            total_invested += buy_cost
+            total_returned += sell_revenue + settlement_revenue
+
+            if ticker_pnl > 0:
+                wins += 1
+            elif buy_cost > 0:
+                losses += 1
+
+        # Include any settlements we didn't have fills for (edge case)
+        for ticker, revenue in settle_rev.items():
+            if revenue > 0:
+                total_returned += revenue
+                wins += 1
+
+        total_pnl = total_returned - total_invested
 
         # Update pnl_history.json with Kalshi ground truth
         pnl_data = {
             "trades": [],
-            "total_invested_cents": total_buy_cost,
-            "total_returned_cents": total_revenue,
+            "total_invested_cents": total_invested,
+            "total_returned_cents": total_returned,
             "total_profit_cents": total_pnl,
             "wins": wins,
             "losses": losses,
