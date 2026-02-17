@@ -459,10 +459,9 @@ class TradeIntelligence:
                              entry_edge, edge_decay_pct, dist, parsed, side):
         """Package all review intermediate data into a structured dict for the dashboard."""
         entry_price = pos.get("cost_cents", 0) / max(pos.get("contracts", 1), 1)
+        # _get_current_price() returns the bid for our side (yes_bid or no_bid),
+        # so P&L = (what we'd sell for - what we paid) for both YES and NO.
         pnl_pct = ((current_price - entry_price) / max(entry_price, 1)) if entry_price > 0 else 0
-        if side == "no":
-            # For NO positions, P&L is inverted: we profit when price drops
-            pnl_pct = ((entry_price - current_price) / max(entry_price, 1)) if entry_price > 0 else 0
 
         market_prob = current_price / 100.0
 
