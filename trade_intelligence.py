@@ -252,32 +252,53 @@ class TradeIntelligence:
 
                 # Intraday temp elimination check
                 actual_temp = self.get_current_temperature(city_code)
-                if actual_temp is not None and weather_engine:
+                todays_high = self.get_todays_high_so_far(city_code)
+                if weather_engine and (actual_temp is not None or todays_high is not None):
                     parsed = self._parse_position_bucket(ticker, weather_engine, pos.get("title", ""))
                     if parsed:
                         temp_low = parsed["temp_low"]
                         temp_high = parsed["temp_high"]
+                        target_date = parsed.get("target_date")
+                        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                         now_hour = datetime.now().hour
 
-                        if side == "yes" and now_hour >= 15 and actual_temp < temp_low - 3:
+                        # Only use observations for today's markets
+                        is_today = (target_date == today_str) if target_date else True
+
+                        # HIGH ALREADY EXCEEDED BUCKET — YES is a guaranteed loss
+                        # Daily high can only go up, so if it's past the bucket's
+                        # upper bound the final high will never be inside the range.
+                        obs_high = todays_high if todays_high is not None else actual_temp
+                        if is_today and side == "yes" and obs_high is not None and obs_high > temp_high:
                             actions.append({
                                 "ticker": ticker, "action": "full_exit", "urgency": "high",
-                                "reason": f"Temp {actual_temp}F at {now_hour}:00, bucket needs {temp_low}-{temp_high}F",
+                                "reason": f"High already {obs_high:.1f}F, exceeds bucket {temp_low}-{temp_high}F — guaranteed loss",
                                 "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
                                 "city_code": city_code, "side": side, "contracts": contracts,
                                 "cost_cents": cost_cents,
                             })
                             continue
 
-                        if side == "no" and temp_low <= actual_temp <= temp_high and now_hour >= 12:
-                            actions.append({
-                                "ticker": ticker, "action": "full_exit", "urgency": "high",
-                                "reason": f"Temp {actual_temp}F is IN bucket {temp_low}-{temp_high}F at {now_hour}:00",
-                                "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
-                                "city_code": city_code, "side": side, "contracts": contracts,
-                                "cost_cents": cost_cents,
-                            })
-                            continue
+                        if actual_temp is not None:
+                            if side == "yes" and now_hour >= 15 and actual_temp < temp_low - 3:
+                                actions.append({
+                                    "ticker": ticker, "action": "full_exit", "urgency": "high",
+                                    "reason": f"Temp {actual_temp}F at {now_hour}:00, bucket needs {temp_low}-{temp_high}F",
+                                    "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
+                                    "city_code": city_code, "side": side, "contracts": contracts,
+                                    "cost_cents": cost_cents,
+                                })
+                                continue
+
+                            if side == "no" and temp_low <= actual_temp <= temp_high and now_hour >= 12:
+                                actions.append({
+                                    "ticker": ticker, "action": "full_exit", "urgency": "high",
+                                    "reason": f"Temp {actual_temp}F is IN bucket {temp_low}-{temp_high}F at {now_hour}:00",
+                                    "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
+                                    "city_code": city_code, "side": side, "contracts": contracts,
+                                    "cost_cents": cost_cents,
+                                })
+                                continue
 
             # ─── FRESH PROBABILITY RE-EVALUATION ───
             new_prob = None
