@@ -463,7 +463,7 @@ tr.underwater td:first-child { box-shadow: inset 3px 0 0 var(--accent-red); }
     <div class="card-title">Active Positions</div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Type</th><th>Description</th><th>Side</th><th>Cost</th><th>Qty</th><th>Edge</th><th>Exp. Profit</th><th>Status</th><th>Opened</th><th>Action</th></tr></thead>
+        <thead><tr><th>Type</th><th>Description</th><th>Side</th><th>Cost</th><th>Qty</th><th>Edge</th><th>Exp. Profit</th><th>Live Price</th><th>Unreal. P&L</th><th>Status</th><th>Opened</th><th>Action</th></tr></thead>
         <tbody id="positionsBody"></tbody>
       </table>
     </div>
@@ -624,6 +624,21 @@ function updateDashboard(data) {
       const hasReview = !!rv.reviewed_at;
       const rowClass = isUnderwater ? ' class="underwater"' : '';
 
+      // Live price and unrealized P&L from last review
+      let livePriceHtml = '<span style="color:var(--text-secondary)">-</span>';
+      let unrealPnlHtml = '<span style="color:var(--text-secondary)">-</span>';
+      if (hasReview && rv.current_price != null) {
+        livePriceHtml = rv.current_price + '&cent;';
+        const entryPer = p.cost_cents / Math.max(p.contracts, 1);
+        const currentVal = rv.current_price * p.contracts;
+        const unrealCents = (p.side === 'no')
+          ? (rv.entry_price - rv.current_price) * p.contracts
+          : (rv.current_price - rv.entry_price) * p.contracts;
+        const unrealClass = unrealCents >= 0 ? 'green' : 'red';
+        const unrealSign = unrealCents >= 0 ? '+$' : '-$';
+        unrealPnlHtml = `<span class="${unrealClass}">${unrealSign}${Math.abs(unrealCents / 100).toFixed(2)}</span>`;
+      }
+
       let detailsLink = '';
       if (hasReview) {
         detailsLink = ` <span class="review-toggle" onclick="toggleReview(${idx})">[Details]</span>`;
@@ -651,7 +666,7 @@ function updateDashboard(data) {
         const actionLabel = (p.last_review_action || 'hold').toUpperCase();
 
         reviewRow = `<tr class="review-row" id="review-${idx}" style="display:none">
-          <td colspan="10">
+          <td colspan="12">
             <div class="review-panel">
               <div class="review-stats">
                 <div class="review-stat"><div class="review-stat-label">Current Edge</div><div class="review-stat-value ${edgeClass}">${curEdge}</div></div>
@@ -675,6 +690,8 @@ function updateDashboard(data) {
         <td>${p.contracts}</td>
         <td>${edgePct}</td>
         <td class="${expClass}">${expProfit}</td>
+        <td>${livePriceHtml}</td>
+        <td>${unrealPnlHtml}</td>
         <td>${statusBadge}</td>
         <td style="color:var(--text-secondary)">${age}</td>
         <td><button class="btn" onclick="closePosition('${p.ticker}', ${p.contracts}, ${p.cost_cents})" style="padding:4px 10px;font-size:11px;background:rgba(248,113,113,0.15);color:var(--accent-red);border:1px solid rgba(248,113,113,0.3);flex:none;">Close</button></td>
