@@ -231,7 +231,6 @@ def main():
             # ═══════════════════════════════════════════════
             _reconcile_positions(client, risk)
             _sync_balance(client, risk, strategy)
-            _sync_pnl_from_kalshi(client)
 
             # Log settlement status
             breakdown = risk.get_exposure_breakdown()
@@ -249,6 +248,10 @@ def main():
             if settled:
                 print(f"  → {len(settled)} trades settled")
                 _save_trade_log(trade_log)
+
+            # Sync P&L from Kalshi AFTER check_settlements so it overwrites
+            # the internal tracking with ground truth from the exchange.
+            _sync_pnl_from_kalshi(client, intel)
             intel.print_pnl()
 
             # Daily report generation on day change
@@ -1285,7 +1288,7 @@ def _sync_balance(client, risk, strategy):
         pass
 
 
-def _sync_pnl_from_kalshi(client):
+def _sync_pnl_from_kalshi(client, intel=None):
     """Compute realized P&L from actual Kalshi fills and settlements.
 
     Fetches all trade fills (buys/sells) and market settlements from the
@@ -1293,6 +1296,7 @@ def _sync_pnl_from_kalshi(client):
       total P&L = (sell revenue + settlement revenue) - buy cost
 
     This is the source of truth — it replaces any internal P&L tracking.
+    Must run AFTER check_settlements() so it overwrites the file last.
     """
     if config.API_KEY_ID == "YOUR_API_KEY_ID_HERE" or config.DRY_RUN:
         return
@@ -1379,6 +1383,11 @@ def _sync_pnl_from_kalshi(client):
 
         with open(config.PNL_HISTORY_FILE, "w") as f:
             json.dump(pnl_data, f, indent=2)
+
+        # Also update TradeIntelligence in-memory state so print_pnl()
+        # and future check_settlements() calls start from Kalshi truth.
+        if intel:
+            intel.pnl_data = pnl_data
 
         print(f"  [P&L SYNC] Kalshi: {len(all_fills)} fills, {len(all_settlements)} settlements → "
               f"P&L ${total_pnl/100:+.2f} ({wins}W/{losses}L)")
