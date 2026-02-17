@@ -327,6 +327,20 @@ class Strategy:
             }
         else:
             # Overpriced YES — buy NO
+            # Forecast-strike separation: don't bet NO when the forecast
+            # is too close to the bucket range (high chance of landing inside)
+            forecast_mean = distribution["forecasted_high_mean"]
+            if temp_low <= forecast_mean <= temp_high:
+                separation = 0
+            elif forecast_mean < temp_low:
+                separation = temp_low - forecast_mean
+            else:
+                separation = forecast_mean - temp_high
+            if separation < 3:
+                print(f"    [STRATEGY] Skipped NO on {city_code} {temp_low}-{temp_high}°F: "
+                      f"forecast {forecast_mean:.1f}°F only {separation:.1f}°F away (insufficient_separation)")
+                return None
+
             no_price = smart_price if smart_price else (market.get("no_ask", 0) or (100 - ref_price))
             signal = {
                 "signal": "buy_no",
