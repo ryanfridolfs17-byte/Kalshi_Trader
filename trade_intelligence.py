@@ -212,14 +212,13 @@ class TradeIntelligence:
             if not ticker:
                 continue
 
-            # Skip positions that are too young (avoid whipsaw)
+            # Track position age (used for whipsaw guard, bypassed for confirmed losses)
+            age_minutes = None
             timestamp = pos.get("timestamp")
             if timestamp:
                 try:
                     placed_at = datetime.fromisoformat(timestamp)
                     age_minutes = (datetime.now() - placed_at).total_seconds() / 60
-                    if age_minutes < config.MIN_REVIEW_AGE_MINUTES:
-                        continue
                 except Exception:
                     pass
 
@@ -235,25 +234,11 @@ class TradeIntelligence:
             if current_price is None:
                 continue
 
-            # ─── WEATHER-SPECIFIC CHECKS (preserve existing rules) ───
-            if is_weather:
-                # Take profit check
-                if side == "yes" and current_price > 0 and entry_price > 0:
-                    profit_pct = (current_price - entry_price) / max(entry_price, 1)
-                    if profit_pct >= config.TAKE_PROFIT_PCT:
-                        actions.append({
-                            "ticker": ticker, "action": "full_exit", "urgency": "medium",
-                            "reason": f"Take profit: up {profit_pct:.0%} (entry {entry_price:.0f}c, now {current_price}c)",
-                            "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
-                            "city_code": city_code, "side": side, "contracts": contracts,
-                            "cost_cents": cost_cents,
-                        })
-                        continue
-
-                # Intraday temp elimination check
+            # ─── WEATHER OBSERVATION CHECKS (run BEFORE age gate — confirmed losses exit immediately) ───
+            if is_weather and weather_engine:
                 actual_temp = self.get_current_temperature(city_code)
                 todays_high = self.get_todays_high_so_far(city_code)
-                if weather_engine and (actual_temp is not None or todays_high is not None):
+                if actual_temp is not None or todays_high is not None:
                     parsed = self._parse_position_bucket(ticker, weather_engine, pos.get("title", ""))
                     if parsed:
                         temp_low = parsed["temp_low"]
@@ -261,14 +246,11 @@ class TradeIntelligence:
                         target_date = parsed.get("target_date")
                         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                         now_hour = datetime.now().hour
-
-                        # Only use observations for today's markets
                         is_today = (target_date == today_str) if target_date else True
+                        obs_high = todays_high if todays_high is not None else actual_temp
 
                         # HIGH ALREADY EXCEEDED BUCKET — YES is a guaranteed loss
-                        # Daily high can only go up, so if it's past the bucket's
-                        # upper bound the final high will never be inside the range.
-                        obs_high = todays_high if todays_high is not None else actual_temp
+                        # Daily high can only go up, never down.
                         if is_today and side == "yes" and obs_high is not None and obs_high > temp_high:
                             actions.append({
                                 "ticker": ticker, "action": "full_exit", "urgency": "high",
@@ -279,26 +261,60 @@ class TradeIntelligence:
                             })
                             continue
 
-                        if actual_temp is not None:
-                            if side == "yes" and now_hour >= 15 and actual_temp < temp_low - 3:
+                        # YES + temp far below bucket — dynamic threshold by time of day
+                        # Earlier in the day needs a larger gap (temp could still rise)
+                        # Later in the day, even a small gap is fatal
+                        if is_today and side == "yes" and actual_temp is not None:
+                            if now_hour >= 18:
+                                gap_needed = 1   # After 6 PM: 1°F gap enough
+                            elif now_hour >= 15:
+                                gap_needed = 3   # After 3 PM: 3°F gap
+                            elif now_hour >= 12:
+                                gap_needed = 6   # After noon: 6°F gap
+                            else:
+                                gap_needed = 10  # Morning: 10°F gap (temp can still rise a lot)
+
+                            if actual_temp < temp_low - gap_needed:
                                 actions.append({
                                     "ticker": ticker, "action": "full_exit", "urgency": "high",
-                                    "reason": f"Temp {actual_temp}F at {now_hour}:00, bucket needs {temp_low}-{temp_high}F",
+                                    "reason": f"Temp {actual_temp:.0f}F at {now_hour}:00, {temp_low - actual_temp:.0f}F below bucket {temp_low}-{temp_high}F",
                                     "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
                                     "city_code": city_code, "side": side, "contracts": contracts,
                                     "cost_cents": cost_cents,
                                 })
                                 continue
 
-                            if side == "no" and temp_low <= actual_temp <= temp_high and now_hour >= 12:
+                        # NO + temp currently inside bucket — position at risk
+                        if is_today and side == "no" and actual_temp is not None:
+                            if temp_low <= actual_temp <= temp_high and now_hour >= 12:
                                 actions.append({
                                     "ticker": ticker, "action": "full_exit", "urgency": "high",
-                                    "reason": f"Temp {actual_temp}F is IN bucket {temp_low}-{temp_high}F at {now_hour}:00",
+                                    "reason": f"Temp {actual_temp:.0f}F is IN bucket {temp_low}-{temp_high}F at {now_hour}:00",
                                     "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
                                     "city_code": city_code, "side": side, "contracts": contracts,
                                     "cost_cents": cost_cents,
                                 })
                                 continue
+
+            # Skip positions that are too young for probabilistic review (whipsaw guard)
+            # Note: observation-based confirmed losses above bypass this gate
+            if age_minutes is not None and age_minutes < config.MIN_REVIEW_AGE_MINUTES:
+                continue
+
+            # ─── WEATHER-SPECIFIC PROFIT CHECKS ───
+            if is_weather:
+                # Take profit check (both YES and NO positions)
+                if current_price > 0 and entry_price > 0:
+                    profit_pct = (current_price - entry_price) / max(entry_price, 1)
+                    if profit_pct >= config.TAKE_PROFIT_PCT:
+                        actions.append({
+                            "ticker": ticker, "action": "full_exit", "urgency": "medium",
+                            "reason": f"Take profit: up {profit_pct:.0%} (entry {entry_price:.0f}c, now {current_price}c)",
+                            "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
+                            "city_code": city_code, "side": side, "contracts": contracts,
+                            "cost_cents": cost_cents,
+                        })
+                        continue
 
             # ─── FRESH PROBABILITY RE-EVALUATION ───
             new_prob = None
