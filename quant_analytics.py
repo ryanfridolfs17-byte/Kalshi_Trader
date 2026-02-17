@@ -443,19 +443,19 @@ class QuantAnalytics:
                 bankroll = rm.state.get("balance_cents", config.MAX_TOTAL_EXPOSURE_CENTS)
             except Exception:
                 bankroll = config.MAX_TOTAL_EXPOSURE_CENTS
-            max_position_cost = int(bankroll * config.MAX_POSITION_PCT)
             new_trade_cost = new_cost * signal.get("suggested_contracts", 1)
-            under_cap = (existing_total_cost + new_trade_cost) <= max_position_cost
+            ticker_cap = config.MAX_PER_TICKER_CENTS
+            under_cap = (existing_total_cost + new_trade_cost) <= ticker_cap
 
             if under_cap and new_cost < existing_avg_cost:
                 print(f"  [CORR] Scale-in allowed: {new_ticker} "
-                      f"({existing_contracts} held, ${existing_total_cost/100:.2f}/${max_position_cost/100:.2f} cap, "
+                      f"({existing_contracts} held, ${existing_total_cost/100:.2f}/${ticker_cap/100:.2f} cap, "
                       f"new {new_cost}c < avg {existing_avg_cost:.0f}c)")
                 return 1.0  # Allow the add
             else:
                 reason = []
                 if not under_cap:
-                    reason.append(f"${(existing_total_cost + new_trade_cost)/100:.2f} > ${max_position_cost/100:.2f} (20% cap)")
+                    reason.append(f"${(existing_total_cost + new_trade_cost)/100:.2f} > ${ticker_cap/100:.2f} (ticker cap)")
                 if new_cost >= existing_avg_cost:
                     reason.append(f"price {new_cost}c >= avg {existing_avg_cost:.0f}c")
                 print(f"  [CORR] Scale-in blocked: {new_ticker} ({', '.join(reason)})")

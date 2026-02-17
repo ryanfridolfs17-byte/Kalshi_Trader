@@ -112,6 +112,17 @@ class RiskManager:
                 if corr_count >= config.MAX_CORRELATED_POSITIONS:
                     return False, f"Max {config.MAX_CORRELATED_POSITIONS} correlated positions for {city} on {signal_date}"
 
+        # 4c. Per-ticker cost cap (prevents runaway scaling into one contract)
+        ticker = signal.get("ticker", "")
+        if ticker:
+            existing_ticker_cost = sum(
+                p.get("cost_cents", 0) for p in self.state["positions"]
+                if p.get("ticker") == ticker
+            )
+            if existing_ticker_cost + cost > config.MAX_PER_TICKER_CENTS:
+                return False, (f"Ticker {ticker} capped: ${existing_ticker_cost/100:.2f} + ${cost/100:.2f} "
+                               f"> ${config.MAX_PER_TICKER_CENTS/100:.2f}")
+
         # 5. Consecutive loss pause
         if self.state["loss_pause_until"]:
             pause_until = datetime.fromisoformat(self.state["loss_pause_until"])

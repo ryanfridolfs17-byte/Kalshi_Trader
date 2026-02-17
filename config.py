@@ -139,8 +139,9 @@ MAX_PER_CITY_CENTS = 2500           # $25.00 per city
 # Max positions per city+date combination
 MAX_CORRELATED_POSITIONS = 3
 
-# Max contracts per single ticker: no hard cap — governed by MAX_POSITION_PCT (20% of bankroll)
-# MAX_CONTRACTS_PER_TICKER removed — use percentage-based sizing instead
+# Max total cost per single ticker (prevents over-concentration on one contract)
+# e.g., KXHIGHNY-26FEB16-B41.5 can never exceed $15.00 total invested
+MAX_PER_TICKER_CENTS = 1500          # $15.00 per ticker
 
 # Pause after this many consecutive losses
 CONSECUTIVE_LOSS_PAUSE = 5
