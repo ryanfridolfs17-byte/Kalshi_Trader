@@ -267,3 +267,23 @@ class KalshiClient:
         query = "&".join(params) if params else ""
         path = f"/portfolio/orders?{query}" if query else "/portfolio/orders"
         return self._request("GET", path, authenticated=True)
+
+    def get_fills(self, limit=200, cursor=None, min_ts=None):
+        """Get executed trade fills (buys and sells)."""
+        params = [f"limit={limit}"]
+        if cursor:
+            params.append(f"cursor={cursor}")
+        if min_ts:
+            params.append(f"min_ts={min_ts}")
+        query = "&".join(params)
+        return self._request("GET", f"/portfolio/fills?{query}", authenticated=True)
+
+    def get_settlements(self, limit=200, cursor=None, min_ts=None):
+        """Get settlement results for resolved markets."""
+        params = [f"limit={limit}"]
+        if cursor:
+            params.append(f"cursor={cursor}")
+        if min_ts:
+            params.append(f"min_ts={min_ts}")
+        query = "&".join(params)
+        return self._request("GET", f"/portfolio/settlements?{query}", authenticated=True)

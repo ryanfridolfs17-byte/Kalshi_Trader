@@ -231,6 +231,7 @@ def main():
             # ═══════════════════════════════════════════════
             _reconcile_positions(client, risk)
             _sync_balance(client, risk, strategy)
+            _sync_pnl_from_kalshi(client)
 
             # Log settlement status
             breakdown = risk.get_exposure_breakdown()
@@ -1282,6 +1283,108 @@ def _sync_balance(client, risk, strategy):
                 strategy.balance_cents = balance_cents
     except Exception:
         pass
+
+
+def _sync_pnl_from_kalshi(client):
+    """Compute realized P&L from actual Kalshi fills and settlements.
+
+    Fetches all trade fills (buys/sells) and market settlements from the
+    Kalshi API, then computes:
+      total P&L = (sell revenue + settlement revenue) - buy cost
+
+    This is the source of truth — it replaces any internal P&L tracking.
+    """
+    if config.API_KEY_ID == "YOUR_API_KEY_ID_HERE" or config.DRY_RUN:
+        return
+
+    try:
+        # Fetch all fills (paginated)
+        all_fills = []
+        cursor = None
+        while True:
+            result = client.get_fills(limit=200, cursor=cursor)
+            if not result:
+                break
+            fills = result.get("fills", [])
+            all_fills.extend(fills)
+            cursor = result.get("cursor")
+            if not cursor or not fills:
+                break
+
+        # Fetch all settlements (paginated)
+        all_settlements = []
+        cursor = None
+        while True:
+            result = client.get_settlements(limit=200, cursor=cursor)
+            if not result:
+                break
+            settlements = result.get("settlements", [])
+            all_settlements.extend(settlements)
+            cursor = result.get("cursor")
+            if not cursor or not settlements:
+                break
+
+        # Compute cost/revenue from fills
+        total_buy_cost = 0
+        total_sell_revenue = 0
+
+        for fill in all_fills:
+            action = fill.get("action", "")
+            side = fill.get("side", "")
+            count = fill.get("count", 0)
+            price = fill.get("yes_price", 0) if side == "yes" else fill.get("no_price", 0)
+
+            if action == "buy":
+                total_buy_cost += price * count
+            elif action == "sell":
+                total_sell_revenue += price * count
+
+        # Compute revenue from settlements
+        total_settlement_revenue = 0
+        wins = 0
+        losses = 0
+
+        for s in all_settlements:
+            revenue = s.get("revenue", 0) or 0
+            yes_cost = s.get("yes_total_cost", 0) or 0
+            no_cost = s.get("no_total_cost", 0) or 0
+            total_cost = yes_cost + no_cost
+
+            total_settlement_revenue += revenue
+
+            # Count win/loss only for markets where we had a position at settlement
+            if total_cost > 0 or revenue > 0:
+                if revenue > total_cost:
+                    wins += 1
+                else:
+                    losses += 1
+
+        # Total P&L = sell revenue + settlement revenue - buy cost
+        total_revenue = total_sell_revenue + total_settlement_revenue
+        total_pnl = total_revenue - total_buy_cost
+
+        # Update pnl_history.json with Kalshi ground truth
+        pnl_data = {
+            "trades": [],
+            "total_invested_cents": total_buy_cost,
+            "total_returned_cents": total_revenue,
+            "total_profit_cents": total_pnl,
+            "wins": wins,
+            "losses": losses,
+            "kalshi_synced": True,
+            "kalshi_fills": len(all_fills),
+            "kalshi_settlements": len(all_settlements),
+            "last_sync": datetime.now(timezone.utc).isoformat(),
+        }
+
+        with open(config.PNL_HISTORY_FILE, "w") as f:
+            json.dump(pnl_data, f, indent=2)
+
+        print(f"  [P&L SYNC] Kalshi: {len(all_fills)} fills, {len(all_settlements)} settlements → "
+              f"P&L ${total_pnl/100:+.2f} ({wins}W/{losses}L)")
+
+    except Exception as e:
+        print(f"  [P&L SYNC] Error: {e}")
 
 
 def _reconcile_positions(client, risk):

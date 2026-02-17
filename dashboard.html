@@ -566,7 +566,17 @@ function updateDashboard(data) {
   const totalPnl = (pnl.total_profit_cents || 0) / 100;
   document.getElementById('totalPnl').textContent = (totalPnl >= 0 ? '+$' : '-$') + Math.abs(totalPnl).toFixed(2);
   document.getElementById('totalPnl').className = 'card-value ' + (totalPnl >= 0 ? 'green' : 'red');
-  document.getElementById('winLoss').textContent = (pnl.wins || 0) + 'W / ' + (pnl.losses || 0) + 'L (settled)';
+  let pnlSub = (pnl.wins || 0) + 'W / ' + (pnl.losses || 0) + 'L';
+  if (pnl.kalshi_synced) {
+    pnlSub += ' (Kalshi)';
+    if (pnl.last_sync) {
+      const syncTime = new Date(pnl.last_sync).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+      pnlSub += ' ' + syncTime;
+    }
+  } else {
+    pnlSub += ' (settled)';
+  }
+  document.getElementById('winLoss').textContent = pnlSub;
 
   const positions = risk.positions || [];
   const eb = bot.exposure_breakdown || {};
