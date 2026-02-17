@@ -552,9 +552,15 @@ def main():
                               observation_mode=observation_mode, observation_reason=obs_reason,
                               risk_manager=risk)
 
-            # Wait for next cycle
-            print(f"  Next scan in {config.SCAN_INTERVAL // 60} minutes...")
-            time.sleep(config.SCAN_INTERVAL)
+            # Wait for next cycle — use faster scanning during peak temperature hours
+            et_hour = (datetime.now(timezone.utc).hour - 5) % 24
+            if config.PEAK_SCAN_START_ET <= et_hour < config.PEAK_SCAN_END_ET:
+                scan_interval = config.PEAK_SCAN_INTERVAL
+                print(f"  [PEAK] Afternoon peak hours ({config.PEAK_SCAN_START_ET}:00-{config.PEAK_SCAN_END_ET}:00 ET) — scanning every {scan_interval}s")
+            else:
+                scan_interval = config.SCAN_INTERVAL
+                print(f"  Next scan in {scan_interval // 60} minutes...")
+            time.sleep(scan_interval)
 
         except KeyboardInterrupt:
             print("\n\n  Bot stopped by user.")

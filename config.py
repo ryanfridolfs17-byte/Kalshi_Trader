@@ -80,6 +80,11 @@ DRY_RUN = os.environ.get("KALSHI_DRY_RUN", "true").lower() == "true"
 # Ensemble data is cached (not re-fetched every scan).
 SCAN_INTERVAL = 120  # 2 minutes
 
+# Peak-hour scanning: faster scans during afternoon temperature peaks (12-5 PM ET)
+PEAK_SCAN_INTERVAL = 60   # 1 minute during peak hours
+PEAK_SCAN_START_ET = 12   # Noon ET
+PEAK_SCAN_END_ET = 17     # 5 PM ET
+
 # Which cities to trade weather for
 # Options: "NYC", "CHI", "MIA", "AUS"
 WEATHER_CITIES = ["NYC", "CHI", "MIA", "AUS"]

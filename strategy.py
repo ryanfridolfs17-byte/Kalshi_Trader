@@ -649,16 +649,71 @@ class Strategy:
                 "strategy": "S1-Weather",
             }
 
-        # CASE 2: High already BELOW the bucket's lower bound AND it's late afternoon
-        # If it's past 3 PM, temps are falling, and high hasn't reached the bucket
+        # Calculate local hour for time-gated checks
         utc_now = datetime.now(timezone.utc)
         city_info = CITIES.get(city_code, {})
         tz_name = city_info.get("timezone", "America/New_York")
         offset = -6 if ("Chicago" in tz_name or "Central" in tz_name) else -5
         local_hour = (utc_now.hour + offset) % 24
 
-        if local_hour >= 16 and todays_high < temp_low - 2:
-            # After 4 PM and high never reached the bucket → NO side wins
+        # CASE 2 (NEW): High is currently INSIDE the bucket → YES confirmed
+        # At 2 PM+, if the observed high is within [temp_low, temp_high], YES is
+        # very likely to win — temps can only go up from here, so the high stays
+        # in or moves above the bucket (either way, it reached the bucket).
+        if local_hour >= 14 and temp_low <= todays_high <= temp_high:
+            yes_ask = market.get("yes_ask", 0) or ref_price
+            if yes_ask <= 0 or yes_ask >= 95:
+                return None  # Already priced in or no reasonable ask
+
+            edge = 1.0 - (yes_ask / 100.0)
+            if edge < 0.05:
+                return None
+
+            bankroll_cents = getattr(self, 'balance_cents', None) or config.MAX_TOTAL_EXPOSURE_CENTS
+            max_bet_cents = int(bankroll_cents * config.CONFIRMED_OUTCOME_POSITION_PCT)
+            contracts = max(1, int(max_bet_cents / yes_ask))
+
+            print(f"    [CONFIRMED] {city_code} high {todays_high}°F is IN bucket {temp_low}-{temp_high}°F")
+            print(f"    [CONFIRMED] YES @ {yes_ask}¢ is near-guaranteed → MAX POSITION {contracts} contracts")
+
+            return {
+                "signal": "buy_yes",
+                "side": "yes",
+                "edge": edge,
+                "confidence": 0.95,
+                "price_cents": yes_ask,
+                "confirmation_multiplier": 1.0,
+                "confirmation_verdict": "CONFIRMED_OUTCOME",
+                "predicted_high": todays_high,
+                "suggested_contracts": contracts,
+                "ticker": ticker,
+                "order_type": "limit",
+                "quality_score": 1.0,
+                "seasonal_regime": "confirmed",
+                "seasonal_multiplier": 1.0,
+                "reasoning": (
+                    f"[CONFIRMED] {city_code}: NWS observed high {todays_high}°F is inside "
+                    f"bucket {temp_low}-{temp_high}°F at {local_hour}:00 local. YES @ {yes_ask}¢ is near-guaranteed. "
+                    f"Max position: {contracts} contracts."
+                ),
+                "strategy": "S1-Weather",
+            }
+
+        # CASE 3: High already BELOW the bucket's lower bound — graduated time thresholds
+        # Earlier detection = cheaper NO contracts = more profit.
+        # 1 PM: need 6°F gap (very confident temps won't spike that much)
+        # 3 PM: need 3°F gap (peak temps usually hit by now)
+        # 4 PM+: need 2°F gap (original threshold, temps are falling)
+        temp_gap = temp_low - todays_high
+        case3_triggered = False
+        if local_hour >= 16 and temp_gap > 2:
+            case3_triggered = True
+        elif local_hour >= 15 and temp_gap > 3:
+            case3_triggered = True
+        elif local_hour >= 13 and temp_gap > 6:
+            case3_triggered = True
+
+        if case3_triggered:
             no_price = market.get("no_ask", 0) or (100 - ref_price)
             if no_price <= 0 or no_price >= 95:
                 return None
@@ -672,7 +727,7 @@ class Strategy:
             contracts = max(1, int(max_bet_cents / no_price))
 
             print(f"    [CONFIRMED] {city_code} high only {todays_high}°F at {local_hour}:00, "
-                  f"bucket {temp_low}-{temp_high}°F unreachable")
+                  f"bucket {temp_low}-{temp_high}°F unreachable (gap: {temp_gap:.0f}°F)")
             print(f"    [CONFIRMED] NO @ {no_price}¢ → MAX POSITION {contracts} contracts")
 
             return {
@@ -692,7 +747,7 @@ class Strategy:
                 "seasonal_multiplier": 1.0,
                 "reasoning": (
                     f"[CONFIRMED] {city_code}: {local_hour}:00 local, high only {todays_high}°F, "
-                    f"bucket {temp_low}-{temp_high}°F unreachable. NO @ {no_price}¢. "
+                    f"bucket {temp_low}-{temp_high}°F unreachable (gap: {temp_gap:.0f}°F). NO @ {no_price}¢. "
                     f"Max position: {contracts} contracts."
                 ),
                 "strategy": "S1-Weather",

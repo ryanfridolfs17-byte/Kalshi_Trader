@@ -79,10 +79,12 @@ class RiskManager:
             return False, f"Per-position cap: ${cost/100:.2f} > ${max_per_position/100:.2f} (20% of ${balance/100:.2f})"
 
         # 2d. Liquidity reserve: keep % of bankroll liquid for next-day overnight edge window
+        # Confirmed outcomes bypass: near-guaranteed wins shouldn't be blocked by reserve
         reserve_cents = int(balance * config.LIQUIDITY_RESERVE_PCT)
         available = config.MAX_TOTAL_EXPOSURE_CENTS - active_exposure
+        is_confirmed = signal.get("confirmation_verdict") == "CONFIRMED_OUTCOME"
         if available - cost < reserve_cents:
-            if edge < 0.20:  # Override for exceptional edge
+            if not is_confirmed and edge < 0.20:  # Override for exceptional edge or confirmed outcomes
                 return False, (f"Liquidity reserve: ${available/100:.2f} available, "
                                f"trade costs ${cost/100:.2f}, need ${reserve_cents/100:.2f} reserve (25% of bankroll)")
 
