@@ -86,8 +86,13 @@ PEAK_SCAN_START_ET = 12   # Noon ET
 PEAK_SCAN_END_ET = 17     # 5 PM ET
 
 # Which cities to trade weather for
-# Options: "NYC", "CHI", "MIA", "AUS"
-WEATHER_CITIES = ["NYC", "CHI", "MIA", "AUS"]
+WEATHER_CITIES = [
+    "NYC", "CHI", "MIA", "AUS",           # Original 4
+    "LAX", "DEN", "PHI", "ATL",           # Expansion wave 1
+    "BOS", "DAL", "DC", "HOU",            # Expansion wave 2
+    "LV", "MIN", "NOLA", "OKC",           # Expansion wave 3
+    "PHX", "SATX", "SEA", "SFO",          # Expansion wave 4
+]
 
 # Also scan non-weather markets for arbitrage?
 SCAN_ALL_FOR_ARBITRAGE = True

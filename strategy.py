@@ -653,7 +653,17 @@ class Strategy:
         utc_now = datetime.now(timezone.utc)
         city_info = CITIES.get(city_code, {})
         tz_name = city_info.get("timezone", "America/New_York")
-        offset = -6 if ("Chicago" in tz_name or "Central" in tz_name) else -5
+        # Map timezone name to UTC offset (standard time — winter)
+        if "Pacific" in tz_name or "Los_Angeles" in tz_name:
+            offset = -8
+        elif "Mountain" in tz_name or "Denver" in tz_name:
+            offset = -7
+        elif "Phoenix" in tz_name:
+            offset = -7  # Arizona doesn't observe DST, but same offset as Mountain standard
+        elif "Chicago" in tz_name or "Central" in tz_name:
+            offset = -6
+        else:
+            offset = -5  # Eastern
         local_hour = (utc_now.hour + offset) % 24
 
         # CASE 2 (NEW): High is currently INSIDE the bucket → YES confirmed

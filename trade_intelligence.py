@@ -1083,6 +1083,22 @@ class TradeIntelligence:
             "KXHIGHCHI": "CHI",
             "KXHIGHMIA": "MIA",
             "KXHIGHAUS": "AUS",
+            "KXHIGHLAX": "LAX",
+            "KXHIGHDEN": "DEN",
+            "KXHIGHPHIL": "PHI",
+            "KXHIGHTATL": "ATL",
+            "KXHIGHTBOS": "BOS",
+            "KXHIGHTDAL": "DAL",
+            "KXHIGHTDC": "DC",
+            "KXHIGHTHOU": "HOU",
+            "KXHIGHTLV": "LV",
+            "KXHIGHTMIN": "MIN",
+            "KXHIGHTNOLA": "NOLA",
+            "KXHIGHTOKC": "OKC",
+            "KXHIGHTPHX": "PHX",
+            "KXHIGHTSATX": "SATX",
+            "KXHIGHTSEA": "SEA",
+            "KXHIGHTSFO": "SFO",
         }
         prefix = ticker.split("-")[0] if "-" in ticker else ticker
         city_code = ticker_to_city.get(prefix)

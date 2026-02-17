@@ -1268,7 +1268,14 @@ def _execute_hedge(client, risk, trade_log, review):
 
 def _build_market_description(ticker, city_code, title):
     """Build a human-readable description from ticker."""
-    city_names = {"NYC": "NYC", "CHI": "Chicago", "MIA": "Miami", "AUS": "Austin", "SP500": "S&P 500"}
+    city_names = {
+        "NYC": "NYC", "CHI": "Chicago", "MIA": "Miami", "AUS": "Austin",
+        "LAX": "LA", "DEN": "Denver", "PHI": "Philly", "ATL": "Atlanta",
+        "BOS": "Boston", "DAL": "Dallas", "DC": "DC", "HOU": "Houston",
+        "LV": "Vegas", "MIN": "Minneapolis", "NOLA": "NOLA", "OKC": "OKC",
+        "PHX": "Phoenix", "SATX": "San Antonio", "SEA": "Seattle", "SFO": "SFO",
+        "SP500": "S&P 500",
+    }
     months = {"JAN":"Jan","FEB":"Feb","MAR":"Mar","APR":"Apr","MAY":"May","JUN":"Jun",
               "JUL":"Jul","AUG":"Aug","SEP":"Sep","OCT":"Oct","NOV":"Nov","DEC":"Dec"}
     try:
@@ -1308,6 +1315,22 @@ _TICKER_TO_CITY = {
     "KXHIGHCHI": "CHI",
     "KXHIGHMIA": "MIA",
     "KXHIGHAUS": "AUS",
+    "KXHIGHLAX": "LAX",
+    "KXHIGHDEN": "DEN",
+    "KXHIGHPHIL": "PHI",
+    "KXHIGHTATL": "ATL",
+    "KXHIGHTBOS": "BOS",
+    "KXHIGHTDAL": "DAL",
+    "KXHIGHTDC": "DC",
+    "KXHIGHTHOU": "HOU",
+    "KXHIGHTLV": "LV",
+    "KXHIGHTMIN": "MIN",
+    "KXHIGHTNOLA": "NOLA",
+    "KXHIGHTOKC": "OKC",
+    "KXHIGHTPHX": "PHX",
+    "KXHIGHTSATX": "SATX",
+    "KXHIGHTSEA": "SEA",
+    "KXHIGHTSFO": "SFO",
 }
 
 
