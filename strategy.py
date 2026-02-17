@@ -299,12 +299,35 @@ class Strategy:
 
         # Step 5: Build signal
         if edge > 0:
-            # Narrow bucket guard: 2°F buckets need very high conviction
             bucket_width = temp_high - temp_low
+
+            # FIX 1: Ban 1°F buckets for YES — forecast spread too wide relative to target
+            if bucket_width <= 1:
+                print(f"    [STRATEGY] Skipped YES on 1°F bucket {temp_low}-{temp_high}°F: "
+                      f"too narrow to trade reliably")
+                return None
+
+            # FIX 2: Model disagreement detector — if model families disagree by >5°F, skip
+            model_spread = distribution.get("model_spread", 0)
+            if model_spread > 5:
+                model_means = distribution.get("model_means", {})
+                print(f"    [STRATEGY] Skipped YES: model families disagree by {model_spread:.1f}°F "
+                      f"({model_means}) — too uncertain")
+                return None
+
+            # FIX 3: Spread-to-bucket ratio guard — if ensemble spread / bucket width > 6, skip
+            ensemble_spread = distribution.get("spread", 0)
+            if bucket_width > 0 and ensemble_spread / bucket_width > 6:
+                print(f"    [STRATEGY] Skipped YES on {temp_low}-{temp_high}°F: "
+                      f"spread/bucket ratio {ensemble_spread:.0f}/{bucket_width:.0f} = "
+                      f"{ensemble_spread/bucket_width:.1f}x (max 6x)")
+                return None
+
+            # FIX 4: Narrow bucket guard — tighter thresholds (was 25%, now 35%)
             if bucket_width <= 2:
-                if edge < 0.25 or confirmation["agree_count"] < 3:
+                if edge < 0.35 or confirmation["agree_count"] < 3:
                     print(f"    [STRATEGY] Skipped YES on narrow {bucket_width}°F bucket "
-                          f"{temp_low}-{temp_high}°F: edge={edge:.0%} (need 25%), "
+                          f"{temp_low}-{temp_high}°F: edge={edge:.0%} (need 35%), "
                           f"agree={confirmation['agree_count']}/4 (need 3)")
                     return None
 
@@ -336,6 +359,14 @@ class Strategy:
             }
         else:
             # Overpriced YES — buy NO
+            # Model disagreement check for NO trades too
+            model_spread = distribution.get("model_spread", 0)
+            if model_spread > 5:
+                model_means = distribution.get("model_means", {})
+                print(f"    [STRATEGY] Skipped NO: model families disagree by {model_spread:.1f}°F "
+                      f"({model_means}) — too uncertain")
+                return None
+
             # Forecast-strike separation: don't bet NO when the forecast
             # is too close to the bucket range (high chance of landing inside)
             forecast_mean = distribution["forecasted_high_mean"]

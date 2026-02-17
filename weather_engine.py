@@ -144,30 +144,35 @@ class WeatherEngine:
         # Fetch from all ensemble sources
         all_highs = []
         sources_used = []
+        model_family_highs = {}  # Track per-model family for disagreement detection
 
         # Source 1: GFS Ensemble (31 members)
         gfs_highs = self._fetch_ensemble(city, target_date, "gfs_seamless_eps")
         if gfs_highs:
             all_highs.extend(gfs_highs)
             sources_used.append("gfs_ensemble")
+            model_family_highs["GFS"] = gfs_highs
 
         # Source 2: ECMWF IFS Ensemble (51 members)
         ecmwf_highs = self._fetch_ensemble(city, target_date, "ecmwf_ifs025_ensemble")
         if ecmwf_highs:
             all_highs.extend(ecmwf_highs)
             sources_used.append("ecmwf_ifs")
+            model_family_highs["ECMWF"] = ecmwf_highs
 
         # Source 3: ICON-EPS (40 members)
         icon_highs = self._fetch_ensemble(city, target_date, "icon_seamless_eps")
         if icon_highs:
             all_highs.extend(icon_highs)
             sources_used.append("icon_eps")
+            model_family_highs["ICON"] = icon_highs
 
         # Source 4: GEM Ensemble (21 members)
         gem_highs = self._fetch_ensemble(city, target_date, "gem_global_ensemble")
         if gem_highs:
             all_highs.extend(gem_highs)
             sources_used.append("gem_ensemble")
+            model_family_highs["GEM"] = gem_highs
 
         if not all_highs:
             print(f"  [WEATHER] WARN: No ensemble data for {city_code} on {target_date}")
@@ -175,6 +180,18 @@ class WeatherEngine:
 
         # Build the distribution
         result = self._build_distribution(city_code, target_date, all_highs, sources_used)
+
+        # Add per-model family means for disagreement detection
+        model_means = {}
+        for model_name, highs in model_family_highs.items():
+            if highs:
+                model_means[model_name] = round(sum(highs) / len(highs), 1)
+        result["model_means"] = model_means
+        if len(model_means) >= 2:
+            means_list = list(model_means.values())
+            result["model_spread"] = round(max(means_list) - min(means_list), 1)
+        else:
+            result["model_spread"] = 0.0
 
         # Cache it
         self._cache[cache_key] = {
