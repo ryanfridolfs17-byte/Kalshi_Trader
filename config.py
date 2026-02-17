@@ -238,6 +238,8 @@ STATE_DIR = os.environ.get("STATE_DIR", ".")
 os.makedirs(STATE_DIR, exist_ok=True)
 
 EDGE_ATTRIBUTION_FILE = os.path.join(STATE_DIR, "edge_attribution.json")
+TRADE_ANALYSIS_FILE = os.path.join(STATE_DIR, "trade_analysis.json")
+ANALYSIS_HOUR_ET = 11  # Run analysis 1hr after 10AM settlements
 TRADE_LOG_FILE = os.path.join(STATE_DIR, "trade_history.json")
 RISK_STATE_FILE = os.path.join(STATE_DIR, "risk_state.json")
 DAILY_REPORTS_FILE = os.path.join(STATE_DIR, "daily_reports.json")

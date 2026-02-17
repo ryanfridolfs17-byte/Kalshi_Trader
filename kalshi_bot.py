@@ -254,10 +254,11 @@ def main():
             _sync_pnl_from_kalshi(client, intel)
             intel.print_pnl()
 
-            # Daily report generation on day change
+            # Daily report + analysis on day change
             today_str = datetime.now().strftime("%Y-%m-%d")
             if today_str != last_report_date:
                 _generate_daily_report(trade_log, strategy)
+                _run_daily_analysis(trade_log)
                 last_report_date = today_str
 
             # Check for dashboard-approved pending trades
@@ -951,6 +952,47 @@ def _generate_daily_report(trade_log, strategy):
 
     print(f"  [REPORT] Daily report generated for {yesterday}")
     print(f"           Trades: {len(day_trades)}, W/L: {len(wins)}/{len(losses)}, P&L: ${total_pnl/100:.2f}")
+
+
+def _run_daily_analysis(trade_log):
+    """Run end-of-day trade analysis for yesterday's settled trades."""
+    try:
+        from trade_analyzer import TradeAnalyzer
+        analyzer = TradeAnalyzer()
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        result = analyzer.run_daily_analysis(trade_log, yesterday)
+
+        if not result:
+            print(f"  [ANALYSIS] No settled trades to analyze for {yesterday}")
+            return
+
+        summary = result["summary"]
+        patterns = result["patterns"]
+        print(f"\n  ┌─ End-of-Day Analysis ({yesterday}) ─────────────────")
+        print(f"  │  Trades: {summary['total_trades']}  W/L: {summary['wins']}/{summary['losses']}  "
+              f"P&L: ${summary['total_pnl_cents']/100:+.2f}")
+        if summary['avg_edge_winners']:
+            print(f"  │  Avg edge winners: {summary['avg_edge_winners']:.1%}  "
+                  f"losers: {summary['avg_edge_losers']:.1%}")
+        if patterns.get("guards_would_have_caught"):
+            print(f"  │  Guards would have caught {patterns['guards_would_have_caught']} loser(s) "
+                  f"(${patterns['savings_cents']/100:.2f} saved)")
+        if patterns.get("best_model"):
+            print(f"  │  Best model: {patterns['best_model']}  "
+                  f"Worst: {patterns['worst_model']}")
+        print(f"  │")
+
+        # Print lessons for losers
+        for ta in result.get("trade_analyses", []):
+            if ta["result"] in ("loss", "exit_loss") and ta.get("lessons"):
+                print(f"  │  {ta['ticker']}:")
+                for lesson in ta["lessons"]:
+                    print(f"  │    - {lesson}")
+
+        print(f"  └──────────────────────────────────────────────────\n")
+
+    except Exception as e:
+        print(f"  [ANALYSIS] Error running daily analysis: {e}")
 
 
 def _execute_exit(client, risk, trade_log, exit_rec):

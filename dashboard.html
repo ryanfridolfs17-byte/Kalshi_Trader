@@ -264,6 +264,68 @@ tr.underwater td:first-child { box-shadow: inset 3px 0 0 var(--accent-red); }
 /* Daily reports */
 .report-card { padding: 12px; border-radius: 10px; background: rgba(255,255,255,0.04); margin-bottom: 8px; }
 
+/* Trade analysis */
+.analysis-trade {
+  border-radius: 10px;
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+.analysis-trade-header {
+  padding: 10px 14px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 600;
+}
+.analysis-trade-header.win { background: rgba(52,211,153,0.1); border: 1px solid rgba(52,211,153,0.2); }
+.analysis-trade-header.loss { background: rgba(248,113,113,0.1); border: 1px solid rgba(248,113,113,0.2); }
+.analysis-trade-body {
+  padding: 14px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-top: none;
+  border-radius: 0 0 10px 10px;
+  display: none;
+}
+.analysis-trade-body.open { display: block; }
+.analysis-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.analysis-stat {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.04);
+}
+.analysis-stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary); }
+.analysis-stat-value { font-size: 13px; font-weight: 600; margin-top: 2px; }
+.analysis-section-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary); margin: 10px 0 6px; }
+.analysis-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-right: 4px;
+  margin-bottom: 4px;
+}
+.analysis-badge.caught { background: rgba(248,113,113,0.2); color: var(--accent-red); }
+.analysis-badge.pass { background: rgba(52,211,153,0.1); color: var(--accent-green); }
+.analysis-lesson {
+  padding: 8px 12px;
+  margin-bottom: 4px;
+  border-radius: 6px;
+  background: rgba(251,191,36,0.06);
+  border-left: 3px solid rgba(251,191,36,0.4);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
 .refresh-bar {
   position: fixed;
   bottom: 12px;
@@ -503,6 +565,29 @@ tr.underwater td:first-child { box-shadow: inset 3px 0 0 var(--accent-red); }
       </table>
     </div>
     <div id="forensicsEmpty" style="text-align:center; padding:20px; color: var(--text-secondary); font-size: 13px;">No settled trades with attribution yet</div>
+  </div>
+</div>
+
+<!-- End-of-Day Analysis -->
+<div class="grid grid-full" style="margin-bottom: 16px;">
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <div class="card-title" style="margin-bottom:0;">End-of-Day Analysis</div>
+      <div class="tabs" id="analysisTabs" style="margin-bottom:0;"></div>
+    </div>
+    <div id="analysisSummaryBar" style="display:none;margin-bottom:14px;">
+      <div style="display:flex;gap:12px;flex-wrap:wrap;">
+        <div class="status-item"><div class="status-item-label">Trades</div><div class="status-item-value" id="anTotalTrades">-</div></div>
+        <div class="status-item"><div class="status-item-label">Record</div><div class="status-item-value" id="anRecord">-</div></div>
+        <div class="status-item"><div class="status-item-label">P&L</div><div class="status-item-value" id="anPnl">-</div></div>
+        <div class="status-item"><div class="status-item-label">Win Rate</div><div class="status-item-value" id="anWinRate">-</div></div>
+        <div class="status-item"><div class="status-item-label">Guards Catch</div><div class="status-item-value" id="anGuards">-</div></div>
+        <div class="status-item"><div class="status-item-label">Best Model</div><div class="status-item-value" id="anBestModel">-</div></div>
+      </div>
+    </div>
+    <div id="analysisContent">
+      <div style="text-align:center; padding:20px; color: var(--text-secondary); font-size: 13px;">No analysis data yet</div>
+    </div>
   </div>
 </div>
 
@@ -908,8 +993,158 @@ function updateDashboard(data) {
     }).join('');
   }
 
+  // End-of-Day Analysis
+  const analysis = data.analysis || [];
+  renderAnalysis(analysis);
+
   // Performance chart
   updateChart(trades);
+}
+
+let selectedAnalysisDate = null;
+
+function renderAnalysis(analyses) {
+  const tabs = document.getElementById('analysisTabs');
+  const summaryBar = document.getElementById('analysisSummaryBar');
+  const content = document.getElementById('analysisContent');
+
+  if (!analyses || analyses.length === 0) {
+    tabs.innerHTML = '';
+    summaryBar.style.display = 'none';
+    content.innerHTML = '<div style="text-align:center; padding:20px; color: var(--text-secondary); font-size: 13px;">No analysis data yet</div>';
+    return;
+  }
+
+  // Build date tabs (last 7)
+  const recent = analyses.slice(-7).reverse();
+  if (!selectedAnalysisDate || !recent.find(a => a.date === selectedAnalysisDate)) {
+    selectedAnalysisDate = recent[0].date;
+  }
+
+  tabs.innerHTML = recent.map(a =>
+    `<div class="tab${a.date === selectedAnalysisDate ? ' active' : ''}" onclick="selectAnalysisDate('${a.date}')">${a.date.slice(5)}</div>`
+  ).join('');
+
+  const selected = recent.find(a => a.date === selectedAnalysisDate);
+  if (!selected) return;
+
+  // Summary bar
+  const s = selected.summary || {};
+  const p = selected.patterns || {};
+  summaryBar.style.display = 'block';
+  document.getElementById('anTotalTrades').textContent = s.total_trades || 0;
+  document.getElementById('anRecord').textContent = (s.wins || 0) + 'W / ' + (s.losses || 0) + 'L';
+  const pnl = (s.total_pnl_cents || 0) / 100;
+  const pnlEl = document.getElementById('anPnl');
+  pnlEl.textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
+  pnlEl.className = 'status-item-value ' + (pnl >= 0 ? 'green' : 'red');
+  document.getElementById('anWinRate').textContent = s.total_trades > 0 ? Math.round((s.win_rate || 0) * 100) + '%' : '-';
+  document.getElementById('anGuards').textContent = (p.guards_would_have_caught || 0) + (p.savings_cents ? ' ($' + (p.savings_cents / 100).toFixed(2) + ')' : '');
+  document.getElementById('anBestModel').textContent = p.best_model || '-';
+
+  // Per-trade breakdowns
+  const tradeAnalyses = selected.trade_analyses || [];
+  if (tradeAnalyses.length === 0) {
+    content.innerHTML = '<div style="text-align:center; padding:20px; color: var(--text-secondary); font-size: 13px;">No trade analyses for this date</div>';
+    return;
+  }
+
+  content.innerHTML = tradeAnalyses.map((t, idx) => {
+    const isWin = t.result === 'win' || t.result === 'exit_win';
+    const resultClass = isWin ? 'win' : 'loss';
+    const profitStr = (t.profit_cents >= 0 ? '+$' : '-$') + Math.abs((t.profit_cents || 0) / 100).toFixed(2);
+    const profitClass = t.profit_cents >= 0 ? 'green' : 'red';
+
+    const entry = t.entry_analysis || {};
+    const outcome = t.outcome_analysis || {};
+    const models = t.model_analysis || {};
+    const guards = t.guard_analysis || {};
+    const exit = t.exit_analysis || {};
+    const sizing = t.sizing_analysis || {};
+    const lessons = t.lessons || [];
+
+    // Model scorecard
+    let modelHtml = '';
+    const forecasts = models.model_forecasts || {};
+    const errors = models.model_errors || {};
+    if (Object.keys(forecasts).length > 0) {
+      modelHtml = '<div class="analysis-section-title">Model Scorecard</div><div class="analysis-grid">' +
+        Object.entries(forecasts).map(([name, temp]) => {
+          const err = errors[name];
+          const errStr = err != null ? (err >= 0 ? '+' : '') + err.toFixed(1) + 'F' : '-';
+          const isBest = name === models.best_model;
+          const isWorst = name === models.worst_model;
+          const badge = isBest ? ' <span class="green">(best)</span>' : isWorst ? ' <span class="red">(worst)</span>' : '';
+          return `<div class="analysis-stat"><div class="analysis-stat-label">${name.toUpperCase()}${badge}</div><div class="analysis-stat-value">${temp}F <span style="color:var(--text-secondary);font-size:11px">${errStr}</span></div></div>`;
+        }).join('') + '</div>';
+    }
+
+    // Guard badges
+    let guardHtml = '';
+    if (!isWin) {
+      guardHtml = '<div class="analysis-section-title">Guard Check</div><div>';
+      guardHtml += `<span class="analysis-badge ${guards.would_ban_1f ? 'caught' : 'pass'}">1F Ban: ${guards.would_ban_1f ? 'CAUGHT' : 'pass'}</span>`;
+      guardHtml += `<span class="analysis-badge ${guards.would_model_spread_reject ? 'caught' : 'pass'}">Model Spread: ${guards.would_model_spread_reject ? 'CAUGHT' : 'pass'}</span>`;
+      guardHtml += `<span class="analysis-badge ${guards.would_spread_ratio_reject ? 'caught' : 'pass'}">Spread Ratio: ${guards.would_spread_ratio_reject ? 'CAUGHT' : 'pass'}</span>`;
+      guardHtml += `<span class="analysis-badge ${guards.would_narrow_edge_reject ? 'caught' : 'pass'}">Narrow Edge: ${guards.would_narrow_edge_reject ? 'CAUGHT' : 'pass'}</span>`;
+      guardHtml += '</div>';
+    }
+
+    // Sizing review (winners only)
+    let sizingHtml = '';
+    if (isWin && sizing.kelly_optimal_contracts != null && sizing.additional_profit_if_optimal) {
+      sizingHtml = `<div class="analysis-section-title">Sizing Review</div>
+        <div style="font-size:12px;color:var(--text-secondary);padding:6px 10px;background:rgba(52,211,153,0.05);border-radius:6px;">
+          Actual: ${sizing.actual_contracts} contracts | Kelly optimal: ${sizing.kelly_optimal_contracts} contracts |
+          Additional profit if optimal: <span class="green">+$${(sizing.additional_profit_if_optimal / 100).toFixed(2)}</span>
+        </div>`;
+    }
+
+    // Lessons
+    let lessonsHtml = '';
+    if (lessons.length > 0) {
+      lessonsHtml = '<div class="analysis-section-title">Lessons</div>' +
+        lessons.map(l => `<div class="analysis-lesson">${l}</div>`).join('');
+    }
+
+    return `<div class="analysis-trade">
+      <div class="analysis-trade-header ${resultClass}" onclick="toggleAnalysisTrade(${idx})">
+        <span>${shortTicker(t.ticker)} &mdash; ${(t.side || '').toUpperCase()} @ ${t.price_cents}c x${t.contracts} (${t.city_code})</span>
+        <span class="${profitClass}">${profitStr}</span>
+      </div>
+      <div class="analysis-trade-body" id="analysis-trade-${idx}">
+        <div class="analysis-section-title">Entry</div>
+        <div class="analysis-grid">
+          <div class="analysis-stat"><div class="analysis-stat-label">Edge</div><div class="analysis-stat-value">${entry.edge ? (entry.edge * 100).toFixed(1) + '%' : '-'}</div></div>
+          <div class="analysis-stat"><div class="analysis-stat-label">Confidence</div><div class="analysis-stat-value">${entry.confidence ? (entry.confidence * 100).toFixed(0) + '%' : '-'}</div></div>
+          <div class="analysis-stat"><div class="analysis-stat-label">Confirmation</div><div class="analysis-stat-value">${entry.confirmation || '-'}</div></div>
+          <div class="analysis-stat"><div class="analysis-stat-label">Predicted High</div><div class="analysis-stat-value">${entry.predicted_high != null ? entry.predicted_high.toFixed(1) + 'F' : '-'}</div></div>
+        </div>
+        <div class="analysis-section-title">Outcome</div>
+        <div class="analysis-grid">
+          <div class="analysis-stat"><div class="analysis-stat-label">Actual High</div><div class="analysis-stat-value">${outcome.actual_high != null ? outcome.actual_high + 'F' : '-'}</div></div>
+          <div class="analysis-stat"><div class="analysis-stat-label">Forecast Error</div><div class="analysis-stat-value ${outcome.forecast_error != null && Math.abs(outcome.forecast_error) > 3 ? 'red' : ''}">${outcome.forecast_error != null ? (outcome.forecast_error >= 0 ? '+' : '') + outcome.forecast_error + 'F' : '-'}</div></div>
+          <div class="analysis-stat"><div class="analysis-stat-label">Bucket</div><div class="analysis-stat-value">${outcome.bucket_range || '-'}</div></div>
+          <div class="analysis-stat"><div class="analysis-stat-label">Distance</div><div class="analysis-stat-value">${outcome.distance_from_bucket != null ? outcome.distance_from_bucket + 'F' : '-'} ${outcome.actual_in_bucket === true ? '<span class="green">(IN)</span>' : outcome.actual_in_bucket === false ? '<span class="red">(OUT)</span>' : ''}</div></div>
+        </div>
+        ${modelHtml}
+        ${guardHtml}
+        ${exit.could_have_exited_earlier ? '<div class="analysis-section-title">Exit Timing</div><div class="analysis-lesson">' + exit.explanation + '</div>' : ''}
+        ${sizingHtml}
+        ${lessonsHtml}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function selectAnalysisDate(date) {
+  selectedAnalysisDate = date;
+  if (lastData) renderAnalysis(lastData.analysis || []);
+}
+
+function toggleAnalysisTrade(idx) {
+  const body = document.getElementById('analysis-trade-' + idx);
+  if (body) body.classList.toggle('open');
 }
 
 function updateChart(trades) {

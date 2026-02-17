@@ -1063,11 +1063,56 @@ class TradeIntelligence:
             result = market.get("result", "")
 
             if status == "settled" and result:
-                return {"result": result, "actual_temp": None}
+                actual_temp = self._fetch_actual_high_for_ticker(ticker)
+                return {"result": result, "actual_temp": actual_temp}
 
         except Exception:
             pass
 
+        return None
+
+    def _fetch_actual_high_for_ticker(self, ticker):
+        """
+        Fetch the actual daily high temperature for a settled weather ticker.
+        Parses city and date from the ticker, then queries Open-Meteo archive API.
+        Returns temperature in °F or None.
+        """
+        # Map ticker prefix to city code
+        ticker_to_city = {
+            "KXHIGHNY": "NYC",
+            "KXHIGHCHI": "CHI",
+            "KXHIGHMIA": "MIA",
+            "KXHIGHAUS": "AUS",
+        }
+        prefix = ticker.split("-")[0] if "-" in ticker else ticker
+        city_code = ticker_to_city.get(prefix)
+        if not city_code or city_code not in CITIES:
+            return None
+
+        # Parse market date
+        date_str = self._extract_date_from_ticker(ticker)
+        if not date_str:
+            return None
+
+        city = CITIES[city_code]
+        try:
+            url = "https://archive-api.open-meteo.com/v1/archive"
+            params = {
+                "latitude": city["lat"],
+                "longitude": city["lon"],
+                "daily": "temperature_2m_max",
+                "temperature_unit": "fahrenheit",
+                "timezone": city.get("timezone", "auto"),
+                "start_date": date_str,
+                "end_date": date_str,
+            }
+            resp = requests.get(url, params=params, timeout=15)
+            if resp.status_code == 200:
+                temps = resp.json().get("daily", {}).get("temperature_2m_max", [])
+                if temps and temps[0] is not None:
+                    return round(temps[0], 1)
+        except Exception:
+            pass
         return None
 
     def print_pnl(self):
