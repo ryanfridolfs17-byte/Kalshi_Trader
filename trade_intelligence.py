@@ -281,6 +281,8 @@ class TradeIntelligence:
 
             # ─── FRESH PROBABILITY RE-EVALUATION ───
             new_prob = None
+            dist = None
+            parsed = None
 
             if is_weather and weather_engine:
                 parsed = self._parse_position_bucket(ticker, weather_engine, pos.get("title", ""))
@@ -323,11 +325,18 @@ class TradeIntelligence:
             # ─── GRADUATED RESPONSE ───
             edge_decay_pct = max(0, min(1.0, (entry_edge - new_edge) / entry_edge)) if entry_edge > 0 else 1.0
 
+            # Build review detail for dashboard
+            review_detail = self._build_review_detail(
+                pos, current_price, new_prob, new_edge,
+                entry_edge, edge_decay_pct, dist, parsed, side
+            )
+
             base = {
                 "ticker": ticker, "current_price": current_price,
                 "new_edge": new_edge, "entry_edge": entry_edge,
                 "city_code": city_code, "side": side, "contracts": contracts,
                 "cost_cents": cost_cents,
+                "review_detail": review_detail,
             }
 
             if new_edge >= entry_edge * config.EDGE_DECAY_PARE_THRESHOLD:
@@ -441,6 +450,134 @@ class TradeIntelligence:
                 }
 
         return {"use_hedge": False}
+
+    # ═══════════════════════════════════════════════════════
+    # 1c. REVIEW DETAIL BUILDERS
+    # ═══════════════════════════════════════════════════════
+
+    def _build_review_detail(self, pos, current_price, new_prob, new_edge,
+                             entry_edge, edge_decay_pct, dist, parsed, side):
+        """Package all review intermediate data into a structured dict for the dashboard."""
+        entry_price = pos.get("cost_cents", 0) / max(pos.get("contracts", 1), 1)
+        pnl_pct = ((current_price - entry_price) / max(entry_price, 1)) if entry_price > 0 else 0
+        if side == "no":
+            # For NO positions, P&L is inverted: we profit when price drops
+            pnl_pct = ((entry_price - current_price) / max(entry_price, 1)) if entry_price > 0 else 0
+
+        market_prob = current_price / 100.0
+
+        detail = {
+            "reviewed_at": datetime.now(timezone.utc).isoformat(),
+            "current_price": current_price,
+            "entry_price": round(entry_price, 1),
+            "pnl_pct": round(pnl_pct, 4),
+            "current_edge": round(new_edge, 4),
+            "entry_edge": round(entry_edge, 4),
+            "edge_decay_pct": round(edge_decay_pct, 4),
+            "current_prob": round(new_prob, 4) if new_prob is not None else None,
+            "market_prob": round(market_prob, 4),
+            "is_underwater": pnl_pct < -0.10,
+        }
+
+        # Add weather forecast data if available
+        if dist:
+            detail.update({
+                "forecast_mean": dist.get("forecasted_high_mean"),
+                "forecast_median": dist.get("forecasted_high_median"),
+                "forecast_min": dist.get("forecasted_high_min"),
+                "forecast_max": dist.get("forecasted_high_max"),
+                "forecast_spread": dist.get("spread"),
+                "forecast_std_dev": dist.get("std_dev"),
+                "forecast_confidence": dist.get("confidence"),
+                "ensemble_members": len(dist.get("raw_highs", [])),
+                "sources_used": dist.get("sources_used", []),
+                "bias_applied": dist.get("bias_applied", 0),
+            })
+
+        # Add bucket info if available
+        if parsed:
+            detail.update({
+                "bucket_low": parsed.get("temp_low") or parsed.get("price_low"),
+                "bucket_high": parsed.get("temp_high") or parsed.get("price_high"),
+                "target_date": parsed.get("target_date"),
+            })
+
+        # Generate human-readable explanation
+        detail["explanation"] = self._build_explanation(detail, side, pos)
+
+        return detail
+
+    def _build_explanation(self, detail, side, pos):
+        """Generate a human-readable paragraph explaining the position status."""
+        parts = []
+
+        # P&L status
+        pnl_pct = detail.get("pnl_pct", 0)
+        if pnl_pct < -0.10:
+            parts.append(f"Position is underwater at {pnl_pct:.0%}.")
+        elif pnl_pct < 0:
+            parts.append(f"Position is slightly down at {pnl_pct:.0%}.")
+        else:
+            parts.append(f"Position is up {pnl_pct:.0%}.")
+
+        # Edge health
+        current_edge = detail.get("current_edge", 0)
+        entry_edge = detail.get("entry_edge", 0)
+        decay = detail.get("edge_decay_pct", 0)
+        if current_edge > 0 and decay < 0.5:
+            parts.append(f"Edge is healthy at {current_edge:.1%} (was {entry_edge:.1%}, {decay:.0%} decay).")
+        elif current_edge > 0:
+            parts.append(f"Edge has decayed significantly to {current_edge:.1%} (was {entry_edge:.1%}, {decay:.0%} decay).")
+        elif current_edge > -0.05:
+            parts.append(f"Edge has disappeared ({current_edge:.1%}).")
+        else:
+            parts.append(f"Edge has reversed to {current_edge:.1%} — position is against us.")
+
+        # Forecast detail (weather only)
+        mean = detail.get("forecast_mean")
+        if mean is not None:
+            bucket_low = detail.get("bucket_low")
+            bucket_high = detail.get("bucket_high")
+            spread = detail.get("forecast_spread")
+            confidence = detail.get("forecast_confidence")
+            members = detail.get("ensemble_members", 0)
+
+            if bucket_low is not None and bucket_high is not None:
+                parts.append(f"Ensemble forecast: {mean:.1f}F (range {detail.get('forecast_min', 0):.0f}-{detail.get('forecast_max', 0):.0f}F, {members} members).")
+                if side == "yes":
+                    if mean >= bucket_low and mean <= bucket_high:
+                        parts.append(f"Forecast mean is inside the {bucket_low}-{bucket_high}F bucket — favorable for YES.")
+                    elif mean < bucket_low:
+                        parts.append(f"Forecast mean {mean:.1f}F is below the {bucket_low}-{bucket_high}F bucket by {bucket_low - mean:.1f}F.")
+                    else:
+                        parts.append(f"Forecast mean {mean:.1f}F is above the {bucket_low}-{bucket_high}F bucket by {mean - bucket_high:.1f}F.")
+                elif side == "no":
+                    if mean >= bucket_low and mean <= bucket_high:
+                        parts.append(f"Forecast mean is inside the {bucket_low}-{bucket_high}F bucket — unfavorable for our NO position.")
+                    else:
+                        dist_from_bucket = min(abs(mean - bucket_low), abs(mean - bucket_high))
+                        parts.append(f"Forecast mean is {dist_from_bucket:.1f}F away from {bucket_low}-{bucket_high}F bucket — favorable for NO.")
+
+                if confidence:
+                    conf_label = "high" if confidence > 0.7 else "moderate" if confidence > 0.4 else "low"
+                    parts.append(f"Forecast confidence is {conf_label} ({confidence:.0%}).")
+
+        # Probability vs market
+        current_prob = detail.get("current_prob")
+        market_prob = detail.get("market_prob")
+        if current_prob is not None and market_prob is not None:
+            if side == "yes":
+                parts.append(f"Model says {current_prob:.0%} chance vs market price of {market_prob:.0%}.")
+            else:
+                parts.append(f"Model says {1-current_prob:.0%} NO probability vs market price of {market_prob:.0%}.")
+
+        # Bias correction
+        bias = detail.get("bias_applied", 0)
+        if bias and abs(bias) >= 0.5:
+            direction = "warmer" if bias > 0 else "cooler"
+            parts.append(f"Bias correction applied: {abs(bias):.1f}F {direction} than models.")
+
+        return " ".join(parts)
 
     # ═══════════════════════════════════════════════════════
     # 2. BIAS CORRECTION

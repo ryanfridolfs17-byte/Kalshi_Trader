@@ -273,6 +273,9 @@ def main():
                 )
                 for review in reviews:
                     _process_portfolio_action(client, risk, trade_log, review)
+                # Batch save after all reviews (persists last_review* fields)
+                if reviews:
+                    risk._save_state()
             else:
                 exits = intel.check_exits(risk.state.get("positions", []), strategy.weather)
                 for exit_rec in exits:
@@ -1024,6 +1027,14 @@ def _process_portfolio_action(client, risk, trade_log, review):
     ticker = review["ticker"]
     action = review["action"]
 
+    # Persist review data on the matching position for the dashboard
+    for p in risk.state.get("positions", []):
+        if p.get("ticker") == ticker:
+            p["last_review"] = review.get("review_detail", {})
+            p["last_review_action"] = action
+            p["last_review_reason"] = review.get("reason", "")
+            break
+
     if action == "hold":
         if review.get("urgency") == "medium":
             print(f"  [REVIEW] HOLD {ticker} — {review['reason']}")
@@ -1313,7 +1324,7 @@ def _reconcile_positions(client, risk):
             # Preserve local metadata (title, edge, etc.) if we have it
             local = local_lookup.get((ticker, side), {})
 
-            new_positions.append({
+            pos_entry = {
                 "ticker": ticker,
                 "side": side,
                 "cost_cents": cost_cents,
@@ -1324,7 +1335,13 @@ def _reconcile_positions(client, risk):
                 "edge": local.get("edge", 0),
                 "expected_profit_cents": local.get("expected_profit_cents", 0),
                 "market_description": local.get("market_description", ""),
-            })
+            }
+            # Preserve review metadata from previous cycles
+            if local.get("last_review"):
+                pos_entry["last_review"] = local["last_review"]
+                pos_entry["last_review_action"] = local.get("last_review_action", "")
+                pos_entry["last_review_reason"] = local.get("last_review_reason", "")
+            new_positions.append(pos_entry)
 
         old_count = len(risk.state.get("positions", []))
         old_tickers = {p.get("ticker") for p in risk.state.get("positions", [])}

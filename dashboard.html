@@ -212,6 +212,40 @@ tr:hover td { background: rgba(255,255,255,0.03); }
 .badge-active { background: rgba(52,211,153,0.12); color: var(--accent-green); }
 .badge-settling { background: rgba(251,191,36,0.15); color: var(--accent-amber); }
 
+/* Underwater position highlighting */
+tr.underwater td { background: rgba(248,113,113,0.06); }
+tr.underwater td:first-child { box-shadow: inset 3px 0 0 var(--accent-red); }
+.review-toggle { cursor: pointer; color: var(--accent-blue); font-size: 12px; text-decoration: underline; }
+.review-row td { padding: 0 !important; border-bottom: 1px solid rgba(248,113,113,0.15); }
+.review-panel {
+  padding: 14px 16px;
+  background: rgba(255,255,255,0.03);
+  border-radius: 0 0 10px 10px;
+}
+.review-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.review-stat {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.04);
+}
+.review-stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary); }
+.review-stat-value { font-size: 14px; font-weight: 600; margin-top: 2px; }
+.review-explanation {
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(251,191,36,0.25);
+  background: rgba(251,191,36,0.05);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.review-meta { font-size: 11px; color: var(--text-secondary); margin-top: 8px; }
+
 .chart-container { position: relative; height: 220px; }
 
 /* Skip reasons */
@@ -273,6 +307,7 @@ tr:hover td { background: rgba(255,255,255,0.03); }
   .tab { padding: 8px 12px; font-size: 12px; }
   th, td { padding: 6px 8px; font-size: 12px; }
   .refresh-bar { bottom: 8px; right: 8px; font-size: 10px; }
+  .review-stats { grid-template-columns: repeat(2, 1fr); }
 }
 </style>
 </head>
@@ -571,7 +606,7 @@ function updateDashboard(data) {
   const posEmpty = document.getElementById('positionsEmpty');
   if (positions.length > 0) {
     posEmpty.style.display = 'none';
-    posBody.innerHTML = positions.map(p => {
+    posBody.innerHTML = positions.map((p, idx) => {
       const age = timeSince(p.timestamp);
       const desc = p.market_description || p.title || shortTicker(p.ticker);
       const edgePct = p.edge ? (p.edge * 100).toFixed(1) + '%' : '-';
@@ -583,9 +618,58 @@ function updateDashboard(data) {
       const statusBadge = posStatus === 'settling'
         ? '<span class="badge badge-settling">Settling</span>'
         : '<span class="badge badge-active">Active</span>';
-      return `<tr>
+
+      const rv = p.last_review || {};
+      const isUnderwater = rv.is_underwater === true;
+      const hasReview = !!rv.reviewed_at;
+      const rowClass = isUnderwater ? ' class="underwater"' : '';
+
+      let detailsLink = '';
+      if (hasReview) {
+        detailsLink = ` <span class="review-toggle" onclick="toggleReview(${idx})">[Details]</span>`;
+      }
+
+      let reviewRow = '';
+      if (hasReview) {
+        const curEdge = rv.current_edge != null ? (rv.current_edge * 100).toFixed(1) + '%' : '-';
+        const entEdge = rv.entry_edge != null ? (rv.entry_edge * 100).toFixed(1) + '%' : '-';
+        const decay = rv.edge_decay_pct != null ? (rv.edge_decay_pct * 100).toFixed(0) + '%' : '-';
+        const pnlPct = rv.pnl_pct != null ? (rv.pnl_pct * 100).toFixed(1) + '%' : '-';
+        const pnlClass = (rv.pnl_pct || 0) >= 0 ? 'green' : 'red';
+        const edgeClass = (rv.current_edge || 0) > 0 ? 'green' : 'red';
+
+        let weatherStats = '';
+        if (rv.forecast_mean != null) {
+          weatherStats = `
+            <div class="review-stat"><div class="review-stat-label">Forecast</div><div class="review-stat-value">${rv.forecast_mean.toFixed(1)}F</div></div>
+            <div class="review-stat"><div class="review-stat-label">Range</div><div class="review-stat-value">${(rv.forecast_min||0).toFixed(0)}-${(rv.forecast_max||0).toFixed(0)}F</div></div>
+            <div class="review-stat"><div class="review-stat-label">Confidence</div><div class="review-stat-value">${rv.forecast_confidence ? (rv.forecast_confidence * 100).toFixed(0) + '%' : '-'}</div></div>
+            <div class="review-stat"><div class="review-stat-label">Ensemble</div><div class="review-stat-value">${rv.ensemble_members || '-'} members</div></div>`;
+        }
+
+        const reviewTime = rv.reviewed_at ? new Date(rv.reviewed_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '-';
+        const actionLabel = (p.last_review_action || 'hold').toUpperCase();
+
+        reviewRow = `<tr class="review-row" id="review-${idx}" style="display:none">
+          <td colspan="10">
+            <div class="review-panel">
+              <div class="review-stats">
+                <div class="review-stat"><div class="review-stat-label">Current Edge</div><div class="review-stat-value ${edgeClass}">${curEdge}</div></div>
+                <div class="review-stat"><div class="review-stat-label">Entry Edge</div><div class="review-stat-value">${entEdge}</div></div>
+                <div class="review-stat"><div class="review-stat-label">Edge Decay</div><div class="review-stat-value">${decay}</div></div>
+                <div class="review-stat"><div class="review-stat-label">P&L</div><div class="review-stat-value ${pnlClass}">${pnlPct}</div></div>
+                ${weatherStats}
+              </div>
+              ${rv.explanation ? '<div class="review-explanation">' + rv.explanation + '</div>' : ''}
+              <div class="review-meta">Reviewed ${reviewTime} &mdash; Action: ${actionLabel}</div>
+            </div>
+          </td>
+        </tr>`;
+      }
+
+      return `<tr${rowClass}>
         <td><span class="badge badge-${mtype}">${mtypeLabel}</span></td>
-        <td style="font-weight:600">${desc}</td>
+        <td style="font-weight:600">${desc}${detailsLink}</td>
         <td>${(p.side||'').toUpperCase()}</td>
         <td>$${(p.cost_cents/100).toFixed(2)}</td>
         <td>${p.contracts}</td>
@@ -594,7 +678,7 @@ function updateDashboard(data) {
         <td>${statusBadge}</td>
         <td style="color:var(--text-secondary)">${age}</td>
         <td><button class="btn" onclick="closePosition('${p.ticker}', ${p.contracts}, ${p.cost_cents})" style="padding:4px 10px;font-size:11px;background:rgba(248,113,113,0.15);color:var(--accent-red);border:1px solid rgba(248,113,113,0.3);flex:none;">Close</button></td>
-      </tr>`;
+      </tr>${reviewRow}`;
     }).join('');
   } else {
     posEmpty.style.display = 'block';
@@ -992,6 +1076,11 @@ function classifyPosition(p) {
   } catch (e) {
     return 'active';
   }
+}
+
+function toggleReview(idx) {
+  const row = document.getElementById('review-' + idx);
+  if (row) row.style.display = row.style.display === 'none' ? '' : 'none';
 }
 
 function shortTicker(t) {
