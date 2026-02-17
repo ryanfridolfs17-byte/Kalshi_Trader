@@ -142,6 +142,9 @@ class Strategy:
             best["ticker"] = ticker
             return best
 
+        # Set ticker before correlation check (needed for same-ticker detection)
+        best["ticker"] = ticker
+
         # Size the position
         contracts = self._kelly_size(
             best["edge"], best["confidence"], best["price_cents"]
@@ -164,7 +167,6 @@ class Strategy:
             print(f"  [STRATEGY] Correlation check error (trade proceeds): {e}")
 
         best["suggested_contracts"] = contracts
-        best["ticker"] = ticker
         best["order_type"] = "limit"  # Always maker orders
         best["quality_score"] = quality_score
 
