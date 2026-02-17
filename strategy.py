@@ -299,6 +299,15 @@ class Strategy:
 
         # Step 5: Build signal
         if edge > 0:
+            # Narrow bucket guard: 2°F buckets need very high conviction
+            bucket_width = temp_high - temp_low
+            if bucket_width <= 2:
+                if edge < 0.25 or confirmation["agree_count"] < 3:
+                    print(f"    [STRATEGY] Skipped YES on narrow {bucket_width}°F bucket "
+                          f"{temp_low}-{temp_high}°F: edge={edge:.0%} (need 25%), "
+                          f"agree={confirmation['agree_count']}/4 (need 3)")
+                    return None
+
             # Underpriced YES — buy YES
             price = smart_price if smart_price else (market.get("yes_ask", 0) or ref_price)
             signal = {
