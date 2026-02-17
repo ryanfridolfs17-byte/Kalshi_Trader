@@ -587,9 +587,9 @@ class Strategy:
             if edge < 0.05:
                 return None  # Not enough margin to bother
 
-            # Max position: 20% of bankroll
+            # Confirmed outcome: 25% of bankroll (larger than normal trades)
             bankroll_cents = getattr(self, 'balance_cents', None) or config.MAX_TOTAL_EXPOSURE_CENTS
-            max_bet_cents = int(bankroll_cents * config.MAX_POSITION_PCT)
+            max_bet_cents = int(bankroll_cents * config.CONFIRMED_OUTCOME_POSITION_PCT)
             contracts = max(1, int(max_bet_cents / no_price))
 
             print(f"    [CONFIRMED] {city_code} high already {todays_high}°F > bucket {temp_low}-{temp_high}°F")
@@ -637,7 +637,7 @@ class Strategy:
                 return None
 
             bankroll_cents = getattr(self, 'balance_cents', None) or config.MAX_TOTAL_EXPOSURE_CENTS
-            max_bet_cents = int(bankroll_cents * config.MAX_POSITION_PCT)
+            max_bet_cents = int(bankroll_cents * config.CONFIRMED_OUTCOME_POSITION_PCT)
             contracts = max(1, int(max_bet_cents / no_price))
 
             print(f"    [CONFIRMED] {city_code} high only {todays_high}°F at {local_hour}:00, "

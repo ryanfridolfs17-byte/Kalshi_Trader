@@ -113,6 +113,9 @@ MAX_AUTO_TRADE_CENTS = 2000         # $20.00
 # Never invest more than this % of total capital into a single position
 MAX_POSITION_PCT = 0.20             # 20% of bankroll
 
+# Confirmed outcome trades (near-guaranteed) can size bigger
+CONFIRMED_OUTCOME_POSITION_PCT = 0.25  # 25% of bankroll
+
 # Trades above this require manual approval
 APPROVAL_THRESHOLD_CENTS = 2500     # $25.00
 
@@ -157,7 +160,7 @@ SETTLEMENT_PROXIMITY_EDGE_OVERRIDE = 0.20  # Exceptional edge overrides
 #   06Z pulse:   6:00 AM - 9:00 AM   (supplementary GFS/ECMWF runs)
 #   12Z cascade: 2:30 PM - 6:30 PM   (second full refresh, new listings from 10 AM)
 SETTLEMENT_HOUR_ET = 10             # Hour (ET) when settlements process
-LIQUIDITY_RESERVE_PCT = 0.25        # 25% of bankroll — reserve for next-day overnight edge window
+LIQUIDITY_RESERVE_PCT = 0.50        # 50% of bankroll — reserve cash for confirmed outcome arb trades
 PRE_SETTLEMENT_SIZING_MULT = 0.6    # 60% sizing before settlements clear
 
 # ═══════════════════════════════════════════════════════
