@@ -109,7 +109,7 @@ class TradeIntelligence:
             # ─── EXIT RULE 2: INTRADAY TEMP ELIMINATES BUCKET ───
             if actual_temp is not None:
                 # Parse what bucket this position is on
-                parsed = weather_engine.parse_market_bucket({"ticker": ticker, "title": "", "subtitle": "", "event_ticker": ticker})
+                parsed = self._parse_position_bucket(ticker, weather_engine, pos.get("title", ""))
                 if parsed:
                     temp_low = parsed["temp_low"]
                     temp_high = parsed["temp_high"]
@@ -152,7 +152,7 @@ class TradeIntelligence:
             # ─── EXIT RULE 3: EDGE REVERSED ───
             # Re-evaluate the market with fresh ensemble data
             if city_code and weather_engine:
-                parsed = weather_engine.parse_market_bucket({"ticker": ticker, "title": "", "subtitle": "", "event_ticker": ticker})
+                parsed = self._parse_position_bucket(ticker, weather_engine, pos.get("title", ""))
                 if parsed:
                     dist = weather_engine.get_temperature_distribution(city_code, parsed.get("target_date"))
                     if dist:
@@ -253,9 +253,7 @@ class TradeIntelligence:
                 # Intraday temp elimination check
                 actual_temp = self.get_current_temperature(city_code)
                 if actual_temp is not None and weather_engine:
-                    parsed = weather_engine.parse_market_bucket(
-                        {"ticker": ticker, "title": "", "subtitle": "", "event_ticker": ticker}
-                    )
+                    parsed = self._parse_position_bucket(ticker, weather_engine, pos.get("title", ""))
                     if parsed:
                         temp_low = parsed["temp_low"]
                         temp_high = parsed["temp_high"]
@@ -285,9 +283,7 @@ class TradeIntelligence:
             new_prob = None
 
             if is_weather and weather_engine:
-                parsed = weather_engine.parse_market_bucket(
-                    {"ticker": ticker, "title": "", "subtitle": "", "event_ticker": ticker}
-                )
+                parsed = self._parse_position_bucket(ticker, weather_engine, pos.get("title", ""))
                 if parsed:
                     dist = weather_engine.get_temperature_distribution(
                         city_code, parsed.get("target_date")
@@ -969,6 +965,39 @@ class TradeIntelligence:
                         return f"{year}-{month:02d}-{day:02d}"
         except Exception:
             pass
+        return None
+
+    def _parse_position_bucket(self, ticker, weather_engine, title=""):
+        """Parse a position's temperature bucket, falling back to API if needed.
+
+        parse_market_bucket() requires the market title to extract the temp
+        range, but stored positions often have empty titles. This helper
+        fetches the market from the API when the initial parse fails.
+        """
+        # Try with whatever title/subtitle we have locally
+        market_dict = {"ticker": ticker, "title": title, "subtitle": "", "event_ticker": ticker}
+        parsed = weather_engine.parse_market_bucket(market_dict)
+        if parsed:
+            return parsed
+
+        # Fallback: fetch market from API to get real title/subtitle
+        if self.client:
+            try:
+                data = self.client.get_market(ticker)
+                if data:
+                    market = data.get("market", {})
+                    market_dict = {
+                        "ticker": ticker,
+                        "title": market.get("title", ""),
+                        "subtitle": market.get("subtitle", ""),
+                        "event_ticker": market.get("event_ticker", ticker),
+                    }
+                    parsed = weather_engine.parse_market_bucket(market_dict)
+                    if parsed:
+                        return parsed
+            except Exception:
+                pass
+
         return None
 
     def _get_current_price(self, ticker, side):
