@@ -202,6 +202,9 @@ ADAPTIVE_LEARNING_BLEND = 0.3        # Weight given to empirical data vs theoret
 # Minimum edge to consider a trade (8% for weather)
 MIN_EDGE = 0.08
 
+# Skip trades where total payout (contracts × payout_per_contract) is below this
+MIN_PAYOUT_DOLLARS = 5
+
 # Minimum volume on a market to trade it
 # Note: Kalshi weather markets are low-volume. 1+ is realistic.
 MIN_VOLUME = 1

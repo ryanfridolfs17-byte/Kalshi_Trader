@@ -175,6 +175,13 @@ class Strategy:
             contracts = self.quality.adjust_contracts_for_quality(contracts, market, quality_score)
             best["suggested_contracts"] = contracts
 
+        # Minimum payout filter — skip dust trades
+        payout_per_contract_cents = 100 - best["price_cents"]
+        total_payout_dollars = (contracts * payout_per_contract_cents) / 100.0
+        if total_payout_dollars < config.MIN_PAYOUT_DOLLARS:
+            print(f"    [STRATEGY] Skipped {ticker}: payout ${total_payout_dollars:.2f} < ${config.MIN_PAYOUT_DOLLARS} minimum (payout_too_small)")
+            return self._skip(f"payout_too_small: ${total_payout_dollars:.2f} < ${config.MIN_PAYOUT_DOLLARS}")
+
         return best
 
     # ═══════════════════════════════════════════════════════
