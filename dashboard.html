@@ -659,7 +659,7 @@ function updateDashboard(data) {
     pnlSub += ' | Realized: ' + (realizedPnl >= 0 ? '+$' : '-$') + Math.abs(realizedPnl).toFixed(2);
   }
   if (pnl.kalshi_synced && pnl.last_sync) {
-    const syncTime = new Date(pnl.last_sync).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+    const syncTime = new Date(pnl.last_sync).toLocaleString('en-US', {timeZone:'America/New_York',hour:'numeric',minute:'2-digit',hour12:true});
     pnlSub += ' @ ' + syncTime;
   }
   document.getElementById('winLoss').textContent = pnlSub;
@@ -703,7 +703,7 @@ function updateDashboard(data) {
   if (positions.length > 0) {
     posEmpty.style.display = 'none';
     posBody.innerHTML = positions.map((p, idx) => {
-      const age = timeSince(p.timestamp);
+      const age = toET(p.timestamp) + ' (' + timeSince(p.timestamp) + ')';
       const desc = p.market_description || p.title || shortTicker(p.ticker);
       const edgePct = p.edge ? (p.edge * 100).toFixed(1) + '%' : '-';
       const expProfit = p.expected_profit_cents ? ((p.expected_profit_cents >= 0 ? '+$' : '-$') + Math.abs(p.expected_profit_cents / 100).toFixed(2)) : '-';
@@ -758,7 +758,7 @@ function updateDashboard(data) {
             <div class="review-stat"><div class="review-stat-label">Ensemble</div><div class="review-stat-value">${rv.ensemble_members || '-'} members</div></div>`;
         }
 
-        const reviewTime = rv.reviewed_at ? new Date(rv.reviewed_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '-';
+        const reviewTime = rv.reviewed_at ? toET(rv.reviewed_at) : '-';
         const actionLabel = (p.last_review_action || 'hold').toUpperCase();
 
         reviewRow = `<tr class="review-row" id="review-${idx}" style="display:none">
@@ -805,7 +805,7 @@ function updateDashboard(data) {
   if (recentTrades.length > 0) {
     trEmpty.style.display = 'none';
     trBody.innerHTML = recentTrades.map(t => {
-      const time = timeSince(t.timestamp);
+      const time = toET(t.timestamp);
       const conf = t.confirmation || '';
       const confClass = conf === 'CONFIRMED_OUTCOME' ? 'badge-confirmed' : conf === 'STRONG' ? 'badge-strong' : conf === 'CONFIRM' ? 'badge-confirm' : 'badge-weak';
       let statusBadge = '';
@@ -1353,9 +1353,24 @@ function shortTicker(t) {
   return t;
 }
 
+function toET(ts) {
+  // Convert timestamp to Eastern Time string.
+  // Server timestamps may lack timezone — treat as UTC if no tz info.
+  if (!ts) return '-';
+  let s = String(ts);
+  if (!s.endsWith('Z') && !s.includes('+') && !/\d{2}:\d{2}$/.test(s.slice(-6))) s += 'Z';
+  const d = new Date(s);
+  if (isNaN(d)) return '-';
+  return d.toLocaleString('en-US', {timeZone:'America/New_York',month:'short',day:'numeric',hour:'numeric',minute:'2-digit',hour12:true});
+}
+
 function timeSince(ts) {
   if (!ts) return '-';
-  const diff = Math.abs(Date.now() - new Date(ts).getTime()) / 1000;
+  let s = String(ts);
+  if (!s.endsWith('Z') && !s.includes('+') && !/\d{2}:\d{2}$/.test(s.slice(-6))) s += 'Z';
+  const d = new Date(s);
+  if (isNaN(d)) return '-';
+  const diff = Math.abs(Date.now() - d.getTime()) / 1000;
   if (diff < 120) return '< 1m ago';
   const mins = Math.floor(diff / 60);
   if (mins < 60) return mins + 'm ago';
