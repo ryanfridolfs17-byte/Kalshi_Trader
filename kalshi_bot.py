@@ -879,24 +879,26 @@ def _generate_daily_report(trade_log, strategy):
     """
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
-    # Filter trades from yesterday
-    day_trades = [
+    # Filter trades that SETTLED yesterday (not placed yesterday).
+    # Weather trades placed on day X settle on day X+1 or later.
+    # Use settled_at if available, fall back to timestamp for legacy trades.
+    settled = [
         t for t in trade_log
-        if t.get("timestamp", "").startswith(yesterday)
+        if t.get("settled") and
+        t.get("settled_at", t.get("timestamp", "")).startswith(yesterday)
     ]
 
-    if not day_trades:
-        return  # No trades yesterday, skip report
+    if not settled:
+        return  # No settlements yesterday, skip report
 
     # Compute stats
-    settled = [t for t in day_trades if t.get("settled")]
     wins = [t for t in settled if t.get("result") in ("win", "exit_win")]
     losses = [t for t in settled if t.get("result") in ("loss", "exit_loss")]
     total_pnl = sum(t.get("profit_cents", 0) for t in settled)
-    edges = [t.get("edge", 0) for t in day_trades if t.get("edge")]
+    edges = [t.get("edge", 0) for t in settled if t.get("edge")]
     avg_edge = sum(edges) / len(edges) if edges else 0
 
-    # City breakdown (use settled trades for accurate W/L and P&L)
+    # City breakdown
     city_perf = {}
     for t in settled:
         city = t.get("city_code", "OTHER")
@@ -925,7 +927,7 @@ def _generate_daily_report(trade_log, strategy):
 
     report = {
         "date": yesterday,
-        "trades_placed": len(day_trades),
+        "trades_settled": len(settled),
         "wins": len(wins),
         "losses": len(losses),
         "total_pnl_cents": total_pnl,
@@ -945,10 +947,8 @@ def _generate_daily_report(trade_log, strategy):
     except Exception:
         reports = []
 
-    # Don't duplicate if report for this date already exists
-    if any(r.get("date") == yesterday for r in reports):
-        return
-
+    # Replace existing report for same date (settlements may come in waves)
+    reports = [r for r in reports if r.get("date") != yesterday]
     reports.append(report)
     try:
         with open(config.DAILY_REPORTS_FILE, "w") as f:
@@ -957,7 +957,7 @@ def _generate_daily_report(trade_log, strategy):
         pass
 
     print(f"  [REPORT] Daily report generated for {yesterday}")
-    print(f"           Trades: {len(day_trades)}, W/L: {len(wins)}/{len(losses)}, P&L: ${total_pnl/100:.2f}")
+    print(f"           Settled: {len(settled)}, W/L: {len(wins)}/{len(losses)}, P&L: ${total_pnl/100:.2f}")
 
 
 def _run_daily_analysis(trade_log):
@@ -1053,6 +1053,7 @@ def _execute_exit(client, risk, trade_log, exit_rec, intel=None):
             for trade in trade_log:
                 if trade.get("ticker") == ticker and not trade.get("settled"):
                     trade["settled"] = True
+                    trade["settled_at"] = datetime.now(timezone.utc).isoformat()
                     trade["result"] = "exit_win" if profit_cents > 0 else "exit_loss"
                     trade["profit_cents"] = profit_cents
                     trade["exit_reason"] = exit_rec.get("reason", "")
@@ -1166,6 +1167,7 @@ def _execute_partial_sell(client, risk, trade_log, review, intel=None):
             # Log the partial exit
             trade_log.append({
                 "timestamp": datetime.now().isoformat(),
+                "settled_at": datetime.now(timezone.utc).isoformat(),
                 "ticker": ticker,
                 "side": side,
                 "price_cents": current_price,
@@ -1254,6 +1256,7 @@ def _execute_hedge(client, risk, trade_log, review, intel=None):
             # Log the hedge exit
             trade_log.append({
                 "timestamp": datetime.now().isoformat(),
+                "settled_at": datetime.now(timezone.utc).isoformat(),
                 "ticker": ticker,
                 "side": hedge_side,
                 "price_cents": hedge_price,

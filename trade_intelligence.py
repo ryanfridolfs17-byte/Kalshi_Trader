@@ -924,6 +924,7 @@ class TradeIntelligence:
 
                     # If we can't get actual data, mark as expired
                     trade["settled"] = True
+                    trade["settled_at"] = datetime.now(timezone.utc).isoformat()
                     trade["result"] = "expired_dry_run"
                     trade["profit_cents"] = 0
                     print(f"  ⏰ EXPIRED (dry run): {ticker} — market date passed")
@@ -950,6 +951,7 @@ class TradeIntelligence:
                 payout = contracts * 100  # $1 per contract
                 profit = payout - cost_cents
                 trade["settled"] = True
+                trade["settled_at"] = datetime.now(timezone.utc).isoformat()
                 trade["result"] = "win"
                 trade["payout_cents"] = payout
                 trade["profit_cents"] = profit
@@ -964,6 +966,7 @@ class TradeIntelligence:
             else:
                 # LOSS
                 trade["settled"] = True
+                trade["settled_at"] = datetime.now(timezone.utc).isoformat()
                 trade["result"] = "loss"
                 trade["payout_cents"] = 0
                 trade["profit_cents"] = -cost_cents

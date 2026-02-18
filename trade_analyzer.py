@@ -36,6 +36,22 @@ _TICKER_TO_CITY = {
     "KXHIGHCHI": "CHI",
     "KXHIGHMIA": "MIA",
     "KXHIGHAUS": "AUS",
+    "KXHIGHLAX": "LAX",
+    "KXHIGHDEN": "DEN",
+    "KXHIGHPHIL": "PHI",
+    "KXHIGHTATL": "ATL",
+    "KXHIGHTBOS": "BOS",
+    "KXHIGHTDAL": "DAL",
+    "KXHIGHTDC": "DC",
+    "KXHIGHTHOU": "HOU",
+    "KXHIGHTLV": "LV",
+    "KXHIGHTMIN": "MIN",
+    "KXHIGHTNOLA": "NOLA",
+    "KXHIGHTOKC": "OKC",
+    "KXHIGHTPHX": "PHX",
+    "KXHIGHTSATX": "SATX",
+    "KXHIGHTSEA": "SEA",
+    "KXHIGHTSFO": "SFO",
 }
 
 
@@ -50,14 +66,14 @@ class TradeAnalyzer:
         if target_date is None:
             target_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
-        # Filter to settled weather trades for the target date
+        # Filter to trades that SETTLED on the target date.
+        # Use settled_at if available, fall back to timestamp for legacy trades.
         settled_trades = []
         for t in trade_log:
             if not t.get("settled"):
                 continue
-            # Match by settlement date (timestamp day) or trade date
-            ts = t.get("timestamp", "")
-            if ts.startswith(target_date):
+            settle_date = t.get("settled_at", t.get("timestamp", ""))
+            if settle_date.startswith(target_date):
                 settled_trades.append(t)
 
         if not settled_trades:
