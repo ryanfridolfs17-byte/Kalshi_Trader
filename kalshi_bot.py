@@ -144,6 +144,12 @@ def main():
     # ─── SYNC BALANCE ───
     _sync_balance(client, risk, strategy)
 
+    # ─── STARTUP P&L SYNC ───
+    # Immediately sync P&L from Kalshi to clean up phantom trades
+    # and establish correct realized P&L before first cycle.
+    print("  [STARTUP] Syncing P&L from Kalshi...")
+    _sync_pnl_from_kalshi(client, trade_log=trade_log, intel=intel)
+
     # ─── STARTUP CLEANUP ───
     # If DRY_RUN, expire all unsettled positions from previous sessions.
     # Dry-run positions are never placed on the exchange, so they should
@@ -166,6 +172,23 @@ def main():
             _save_trade_log(trade_log)
             print(f"  [CLEANUP] Expired {expired_count} stale DRY_RUN positions")
             print(f"  [CLEANUP] Exposure freed — ready for fresh trading")
+
+    # Also mark any unsettled resting/cancelled/error trades as settled
+    # so they don't clutter the active trade log.
+    if trade_log:
+        stale_count = 0
+        for trade in trade_log:
+            if trade.get("settled"):
+                continue
+            status = trade.get("status", "")
+            if any(x in status for x in ("resting", "cancelled", "error", "submitted")):
+                trade["settled"] = True
+                trade["result"] = "phantom_not_filled"
+                trade["profit_cents"] = 0
+                stale_count += 1
+        if stale_count > 0:
+            _save_trade_log(trade_log)
+            print(f"  [CLEANUP] Cleared {stale_count} stale unfilled orders from trade log")
 
     # Print strategy info
     print(strategy.get_strategy_summary())
@@ -207,7 +230,9 @@ def main():
 
     # ─── MAIN LOOP ───
     cycle = 0
-    last_report_date = datetime.now().strftime("%Y-%m-%d")
+    # Force daily report regeneration on first cycle by using yesterday's date.
+    # This ensures the report is rebuilt with cleaned-up (phantom-free) data.
+    last_report_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     while True:
         try:
             cycle += 1
