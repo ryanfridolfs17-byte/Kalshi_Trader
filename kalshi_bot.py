@@ -1150,34 +1150,59 @@ def _generate_daily_report(trade_log, strategy):
     # Filter trades that SETTLED yesterday (not placed yesterday).
     # Weather trades placed on day X settle on day X+1 or later.
     # Use settled_at if available, fall back to timestamp for legacy trades.
-    # Exclude phantom trades (orders that never actually filled).
-    settled = [
-        t for t in trade_log
-        if t.get("settled") and
-        t.get("result") not in ("phantom_not_filled", "expired_dry_run") and
-        t.get("settled_at", t.get("timestamp", "")).startswith(yesterday)
-    ]
+    # Exclude phantom/expired/resting/cancelled trades.
+    settled = []
+    for t in trade_log:
+        if not t.get("settled"):
+            continue
+        result = t.get("result", "")
+        if result in ("phantom_not_filled", "expired_dry_run"):
+            continue
+        status = t.get("status", "")
+        if any(x in status for x in ("resting", "cancelled", "error", "submitted")):
+            continue
+        settle_date = t.get("settled_at", t.get("timestamp", ""))
+        if settle_date.startswith(yesterday):
+            settled.append(t)
 
     if not settled:
         return  # No settlements yesterday, skip report
 
-    # Compute stats
-    wins = [t for t in settled if t.get("result") in ("win", "exit_win")]
-    losses = [t for t in settled if t.get("result") in ("loss", "exit_loss")]
-    total_pnl = sum(t.get("profit_cents", 0) for t in settled)
-    edges = [t.get("edge", 0) for t in settled if t.get("edge")]
-    avg_edge = sum(edges) / len(edges) if edges else 0
-
-    # City breakdown
-    city_perf = {}
+    # Consolidate by ticker — partial exits of the same ticker are ONE position.
+    # This prevents 4 partial sells from counting as 4 separate wins.
+    ticker_summary = {}
     for t in settled:
-        city = t.get("city_code", "OTHER")
+        tk = t.get("ticker", "unknown")
+        if tk not in ticker_summary:
+            ticker_summary[tk] = {
+                "pnl_cents": 0, "trade_count": 0, "edge_sum": 0,
+                "edge_count": 0, "city_code": t.get("city_code", "OTHER"),
+            }
+        ticker_summary[tk]["pnl_cents"] += t.get("profit_cents", 0)
+        ticker_summary[tk]["trade_count"] += 1
+        edge = t.get("edge", 0)
+        if edge:
+            ticker_summary[tk]["edge_sum"] += edge
+            ticker_summary[tk]["edge_count"] += 1
+
+    # Compute stats from consolidated positions (not individual trade entries)
+    wins = [v for v in ticker_summary.values() if v["pnl_cents"] > 0]
+    losses = [v for v in ticker_summary.values() if v["pnl_cents"] < 0]
+    total_pnl = sum(v["pnl_cents"] for v in ticker_summary.values())
+    all_edges = [v["edge_sum"] / v["edge_count"]
+                 for v in ticker_summary.values() if v["edge_count"] > 0]
+    avg_edge = sum(all_edges) / len(all_edges) if all_edges else 0
+
+    # City breakdown (consolidated)
+    city_perf = {}
+    for tk, v in ticker_summary.items():
+        city = v["city_code"]
         if city not in city_perf:
             city_perf[city] = {"trades": 0, "wins": 0, "pnl_cents": 0}
         city_perf[city]["trades"] += 1
-        if t.get("result") in ("win", "exit_win"):
+        if v["pnl_cents"] > 0:
             city_perf[city]["wins"] += 1
-        city_perf[city]["pnl_cents"] += t.get("profit_cents", 0)
+        city_perf[city]["pnl_cents"] += v["pnl_cents"]
 
     # Model accuracy snapshot from quant
     model_accuracy = {}
@@ -1197,7 +1222,8 @@ def _generate_daily_report(trade_log, strategy):
 
     report = {
         "date": yesterday,
-        "trades_settled": len(settled),
+        "positions_settled": len(ticker_summary),  # Unique tickers, not trade entries
+        "trades_settled": len(settled),  # Individual trade entries (for reference)
         "wins": len(wins),
         "losses": len(losses),
         "total_pnl_cents": total_pnl,
@@ -1227,7 +1253,9 @@ def _generate_daily_report(trade_log, strategy):
         pass
 
     print(f"  [REPORT] Daily report generated for {yesterday}")
-    print(f"           Settled: {len(settled)}, W/L: {len(wins)}/{len(losses)}, P&L: ${total_pnl/100:.2f}")
+    print(f"           {len(ticker_summary)} positions settled "
+          f"({len(settled)} trade entries), "
+          f"W/L: {len(wins)}/{len(losses)}, P&L: ${total_pnl/100:+.2f}")
 
 
 def _run_daily_analysis(trade_log):
@@ -1343,19 +1371,8 @@ def _execute_exit(client, risk, trade_log, exit_rec, intel=None):
                 else:
                     risk.record_loss(abs(profit_cents))
 
-                # Sync exit P&L to TradeIntelligence tracking
-                if intel:
-                    try:
-                        intel.pnl_data["total_invested_cents"] += cost_cents
-                        intel.pnl_data["total_returned_cents"] += sell_value
-                        intel.pnl_data["total_profit_cents"] += profit_cents
-                        if profit_cents > 0:
-                            intel.pnl_data["wins"] += 1
-                        else:
-                            intel.pnl_data["losses"] += 1
-                        intel._save_json(config.PNL_HISTORY_FILE, intel.pnl_data)
-                    except Exception:
-                        pass
+                # NOTE: P&L file is NOT updated here. _sync_pnl_from_kalshi()
+                # is the single writer — it rebuilds from Kalshi API each cycle.
 
                 print(f"    P&L: {'+'if profit_cents>=0 else ''}${profit_cents/100:.2f}")
             else:
@@ -1480,19 +1497,8 @@ def _execute_partial_sell(client, risk, trade_log, review, intel=None):
                 else:
                     risk.record_loss(abs(partial_pnl))
 
-                # Sync exit P&L to TradeIntelligence tracking
-                if intel:
-                    try:
-                        intel.pnl_data["total_invested_cents"] += released_cost
-                        intel.pnl_data["total_returned_cents"] += sell_value
-                        intel.pnl_data["total_profit_cents"] += partial_pnl
-                        if partial_pnl > 0:
-                            intel.pnl_data["wins"] += 1
-                        else:
-                            intel.pnl_data["losses"] += 1
-                        intel._save_json(config.PNL_HISTORY_FILE, intel.pnl_data)
-                    except Exception:
-                        pass
+                # NOTE: P&L file is NOT updated here. _sync_pnl_from_kalshi()
+                # is the single writer — it rebuilds from Kalshi API each cycle.
 
                 print(f"    P&L: {'+'if partial_pnl>=0 else ''}${partial_pnl/100:.2f} (kept {total_contracts - sell_count} contracts)")
             else:
@@ -1585,19 +1591,8 @@ def _execute_hedge(client, risk, trade_log, review, intel=None):
                 else:
                     risk.record_loss(abs(total_pnl))
 
-                # Sync exit P&L to TradeIntelligence tracking
-                if intel:
-                    try:
-                        intel.pnl_data["total_invested_cents"] += hedge_price * hedge_contracts + cost_cents
-                        intel.pnl_data["total_returned_cents"] += 100 * hedge_contracts
-                        intel.pnl_data["total_profit_cents"] += total_pnl
-                        if total_pnl > 0:
-                            intel.pnl_data["wins"] += 1
-                        else:
-                            intel.pnl_data["losses"] += 1
-                        intel._save_json(config.PNL_HISTORY_FILE, intel.pnl_data)
-                    except Exception:
-                        pass
+                # NOTE: P&L file is NOT updated here. _sync_pnl_from_kalshi()
+                # is the single writer — it rebuilds from Kalshi API each cycle.
 
                 print(f"    P&L: {'+'if total_pnl>=0 else ''}${total_pnl/100:.2f}")
             else:
@@ -1824,15 +1819,21 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
 
         for ticker, flows in ticker_flows.items():
             has_settlement = ticker in settled_tickers
-            has_sells = flows["sell_revenue"] > 0
             is_still_open = ticker in open_tickers
 
-            # A ticker is closed if it has a settlement, has sells, or
-            # is no longer in open positions (settled loss with no revenue record)
-            if not has_settlement and not has_sells:
-                if is_still_open or not open_tickers:
-                    continue  # Genuinely open, or positions fetch failed
-                # Not in open positions and no settlement record = settled loss
+            # Skip tickers that are still open — they haven't settled yet.
+            # Even if we partially sold, the position isn't fully closed.
+            # Including partial sells with full buy costs inflates P&L.
+            if is_still_open:
+                continue
+
+            # A ticker is closed if:
+            #   1. It has a settlement record (win with payout)
+            #   2. It's NOT in open positions and we could fetch positions
+            #      (settled loss with no revenue record, or fully sold)
+            if not has_settlement:
+                if not open_tickers:
+                    continue  # Positions fetch failed, can't determine
 
             buy_cost = flows["buy_cost"]
             sell_revenue = flows["sell_revenue"]

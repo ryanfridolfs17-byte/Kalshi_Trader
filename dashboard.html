@@ -987,7 +987,7 @@ function updateDashboard(data) {
           <span class="${(r.total_pnl_cents||0)>=0?'green':'red'}" style="font-weight:600">$${((r.total_pnl_cents||0)/100).toFixed(2)}</span>
         </div>
         <div style="font-size:13px;color:var(--text-secondary)">
-          ${r.trades_placed||0} trades | ${r.wins||0}W ${r.losses||0}L | Avg edge: ${((r.avg_edge||0)*100).toFixed(1)}% | ${r.regime_summary||'-'}
+          ${r.positions_settled||r.trades_settled||0} positions | ${r.wins||0}W ${r.losses||0}L | Avg edge: ${((r.avg_edge||0)*100).toFixed(1)}% | ${r.regime_summary||'-'}
         </div>
         <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">${cityPerf || 'No city data'}</div>
       </div>`;

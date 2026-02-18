@@ -68,12 +68,16 @@ class TradeAnalyzer:
 
         # Filter to trades that SETTLED on the target date.
         # Use settled_at if available, fall back to timestamp for legacy trades.
-        # Exclude phantom trades (orders that never actually filled).
+        # Exclude phantom/resting/cancelled/error trades.
         settled_trades = []
         for t in trade_log:
             if not t.get("settled"):
                 continue
-            if t.get("result") in ("phantom_not_filled", "expired_dry_run"):
+            result = t.get("result", "")
+            if result in ("phantom_not_filled", "expired_dry_run"):
+                continue
+            status = t.get("status", "")
+            if any(x in status for x in ("resting", "cancelled", "error", "submitted")):
                 continue
             settle_date = t.get("settled_at", t.get("timestamp", ""))
             if settle_date.startswith(target_date):
@@ -82,9 +86,36 @@ class TradeAnalyzer:
         if not settled_trades:
             return None
 
-        # Analyze each trade
+        # Consolidate by ticker: partial exits are ONE position, not N trades.
+        # Pick the first trade per ticker for analysis (has the entry metadata),
+        # and sum up profit_cents across all entries for that ticker.
+        ticker_first_trade = {}
+        ticker_total_pnl = {}
+        for t in settled_trades:
+            tk = t.get("ticker", "")
+            if tk not in ticker_first_trade:
+                ticker_first_trade[tk] = dict(t)  # Copy first entry
+                ticker_total_pnl[tk] = t.get("profit_cents", 0)
+            else:
+                ticker_total_pnl[tk] += t.get("profit_cents", 0)
+
+        # Build consolidated trade list with correct totals
+        consolidated_trades = []
+        for tk, trade in ticker_first_trade.items():
+            trade["profit_cents"] = ticker_total_pnl[tk]
+            # Update result based on total P&L
+            if ticker_total_pnl[tk] > 0:
+                trade["result"] = "win" if trade.get("result") in ("win",) else "exit_win"
+            elif ticker_total_pnl[tk] < 0:
+                trade["result"] = "loss" if trade.get("result") in ("loss",) else "exit_loss"
+            consolidated_trades.append(trade)
+
+        if not consolidated_trades:
+            return None
+
+        # Analyze each consolidated position (not each partial trade)
         trade_analyses = []
-        for trade in settled_trades:
+        for trade in consolidated_trades:
             analysis = self._analyze_single_trade(trade)
             if analysis:
                 trade_analyses.append(analysis)
