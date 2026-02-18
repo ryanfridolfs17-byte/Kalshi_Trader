@@ -582,15 +582,23 @@ class WeatherEngine:
                 below_match = re.search(r'(\d+)°?\s*or\s*below', title + " " + subtitle, re.I)
 
             if above_match:
-                # ">47°" means 48+; "48° or above" means 48+
                 threshold = int(above_match.group(1))
-                temp_low = threshold + 1  # strictly greater than
+                # Check if this was the inclusive "X or above" pattern vs strict "above X"
+                matched_text = (title + " " + subtitle)[above_match.start():above_match.end()]
+                if re.search(r'\d+°?\s*or\s*above', matched_text, re.I):
+                    temp_low = threshold      # inclusive: "48° or above" → ≥48
+                else:
+                    temp_low = threshold + 1  # strict: "above 47°" → ≥48
                 temp_high = 200  # Effectively infinity
             elif below_match:
-                # "<40°" means 39 or below; "39° or below" means 39 or below
                 threshold = int(below_match.group(1))
+                # Check if this was the inclusive "X or below" pattern vs strict "below X"
+                matched_text = (title + " " + subtitle)[below_match.start():below_match.end()]
+                if re.search(r'\d+°?\s*or\s*below', matched_text, re.I):
+                    temp_high = threshold      # inclusive: "77° or below" → ≤77
+                else:
+                    temp_high = threshold - 1  # strict: "below 78°" → ≤77
                 temp_low = -100  # Effectively negative infinity
-                temp_high = threshold - 1
             else:
                 return None
 

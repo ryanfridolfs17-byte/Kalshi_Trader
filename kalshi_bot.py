@@ -277,7 +277,7 @@ def main():
                     spx_confirmer=strategy.spx_confirmer,
                 )
                 for review in reviews:
-                    _process_portfolio_action(client, risk, trade_log, review)
+                    _process_portfolio_action(client, risk, trade_log, review, intel=intel)
                 # Batch save after all reviews (persists last_review* fields)
                 if reviews:
                     risk._save_state()
@@ -292,7 +292,7 @@ def main():
                         exit_rec["urgency"] == "medium" and not sys.stdin.isatty()
                     )
                     if should_exit:
-                        _execute_exit(client, risk, trade_log, exit_rec)
+                        _execute_exit(client, risk, trade_log, exit_rec, intel=intel)
                     elif exit_rec["urgency"] == "medium":
                         print(f"    → Consider exiting manually")
 
@@ -890,20 +890,20 @@ def _generate_daily_report(trade_log, strategy):
 
     # Compute stats
     settled = [t for t in day_trades if t.get("settled")]
-    wins = [t for t in settled if t.get("result") == "win"]
-    losses = [t for t in settled if t.get("result") == "loss"]
+    wins = [t for t in settled if t.get("result") in ("win", "exit_win")]
+    losses = [t for t in settled if t.get("result") in ("loss", "exit_loss")]
     total_pnl = sum(t.get("profit_cents", 0) for t in settled)
     edges = [t.get("edge", 0) for t in day_trades if t.get("edge")]
     avg_edge = sum(edges) / len(edges) if edges else 0
 
-    # City breakdown
+    # City breakdown (use settled trades for accurate W/L and P&L)
     city_perf = {}
-    for t in day_trades:
+    for t in settled:
         city = t.get("city_code", "OTHER")
         if city not in city_perf:
             city_perf[city] = {"trades": 0, "wins": 0, "pnl_cents": 0}
         city_perf[city]["trades"] += 1
-        if t.get("result") == "win":
+        if t.get("result") in ("win", "exit_win"):
             city_perf[city]["wins"] += 1
         city_perf[city]["pnl_cents"] += t.get("profit_cents", 0)
 
@@ -1001,7 +1001,7 @@ def _run_daily_analysis(trade_log):
         print(f"  [ANALYSIS] Error running daily analysis: {e}")
 
 
-def _execute_exit(client, risk, trade_log, exit_rec):
+def _execute_exit(client, risk, trade_log, exit_rec, intel=None):
     """Execute a position exit (sell order) on Kalshi."""
     ticker = exit_rec["ticker"]
     current_price = exit_rec.get("current_price")
@@ -1067,6 +1067,20 @@ def _execute_exit(client, risk, trade_log, exit_rec):
             else:
                 risk.record_loss(abs(profit_cents))
 
+            # Sync exit P&L to TradeIntelligence tracking
+            if intel:
+                try:
+                    intel.pnl_data["total_invested_cents"] += cost_cents
+                    intel.pnl_data["total_returned_cents"] += sell_value
+                    intel.pnl_data["total_profit_cents"] += profit_cents
+                    if profit_cents > 0:
+                        intel.pnl_data["wins"] += 1
+                    else:
+                        intel.pnl_data["losses"] += 1
+                    intel._save_json(config.PNL_HISTORY_FILE, intel.pnl_data)
+                except Exception:
+                    pass
+
             print(f"    P&L: {'+'if profit_cents>=0 else ''}${profit_cents/100:.2f}")
         else:
             print(f"    ✗ Exit order returned no result")
@@ -1074,7 +1088,7 @@ def _execute_exit(client, risk, trade_log, exit_rec):
         print(f"    ✗ Exit order failed: {e}")
 
 
-def _process_portfolio_action(client, risk, trade_log, review):
+def _process_portfolio_action(client, risk, trade_log, review, intel=None):
     """Process a portfolio review recommendation."""
     ticker = review["ticker"]
     action = review["action"]
@@ -1095,7 +1109,7 @@ def _process_portfolio_action(client, risk, trade_log, review):
     print(f"  [REVIEW] {action.upper()} {ticker} — {review['reason']}")
 
     if action == "pare":
-        _execute_partial_sell(client, risk, trade_log, review)
+        _execute_partial_sell(client, risk, trade_log, review, intel=intel)
     elif action == "full_exit":
         exit_rec = {
             "ticker": ticker,
@@ -1104,12 +1118,12 @@ def _process_portfolio_action(client, risk, trade_log, review):
             "urgency": review["urgency"],
             "current_price": review["current_price"],
         }
-        _execute_exit(client, risk, trade_log, exit_rec)
+        _execute_exit(client, risk, trade_log, exit_rec, intel=intel)
     elif action == "hedge":
-        _execute_hedge(client, risk, trade_log, review)
+        _execute_hedge(client, risk, trade_log, review, intel=intel)
 
 
-def _execute_partial_sell(client, risk, trade_log, review):
+def _execute_partial_sell(client, risk, trade_log, review, intel=None):
     """Sell a portion of a position to reduce exposure."""
     ticker = review["ticker"]
     sell_count = review.get("sell_contracts", 1)
@@ -1173,6 +1187,20 @@ def _execute_partial_sell(client, risk, trade_log, review):
             else:
                 risk.record_loss(abs(partial_pnl))
 
+            # Sync exit P&L to TradeIntelligence tracking
+            if intel:
+                try:
+                    intel.pnl_data["total_invested_cents"] += released_cost
+                    intel.pnl_data["total_returned_cents"] += sell_value
+                    intel.pnl_data["total_profit_cents"] += partial_pnl
+                    if partial_pnl > 0:
+                        intel.pnl_data["wins"] += 1
+                    else:
+                        intel.pnl_data["losses"] += 1
+                    intel._save_json(config.PNL_HISTORY_FILE, intel.pnl_data)
+                except Exception:
+                    pass
+
             print(f"    P&L: {'+'if partial_pnl>=0 else ''}${partial_pnl/100:.2f} (kept {total_contracts - sell_count} contracts)")
         else:
             print(f"    ✗ Partial sell returned no result")
@@ -1180,7 +1208,7 @@ def _execute_partial_sell(client, risk, trade_log, review):
         print(f"    ✗ Partial sell failed: {e}")
 
 
-def _execute_hedge(client, risk, trade_log, review):
+def _execute_hedge(client, risk, trade_log, review, intel=None):
     """Exit a position by buying the opposite side (better liquidity path).
     On Kalshi, buying the opposite side when you hold a position closes it."""
     ticker = review["ticker"]
@@ -1247,6 +1275,20 @@ def _execute_hedge(client, risk, trade_log, review):
             else:
                 risk.record_loss(abs(total_pnl))
 
+            # Sync exit P&L to TradeIntelligence tracking
+            if intel:
+                try:
+                    intel.pnl_data["total_invested_cents"] += hedge_price * hedge_contracts + cost_cents
+                    intel.pnl_data["total_returned_cents"] += 100 * hedge_contracts
+                    intel.pnl_data["total_profit_cents"] += total_pnl
+                    if total_pnl > 0:
+                        intel.pnl_data["wins"] += 1
+                    else:
+                        intel.pnl_data["losses"] += 1
+                    intel._save_json(config.PNL_HISTORY_FILE, intel.pnl_data)
+                except Exception:
+                    pass
+
             print(f"    P&L: {'+'if total_pnl>=0 else ''}${total_pnl/100:.2f}")
         else:
             print(f"    ✗ Hedge order returned no result — falling back to direct sell")
@@ -1255,7 +1297,7 @@ def _execute_hedge(client, risk, trade_log, review):
                 "action": "sell", "urgency": "high",
                 "current_price": review["current_price"],
             }
-            _execute_exit(client, risk, trade_log, exit_rec)
+            _execute_exit(client, risk, trade_log, exit_rec, intel=intel)
     except Exception as e:
         print(f"    ✗ Hedge order failed: {e} — falling back to direct sell")
         exit_rec = {
@@ -1263,7 +1305,7 @@ def _execute_hedge(client, risk, trade_log, review):
             "action": "sell", "urgency": "high",
             "current_price": review["current_price"],
         }
-        _execute_exit(client, risk, trade_log, exit_rec)
+        _execute_exit(client, risk, trade_log, exit_rec, intel=intel)
 
 
 def _build_market_description(ticker, city_code, title):

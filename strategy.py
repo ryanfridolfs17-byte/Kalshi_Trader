@@ -16,7 +16,7 @@ Decision flow:
 """
 
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from weather_engine import WeatherEngine, CITIES
 from signal_confirmer import SignalConfirmer
 from trade_intelligence import TradeIntelligence
@@ -254,6 +254,20 @@ class Strategy:
         min_weather_edge = 0.08
         if abs(edge) < min_weather_edge:
             return None
+
+        # Sanity check: ensemble mean must not strongly contradict signal direction
+        forecast_mean = distribution["forecasted_high_mean"]
+        if edge > 0:  # YES signal — ensemble should support the bucket
+            # For "or below" (temp_low=-100): mean should be below ceiling
+            if temp_low == -100 and forecast_mean > temp_high + 3:
+                print(f"    [STRATEGY] Sanity check: mean {forecast_mean:.1f}°F is {forecast_mean - temp_high:.1f}°F "
+                      f"above bucket ceiling {temp_high}°F — skipping YES")
+                return None
+            # For "or above" (temp_high=200): mean should be above floor
+            if temp_high == 200 and forecast_mean < temp_low - 3:
+                print(f"    [STRATEGY] Sanity check: mean {forecast_mean:.1f}°F is {temp_low - forecast_mean:.1f}°F "
+                      f"below bucket floor {temp_low}°F — skipping YES")
+                return None
 
         # Step 4: Get confirmation from independent sources
         city_info = CITIES[city_code]
@@ -594,9 +608,31 @@ class Strategy:
 
         Returns a max-sized signal or None if outcome is not yet confirmed.
         """
-        # Only check for today's markets (intraday observations)
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        if target_date != today:
+        # Calculate local hour FIRST — before any case checks
+        utc_now = datetime.now(timezone.utc)
+        city_info = CITIES.get(city_code, {})
+        tz_name = city_info.get("timezone", "America/New_York")
+        if "Pacific" in tz_name or "Los_Angeles" in tz_name:
+            offset = -8
+        elif "Mountain" in tz_name or "Denver" in tz_name:
+            offset = -7
+        elif "Phoenix" in tz_name:
+            offset = -7
+        elif "Chicago" in tz_name or "Central" in tz_name:
+            offset = -6
+        else:
+            offset = -5  # Eastern
+        local_hour = (utc_now.hour + offset) % 24
+
+        # GLOBAL MINIMUM: No confirmed outcomes before noon local time.
+        # Before noon, temperatures haven't risen meaningfully and overnight
+        # observations may contain stale data from the previous day.
+        if local_hour < 12:
+            return None
+
+        # Use LOCAL date for "today" check, not UTC
+        local_date = (utc_now + timedelta(hours=offset)).strftime("%Y-%m-%d")
+        if target_date != local_date:
             return None
 
         todays_high = self.intel.get_todays_high_so_far(city_code)
@@ -649,22 +685,7 @@ class Strategy:
                 "strategy": "S1-Weather",
             }
 
-        # Calculate local hour for time-gated checks
-        utc_now = datetime.now(timezone.utc)
-        city_info = CITIES.get(city_code, {})
-        tz_name = city_info.get("timezone", "America/New_York")
-        # Map timezone name to UTC offset (standard time — winter)
-        if "Pacific" in tz_name or "Los_Angeles" in tz_name:
-            offset = -8
-        elif "Mountain" in tz_name or "Denver" in tz_name:
-            offset = -7
-        elif "Phoenix" in tz_name:
-            offset = -7  # Arizona doesn't observe DST, but same offset as Mountain standard
-        elif "Chicago" in tz_name or "Central" in tz_name:
-            offset = -6
-        else:
-            offset = -5  # Eastern
-        local_hour = (utc_now.hour + offset) % 24
+        # local_hour and offset already calculated at method entry
 
         # CASE 2: High is currently INSIDE the bucket → YES likely
         # Riskier than CASE 1 because temp can still rise out of the bucket.

@@ -347,6 +347,27 @@ class TradeIntelligence:
             if new_prob is None:
                 continue
 
+            # Absolute probability floor — exit if ensemble strongly contradicts position
+            # regardless of entry edge. Catches positions entered on stale/bad data.
+            if side == "yes" and new_prob < 0.15:
+                actions.append({
+                    "ticker": ticker, "action": "full_exit", "urgency": "high",
+                    "reason": f"Ensemble prob {new_prob:.0%} contradicts YES position (below 15% floor)",
+                    "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
+                    "city_code": city_code, "side": side, "contracts": contracts,
+                    "cost_cents": cost_cents,
+                })
+                continue
+            if side == "no" and new_prob > 0.85:
+                actions.append({
+                    "ticker": ticker, "action": "full_exit", "urgency": "high",
+                    "reason": f"Ensemble prob {new_prob:.0%} contradicts NO position (above 85% floor)",
+                    "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
+                    "city_code": city_code, "side": side, "contracts": contracts,
+                    "cost_cents": cost_cents,
+                })
+                continue
+
             # Calculate current edge based on position side
             market_prob = current_price / 100.0
             if side == "yes":
@@ -822,14 +843,35 @@ class TradeIntelligence:
             data = response.json()
             features = data.get("features", [])
 
-            # Filter to today's observations and find max temp
-            today = datetime.now().strftime("%Y-%m-%d")
+            # Use city's LOCAL date, not system time (which is UTC on Railway).
+            # Without this, late-evening local observations with next-day UTC
+            # timestamps pollute "today's" readings, and early-morning UTC
+            # checks pick up yesterday's stale data.
+            tz_name = city.get("timezone", "America/New_York")
+            if "Pacific" in tz_name or "Los_Angeles" in tz_name:
+                tz_offset = -8
+            elif "Mountain" in tz_name or "Denver" in tz_name:
+                tz_offset = -7
+            elif "Phoenix" in tz_name:
+                tz_offset = -7
+            elif "Chicago" in tz_name or "Central" in tz_name:
+                tz_offset = -6
+            else:
+                tz_offset = -5  # Eastern
+            utc_now = datetime.now(timezone.utc)
+            local_date = (utc_now + timedelta(hours=tz_offset)).strftime("%Y-%m-%d")
             todays_temps = []
 
             for obs in features:
                 props = obs.get("properties", {})
                 timestamp = props.get("timestamp", "")
-                if today in timestamp:
+                # Convert observation UTC timestamp to local date
+                try:
+                    obs_utc = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                    obs_local_date = (obs_utc + timedelta(hours=tz_offset)).strftime("%Y-%m-%d")
+                except Exception:
+                    obs_local_date = ""
+                if obs_local_date == local_date:
                     temp_c = props.get("temperature", {}).get("value")
                     if temp_c is not None:
                         temp_f = round(temp_c * 9 / 5 + 32)
