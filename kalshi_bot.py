@@ -1154,65 +1154,77 @@ def _generate_daily_report(trade_log, strategy):
     Generate a daily learning report for the previous day.
     Called at day transition (first cycle of a new day).
     Writes to daily_reports.json.
+
+    Uses Kalshi-synced date_pnl from pnl_history.json as primary P&L source
+    (ground truth from actual fills/settlements), supplemented by trade_log
+    metadata (edge, city) where available.
     """
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
-    # Filter trades that SETTLED yesterday (not placed yesterday).
-    # Weather trades placed on day X settle on day X+1 or later.
-    # Use settled_at if available, fall back to timestamp for legacy trades.
-    # Exclude phantom/expired/resting/cancelled trades.
-    settled = []
-    for t in trade_log:
-        if not t.get("settled"):
-            continue
-        result = t.get("result", "")
-        if result in ("phantom_not_filled", "expired_dry_run"):
-            continue
-        status = t.get("status", "")
-        if any(x in status for x in ("resting", "cancelled", "error", "submitted")):
-            continue
-        settle_date = t.get("settled_at", t.get("timestamp", ""))
-        if settle_date.startswith(yesterday):
-            settled.append(t)
+    # Primary source: Kalshi-synced per-date P&L from pnl_history.json
+    # This is rebuilt from actual Kalshi fills/settlements every cycle.
+    kalshi_day = None
+    try:
+        with open(config.PNL_HISTORY_FILE) as f:
+            pnl_hist = json.load(f)
+        kalshi_day = pnl_hist.get("date_pnl", {}).get(yesterday)
+    except Exception:
+        pass
 
-    if not settled:
-        return  # No settlements yesterday, skip report
+    if not kalshi_day:
+        # Fallback: no Kalshi data for yesterday. Check trade_log.
+        settled = [
+            t for t in trade_log
+            if t.get("settled") and
+            t.get("result") not in ("phantom_not_filled", "expired_dry_run") and
+            not any(x in t.get("status", "") for x in ("resting", "cancelled", "error", "submitted")) and
+            t.get("settled_at", t.get("timestamp", "")).startswith(yesterday)
+        ]
+        if not settled:
+            return
 
-    # Consolidate by ticker — partial exits of the same ticker are ONE position.
-    # This prevents 4 partial sells from counting as 4 separate wins.
-    ticker_summary = {}
-    for t in settled:
-        tk = t.get("ticker", "unknown")
-        if tk not in ticker_summary:
-            ticker_summary[tk] = {
-                "pnl_cents": 0, "trade_count": 0, "edge_sum": 0,
-                "edge_count": 0, "city_code": t.get("city_code", "OTHER"),
-            }
-        ticker_summary[tk]["pnl_cents"] += t.get("profit_cents", 0)
-        ticker_summary[tk]["trade_count"] += 1
-        edge = t.get("edge", 0)
-        if edge:
-            ticker_summary[tk]["edge_sum"] += edge
-            ticker_summary[tk]["edge_count"] += 1
+    # Use Kalshi data for W/L/P&L (ground truth)
+    if kalshi_day:
+        k_wins = kalshi_day["wins"]
+        k_losses = kalshi_day["losses"]
+        total_pnl = kalshi_day["pnl_cents"]
+        k_tickers = kalshi_day.get("tickers", [])
+        num_positions = len(k_tickers)
+    else:
+        # Fallback to trade_log (consolidate by ticker)
+        ticker_map = {}
+        for t in settled:
+            tk = t.get("ticker", "")
+            if tk not in ticker_map:
+                ticker_map[tk] = 0
+            ticker_map[tk] += t.get("profit_cents", 0)
+        k_wins = sum(1 for v in ticker_map.values() if v > 0)
+        k_losses = sum(1 for v in ticker_map.values() if v < 0)
+        total_pnl = sum(ticker_map.values())
+        k_tickers = [{"ticker": tk, "pnl_cents": v} for tk, v in ticker_map.items()]
+        num_positions = len(ticker_map)
 
-    # Compute stats from consolidated positions (not individual trade entries)
-    wins = [v for v in ticker_summary.values() if v["pnl_cents"] > 0]
-    losses = [v for v in ticker_summary.values() if v["pnl_cents"] < 0]
-    total_pnl = sum(v["pnl_cents"] for v in ticker_summary.values())
-    all_edges = [v["edge_sum"] / v["edge_count"]
-                 for v in ticker_summary.values() if v["edge_count"] > 0]
-    avg_edge = sum(all_edges) / len(all_edges) if all_edges else 0
-
-    # City breakdown (consolidated)
+    # Build city breakdown from Kalshi ticker data
     city_perf = {}
-    for tk, v in ticker_summary.items():
-        city = v["city_code"]
+    for entry in k_tickers:
+        tk = entry.get("ticker", "") if isinstance(entry, dict) else entry
+        pnl = entry.get("pnl_cents", 0) if isinstance(entry, dict) else 0
+        city = _city_from_ticker(tk) or "OTHER"
         if city not in city_perf:
             city_perf[city] = {"trades": 0, "wins": 0, "pnl_cents": 0}
         city_perf[city]["trades"] += 1
-        if v["pnl_cents"] > 0:
+        if pnl > 0:
             city_perf[city]["wins"] += 1
-        city_perf[city]["pnl_cents"] += v["pnl_cents"]
+        city_perf[city]["pnl_cents"] += pnl
+
+    # Get average edge from trade_log (metadata not in Kalshi API)
+    trade_edges = []
+    for t in trade_log:
+        tk = t.get("ticker", "")
+        market_date = _date_from_ticker(tk)
+        if market_date == yesterday and t.get("edge"):
+            trade_edges.append(t["edge"])
+    avg_edge = sum(trade_edges) / len(trade_edges) if trade_edges else 0
 
     # Model accuracy snapshot from quant
     model_accuracy = {}
@@ -1225,23 +1237,22 @@ def _generate_daily_report(trade_log, strategy):
                 model_accuracy[model_name]["count"] += stats.get("count", 0)
                 model_accuracy[model_name]["mse_sum"] += stats.get("mse_sum", 0)
 
-    # Current model weights
     model_weights = {}
     for city in config.WEATHER_CITIES:
         model_weights[city] = strategy.quant.get_model_weights(city)
 
     report = {
         "date": yesterday,
-        "positions_settled": len(ticker_summary),  # Unique tickers, not trade entries
-        "trades_settled": len(settled),  # Individual trade entries (for reference)
-        "wins": len(wins),
-        "losses": len(losses),
+        "positions_settled": num_positions,
+        "wins": k_wins,
+        "losses": k_losses,
         "total_pnl_cents": total_pnl,
         "avg_edge": round(avg_edge, 4),
         "city_performance": city_perf,
         "model_accuracy": model_accuracy,
         "regime_summary": "TRANSITIONAL",
         "model_weights_after": model_weights,
+        "source": "kalshi_api" if kalshi_day else "trade_log",
     }
 
     # Load existing reports and append
@@ -1262,10 +1273,10 @@ def _generate_daily_report(trade_log, strategy):
     except Exception:
         pass
 
-    print(f"  [REPORT] Daily report generated for {yesterday}")
-    print(f"           {len(ticker_summary)} positions settled "
-          f"({len(settled)} trade entries), "
-          f"W/L: {len(wins)}/{len(losses)}, P&L: ${total_pnl/100:+.2f}")
+    source = report.get("source", "unknown")
+    print(f"  [REPORT] Daily report generated for {yesterday} (source: {source})")
+    print(f"           {num_positions} positions, "
+          f"W/L: {k_wins}/{k_losses}, P&L: ${total_pnl/100:+.2f}")
 
 
 def _run_daily_analysis(trade_log):
@@ -1274,7 +1285,17 @@ def _run_daily_analysis(trade_log):
         from trade_analyzer import TradeAnalyzer
         analyzer = TradeAnalyzer()
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        result = analyzer.run_daily_analysis(trade_log, yesterday)
+
+        # Load Kalshi date_pnl for ground-truth P&L
+        kalshi_day = None
+        try:
+            with open(config.PNL_HISTORY_FILE) as f:
+                pnl_hist = json.load(f)
+            kalshi_day = pnl_hist.get("date_pnl", {}).get(yesterday)
+        except Exception:
+            pass
+
+        result = analyzer.run_daily_analysis(trade_log, yesterday, kalshi_date_pnl=kalshi_day)
 
         if not result:
             print(f"  [ANALYSIS] No settled trades to analyze for {yesterday}")
@@ -1712,6 +1733,26 @@ def _city_from_ticker(ticker):
     return _TICKER_TO_CITY.get(prefix, "")
 
 
+def _date_from_ticker(ticker):
+    """Extract market date from ticker like KXHIGHNY-26FEB17-B48.5 → '2026-02-17'."""
+    try:
+        parts = ticker.split("-")
+        if len(parts) >= 2:
+            dp = parts[1]  # e.g. "26FEB17"
+            if len(dp) >= 7:
+                year = int("20" + dp[:2])
+                months = {"JAN": 1, "FEB": 2, "MAR": 3, "APR": 4,
+                          "MAY": 5, "JUN": 6, "JUL": 7, "AUG": 8,
+                          "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12}
+                month = months.get(dp[2:5].upper())
+                day = int(dp[5:7])
+                if month:
+                    return f"{year}-{month:02d}-{day:02d}"
+    except Exception:
+        pass
+    return None
+
+
 def _sync_balance(client, risk, strategy):
     """Fetch current Kalshi balance and pass it to risk manager and strategy for dynamic sizing."""
     if config.API_KEY_ID == "YOUR_API_KEY_ID_HERE" or config.DRY_RUN:
@@ -1779,12 +1820,14 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
 
         # Fetch current open positions to distinguish open vs settled-loss
         open_tickers = set()
+        positions_fetched = False  # True if API call succeeded (even if empty)
         try:
             pos_cursor = None
             while True:
                 pos_result = client.get_positions(limit=200, cursor=pos_cursor)
                 if not pos_result:
                     break
+                positions_fetched = True
                 for pos in pos_result.get("market_positions", []):
                     if pos.get("position", 0) != 0:
                         open_tickers.add(pos.get("ticker", ""))
@@ -1792,7 +1835,7 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
                 if not pos_cursor:
                     break
         except Exception:
-            pass  # If positions fetch fails, fall back to old logic
+            pass  # If positions fetch fails, positions_fetched stays False
 
         # Group fills by ticker
         ticker_flows = {}  # ticker → {buy_cost, sell_revenue}
@@ -1828,22 +1871,23 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
         wins = 0
         losses = 0
 
+        # Per-date P&L breakdown (keyed by market date from ticker)
+        # Used by daily reports as ground truth instead of trade_log
+        date_pnl = {}  # date_str → {wins, losses, pnl_cents, tickers: [...]}
+
         for ticker, flows in ticker_flows.items():
             has_settlement = ticker in settled_tickers
             is_still_open = ticker in open_tickers
 
             # Skip tickers that are still open — they haven't settled yet.
-            # Even if we partially sold, the position isn't fully closed.
-            # Including partial sells with full buy costs inflates P&L.
             if is_still_open:
                 continue
 
             # A ticker is closed if:
             #   1. It has a settlement record (win with payout)
             #   2. It's NOT in open positions and we could fetch positions
-            #      (settled loss with no revenue record, or fully sold)
             if not has_settlement:
-                if not open_tickers:
+                if not positions_fetched:
                     continue  # Positions fetch failed, can't determine
 
             buy_cost = flows["buy_cost"]
@@ -1858,7 +1902,23 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
                 wins += 1
             elif ticker_pnl < 0:
                 losses += 1
-            # ticker_pnl == 0 is break-even, don't count as win or loss
+
+            # Track per-date P&L using the market date from the ticker
+            market_date = _date_from_ticker(ticker)
+            if market_date:
+                if market_date not in date_pnl:
+                    date_pnl[market_date] = {"wins": 0, "losses": 0,
+                                             "pnl_cents": 0, "tickers": []}
+                date_pnl[market_date]["pnl_cents"] += ticker_pnl
+                date_pnl[market_date]["tickers"].append({
+                    "ticker": ticker, "pnl_cents": ticker_pnl,
+                    "buy_cost": buy_cost, "sell_revenue": sell_revenue,
+                    "settlement_revenue": settlement_revenue,
+                })
+                if ticker_pnl > 0:
+                    date_pnl[market_date]["wins"] += 1
+                elif ticker_pnl < 0:
+                    date_pnl[market_date]["losses"] += 1
 
         # NOTE: Remaining settle_rev entries (settlements with no fills) are
         # intentionally skipped. Without buy cost data, adding revenue alone
@@ -2001,6 +2061,7 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
             "account_balance_cents": account_balance,
             "deposits_cents": deposits,
             "account_pnl_cents": account_pnl,
+            "date_pnl": date_pnl,  # Per market-date P&L from Kalshi fills
             "kalshi_synced": True,
             "kalshi_fills": len(all_fills),
             "kalshi_settlements": len(all_settlements),

@@ -58,33 +58,32 @@ _TICKER_TO_CITY = {
 class TradeAnalyzer:
     """Post-mortem analysis engine for settled trades."""
 
-    def run_daily_analysis(self, trade_log, target_date=None):
+    def run_daily_analysis(self, trade_log, target_date=None, kalshi_date_pnl=None):
         """
-        Main entry point. Analyze all trades that settled on target_date.
+        Main entry point. Analyze all trades for target_date's markets.
+        Uses market date from ticker (not settled_at) for reliable filtering.
+        kalshi_date_pnl: optional Kalshi ground-truth P&L for the date.
         Returns the daily analysis dict and saves to JSON.
         """
         if target_date is None:
             target_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
-        # Filter to trades that SETTLED on the target date.
-        # Use settled_at if available, fall back to timestamp for legacy trades.
+        # Filter by MARKET DATE from ticker (e.g. KXHIGHNY-26FEB17 → 2026-02-17).
+        # This is reliable because the ticker encodes the actual market date,
+        # unlike settled_at which may have wrong timestamps from bulk detection.
         # Exclude phantom/resting/cancelled/error trades.
         settled_trades = []
         for t in trade_log:
-            if not t.get("settled"):
-                continue
             result = t.get("result", "")
             if result in ("phantom_not_filled", "expired_dry_run"):
                 continue
             status = t.get("status", "")
             if any(x in status for x in ("resting", "cancelled", "error", "submitted")):
                 continue
-            settle_date = t.get("settled_at", t.get("timestamp", ""))
-            if settle_date.startswith(target_date):
+            tk = t.get("ticker", "")
+            market_date = self._extract_date_from_ticker(tk)
+            if market_date == target_date and t.get("settled"):
                 settled_trades.append(t)
-
-        if not settled_trades:
-            return None
 
         # Consolidate by ticker: partial exits are ONE position, not N trades.
         # Pick the first trade per ticker for analysis (has the entry metadata),
@@ -99,14 +98,44 @@ class TradeAnalyzer:
             else:
                 ticker_total_pnl[tk] += t.get("profit_cents", 0)
 
+        # Override P&L from Kalshi ground truth when available.
+        # This corrects any stale/wrong profit_cents in trade_log.
+        kalshi_tickers = {}  # ticker → pnl_cents from Kalshi
+        if kalshi_date_pnl:
+            for entry in kalshi_date_pnl.get("tickers", []):
+                kalshi_tickers[entry["ticker"]] = entry["pnl_cents"]
+
+        # Inject Kalshi tickers that are missing from trade_log
+        # (trades we lost but never properly logged as settled)
+        for kticker, kpnl in kalshi_tickers.items():
+            if kticker not in ticker_first_trade:
+                # Create a synthetic trade entry with Kalshi data
+                city_code = self._city_from_ticker(kticker)
+                ticker_first_trade[kticker] = {
+                    "ticker": kticker,
+                    "city_code": city_code or "",
+                    "settled": True,
+                    "result": "win" if kpnl > 0 else "loss",
+                    "profit_cents": kpnl,
+                    "status": "live_filled",
+                    "source": "kalshi_api",
+                }
+                ticker_total_pnl[kticker] = kpnl
+
         # Build consolidated trade list with correct totals
         consolidated_trades = []
         for tk, trade in ticker_first_trade.items():
-            trade["profit_cents"] = ticker_total_pnl[tk]
-            # Update result based on total P&L
-            if ticker_total_pnl[tk] > 0:
+            # Use Kalshi P&L if available (ground truth)
+            if tk in kalshi_tickers:
+                trade["profit_cents"] = kalshi_tickers[tk]
+                pnl = kalshi_tickers[tk]
+            else:
+                trade["profit_cents"] = ticker_total_pnl.get(tk, 0)
+                pnl = trade["profit_cents"]
+            # Update result based on P&L
+            if pnl > 0:
                 trade["result"] = "win" if trade.get("result") in ("win",) else "exit_win"
-            elif ticker_total_pnl[tk] < 0:
+            elif pnl < 0:
                 trade["result"] = "loss" if trade.get("result") in ("loss",) else "exit_loss"
             consolidated_trades.append(trade)
 
@@ -574,6 +603,11 @@ class TradeAnalyzer:
             },
             "trade_analyses": trade_analyses,
         }
+
+    def _city_from_ticker(self, ticker):
+        """Extract city code from ticker prefix. E.g. KXHIGHNY-... → NYC."""
+        prefix = ticker.split("-")[0] if "-" in ticker else ticker
+        return _TICKER_TO_CITY.get(prefix)
 
     # ═══════════════════════════════════════════════════════
     # DATA FETCHING HELPERS
