@@ -338,6 +338,7 @@ def main():
             print("\n  [STEP 1] Scanning weather markets...")
             weather_markets = scanner.scan_weather_markets()
             skip_reasons = {}  # Track why markets are skipped
+            scan_entries = []  # Per-market scan log for skipped trade analysis
             signals_found = 0
 
             if weather_markets:
@@ -358,6 +359,10 @@ def main():
                         city_exp = risk.state.get("city_exposure", {}).get(city, 0)
                         if city_exp >= config.MAX_PER_CITY_CENTS:
                             skip_reasons["City maxed out"] = skip_reasons.get("City maxed out", 0) + 1
+                            scan_entries.append({
+                                "ticker": ticker, "city": city, "category": "city_maxed",
+                                "reason": f"{city} exposure ${city_exp/100:.2f} >= ${config.MAX_PER_CITY_CENTS/100:.2f}",
+                            })
                             continue
 
                     # Quick-evaluate to see if this market is even worth printing
@@ -377,6 +382,16 @@ def main():
                         else:
                             cat = str(reason)[:40]
                         skip_reasons[cat] = skip_reasons.get(cat, 0) + 1
+                        scan_entries.append({
+                            "ticker": ticker,
+                            "city": parsed_quick.get("city_code", "") if parsed_quick else "",
+                            "market_date": parsed_quick.get("target_date", "") if parsed_quick else "",
+                            "category": cat,
+                            "reason": str(signal.get("reasoning", ""))[:120],
+                            "market_price": market.get("last_price", 0),
+                            "yes_ask": market.get("yes_ask", 0),
+                            "no_ask": market.get("no_ask", 0),
+                        })
                         continue
 
                     # Market passed filters — print it
@@ -410,12 +425,38 @@ def main():
 
                     if approved is False:
                         print(f"    ✗ BLOCKED: {reason}")
+                        scan_entries.append({
+                            "ticker": ticker, "city": signal.get("city_code", ""),
+                            "market_date": parsed.get("target_date", "") if parsed else "",
+                            "category": "risk_blocked",
+                            "reason": reason,
+                            "edge": round(signal["edge"], 4),
+                            "confidence": round(signal["confidence"], 3),
+                            "price_cents": signal["price_cents"],
+                            "side": signal["side"],
+                            "contracts": signal["suggested_contracts"],
+                            "confirmation": signal.get("confirmation_verdict", ""),
+                            "strategy": signal.get("strategy", ""),
+                        })
                         continue
 
                     # Kill switch: log but don't execute
                     if observation_mode:
                         cost = signal["price_cents"] * signal["suggested_contracts"]
                         print(f"    [OBSERVATION] Would trade {signal['suggested_contracts']}x {signal['side'].upper()} @ {signal['price_cents']}c = ${cost/100:.2f} but kill switch active")
+                        scan_entries.append({
+                            "ticker": ticker, "city": signal.get("city_code", ""),
+                            "market_date": parsed.get("target_date", "") if parsed else "",
+                            "category": "observation_blocked",
+                            "reason": obs_reason,
+                            "edge": round(signal["edge"], 4),
+                            "confidence": round(signal["confidence"], 3),
+                            "price_cents": signal["price_cents"],
+                            "side": signal["side"],
+                            "contracts": signal["suggested_contracts"],
+                            "confirmation": signal.get("confirmation_verdict", ""),
+                            "strategy": signal.get("strategy", ""),
+                        })
                         continue
 
                     # ═══════════════════════════════════════
@@ -454,6 +495,18 @@ def main():
 
                     if trade_result:
                         trade_count_this_cycle += 1
+                        scan_entries.append({
+                            "ticker": ticker, "city": signal.get("city_code", ""),
+                            "market_date": parsed.get("target_date", "") if parsed else "",
+                            "category": "executed",
+                            "edge": round(signal["edge"], 4),
+                            "confidence": round(signal["confidence"], 3),
+                            "price_cents": signal["price_cents"],
+                            "side": signal["side"],
+                            "contracts": signal["suggested_contracts"],
+                            "confirmation": signal.get("confirmation_verdict", ""),
+                            "strategy": signal.get("strategy", ""),
+                        })
 
             # ═══════════════════════════════════════════════
             # STEP 1b: SCAN S&P 500 BRACKET MARKETS
@@ -484,6 +537,14 @@ def main():
                             else:
                                 cat = str(reason)[:40]
                             skip_reasons[cat] = skip_reasons.get(cat, 0) + 1
+                            scan_entries.append({
+                                "ticker": ticker, "city": "SP500",
+                                "category": cat,
+                                "reason": str(signal.get("reasoning", ""))[:120],
+                                "market_price": market.get("last_price", 0),
+                                "yes_ask": market.get("yes_ask", 0),
+                                "no_ask": market.get("no_ask", 0),
+                            })
                             continue
 
                         print(f"\n  [SP500] Evaluating: {ticker}")
@@ -510,11 +571,35 @@ def main():
 
                         if approved is False:
                             print(f"    x BLOCKED: {reason}")
+                            scan_entries.append({
+                                "ticker": ticker, "city": "SP500",
+                                "category": "risk_blocked",
+                                "reason": reason,
+                                "edge": round(signal["edge"], 4),
+                                "confidence": round(signal["confidence"], 3),
+                                "price_cents": signal["price_cents"],
+                                "side": signal["side"],
+                                "contracts": signal["suggested_contracts"],
+                                "confirmation": signal.get("confirmation_verdict", ""),
+                                "strategy": signal.get("strategy", ""),
+                            })
                             continue
 
                         if observation_mode:
                             cost = signal["price_cents"] * signal["suggested_contracts"]
                             print(f"    [OBSERVATION] Would trade {signal['suggested_contracts']}x {signal['side'].upper()} @ {signal['price_cents']}c = ${cost/100:.2f} but kill switch active")
+                            scan_entries.append({
+                                "ticker": ticker, "city": "SP500",
+                                "category": "observation_blocked",
+                                "reason": obs_reason,
+                                "edge": round(signal["edge"], 4),
+                                "confidence": round(signal["confidence"], 3),
+                                "price_cents": signal["price_cents"],
+                                "side": signal["side"],
+                                "contracts": signal["suggested_contracts"],
+                                "confirmation": signal.get("confirmation_verdict", ""),
+                                "strategy": signal.get("strategy", ""),
+                            })
                             continue
 
                         if approved == "NEEDS_APPROVAL":
@@ -546,6 +631,17 @@ def main():
                         )
                         if trade_result:
                             trade_count_this_cycle += 1
+                            scan_entries.append({
+                                "ticker": ticker, "city": "SP500",
+                                "category": "executed",
+                                "edge": round(signal["edge"], 4),
+                                "confidence": round(signal["confidence"], 3),
+                                "price_cents": signal["price_cents"],
+                                "side": signal["side"],
+                                "contracts": signal["suggested_contracts"],
+                                "confirmation": signal.get("confirmation_verdict", ""),
+                                "strategy": signal.get("strategy", ""),
+                            })
 
             # ═══════════════════════════════════════════════
             # ARBITRAGE SCAN (also checks weather markets)
@@ -587,6 +683,10 @@ def main():
             _write_bot_status(cycle, skip_reasons, trade_count_this_cycle, strategy, client,
                               observation_mode=observation_mode, observation_reason=obs_reason,
                               risk_manager=risk)
+
+            # Save per-market scan log for skipped trade analysis
+            if scan_entries:
+                _save_scan_log(scan_entries, cycle)
 
             # Wait for next cycle — use faster scanning during peak temperature hours
             et_hour = (datetime.now(timezone.utc).hour - 5) % 24
@@ -1073,6 +1173,29 @@ def _process_approved_trades(client, risk, trade_log):
         _save_pending(remaining)
         if executed:
             print(f"  [PENDING] Executed {executed} approved trade(s)")
+
+
+def _save_scan_log(entries, cycle):
+    """Append scan cycle entries to scan_log.json, prune >7 days."""
+    cycle_entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "cycle": cycle,
+        "total_evaluated": len(entries),
+        "entries": entries,
+    }
+    try:
+        data = []
+        if os.path.exists(config.SCAN_LOG_FILE):
+            with open(config.SCAN_LOG_FILE) as f:
+                data = json.load(f)
+        data.append(cycle_entry)
+        # Prune entries older than 7 days
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        data = [d for d in data if d.get("timestamp", "") >= cutoff]
+        with open(config.SCAN_LOG_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"  [SCAN LOG] Failed to save: {e}")
 
 
 def _write_bot_status(cycle, skip_reasons, trades_this_cycle, strategy, client=None,
