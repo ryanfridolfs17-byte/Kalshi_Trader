@@ -961,6 +961,12 @@ class TradeIntelligence:
             if not ticker:
                 continue
 
+            # Skip trades that never actually filled (resting/cancelled/error).
+            # These are limit orders that were placed but never matched.
+            status = trade.get("status", "")
+            if any(x in status for x in ("resting", "cancelled", "error", "submitted")):
+                continue
+
             # ─── DRY RUN: Auto-settle when the market date has passed ───
             if config.DRY_RUN:
                 # Extract date from ticker like KXHIGHNY-26FEB12-B36.5
@@ -1236,11 +1242,19 @@ class TradeIntelligence:
         profit = self.pnl_data["total_profit_cents"]
         roi = (profit / invested * 100) if invested > 0 else 0
 
+        # Today's numbers (from Kalshi sync)
+        today_w = self.pnl_data.get("today_wins", 0)
+        today_l = self.pnl_data.get("today_losses", 0)
+        today_pnl = self.pnl_data.get("today_pnl_cents", 0)
+        today_total = today_w + today_l
+
         print(f"\n  ┌─ Profit & Loss ────────────────────────────────")
-        print(f"  │  Total trades settled: {total}")
-        print(f"  │  Win rate:      {self.pnl_data['wins']}/{total} ({win_rate:.0%})")
+        if today_total > 0:
+            print(f"  │  Today:         {today_w}W/{today_l}L  P&L: ${today_pnl/100:+.2f}")
+            print(f"  │  ─────────────────────────────────────────")
+        print(f"  │  All-time:      {self.pnl_data['wins']}W/{self.pnl_data['losses']}L ({win_rate:.0%})")
         print(f"  │  Total invested: ${invested/100:.2f}")
-        print(f"  │  Total profit:   ${profit/100:.2f}")
+        print(f"  │  Total profit:   ${profit/100:+.2f}")
         print(f"  │  ROI:            {roi:.1f}%")
 
         # Bias info

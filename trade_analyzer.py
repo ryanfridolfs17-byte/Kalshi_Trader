@@ -68,9 +68,12 @@ class TradeAnalyzer:
 
         # Filter to trades that SETTLED on the target date.
         # Use settled_at if available, fall back to timestamp for legacy trades.
+        # Exclude phantom trades (orders that never actually filled).
         settled_trades = []
         for t in trade_log:
             if not t.get("settled"):
+                continue
+            if t.get("result") in ("phantom_not_filled", "expired_dry_run"):
                 continue
             settle_date = t.get("settled_at", t.get("timestamp", ""))
             if settle_date.startswith(target_date):

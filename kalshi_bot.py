@@ -252,7 +252,7 @@ def main():
 
             # Sync P&L from Kalshi AFTER check_settlements so it overwrites
             # the internal tracking with ground truth from the exchange.
-            _sync_pnl_from_kalshi(client, intel)
+            _sync_pnl_from_kalshi(client, trade_log=trade_log, intel=intel)
             intel.print_pnl()
 
             # Daily report + analysis on day change
@@ -1125,9 +1125,11 @@ def _generate_daily_report(trade_log, strategy):
     # Filter trades that SETTLED yesterday (not placed yesterday).
     # Weather trades placed on day X settle on day X+1 or later.
     # Use settled_at if available, fall back to timestamp for legacy trades.
+    # Exclude phantom trades (orders that never actually filled).
     settled = [
         t for t in trade_log
         if t.get("settled") and
+        t.get("result") not in ("phantom_not_filled", "expired_dry_run") and
         t.get("settled_at", t.get("timestamp", "")).startswith(yesterday)
     ]
 
@@ -1695,7 +1697,7 @@ def _sync_balance(client, risk, strategy):
         pass
 
 
-def _sync_pnl_from_kalshi(client, intel=None):
+def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
     """Compute realized P&L from actual Kalshi fills and settlements.
 
     Only counts P&L from CLOSED tickers (settled markets or early exits).
@@ -1710,6 +1712,9 @@ def _sync_pnl_from_kalshi(client, intel=None):
          (settled loss — Kalshi doesn't return settlement records for
          losing positions with revenue=0, so we cross-reference against
          the live positions list to detect them)
+
+    Also cleans up phantom trades in trade_log: trades marked as settled
+    but which have no corresponding Kalshi fill are reset.
 
     This is the source of truth — it replaces any internal P&L tracking.
     Must run AFTER check_settlements() so it overwrites the file last.
@@ -1828,6 +1833,58 @@ def _sync_pnl_from_kalshi(client, intel=None):
 
         total_pnl = total_returned - total_invested
 
+        # ── Compute today's settlements separately ──
+        # Filter settlements that have today's date in their ticker
+        # (weather markets for date X settle on date X+1 at 10 AM ET)
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_wins = 0
+        today_losses = 0
+        today_pnl = 0
+        # Tickers we have actual fills for (used to clean up phantom trades)
+        filled_tickers = set(ticker_flows.keys())
+
+        for s in all_settlements:
+            sticker = s.get("ticker", "")
+            revenue = s.get("revenue", 0) or 0
+            # Check if this ticker has fills (we actually traded it)
+            if sticker not in filled_tickers:
+                continue
+            # Check if settlement is from today using the settle_ts field
+            settle_ts = s.get("settled_time", "") or s.get("settle_ts", "") or ""
+            if settle_ts and today_str in settle_ts:
+                buy_cost = ticker_flows.get(sticker, {}).get("buy_cost", 0)
+                sell_revenue_s = ticker_flows.get(sticker, {}).get("sell_revenue", 0)
+                t_pnl = sell_revenue_s + revenue - buy_cost
+                today_pnl += t_pnl
+                if t_pnl > 0:
+                    today_wins += 1
+                elif t_pnl < 0:
+                    today_losses += 1
+
+        # ── Clean up phantom trades in trade_log ──
+        # Trades marked as settled "win"/"loss" but which have NO
+        # corresponding Kalshi fill are phantom (from the old bug where
+        # resting orders were marked as filled). Reset them.
+        phantom_count = 0
+        if trade_log:
+            for trade in trade_log:
+                if not trade.get("settled"):
+                    continue
+                result = trade.get("result", "")
+                if result not in ("win", "loss"):
+                    continue
+                t_ticker = trade.get("ticker", "")
+                if t_ticker and t_ticker not in filled_tickers:
+                    # This trade was never actually filled on Kalshi
+                    trade["settled"] = True  # keep settled so we don't recheck
+                    trade["result"] = "phantom_not_filled"
+                    trade["profit_cents"] = 0
+                    phantom_count += 1
+            if phantom_count > 0:
+                _save_trade_log(trade_log)
+                print(f"  [P&L SYNC] Cleaned up {phantom_count} phantom trades "
+                      f"(orders that never filled)")
+
         # Update pnl_history.json with Kalshi ground truth
         pnl_data = {
             "trades": [],
@@ -1836,6 +1893,9 @@ def _sync_pnl_from_kalshi(client, intel=None):
             "total_profit_cents": total_pnl,
             "wins": wins,
             "losses": losses,
+            "today_wins": today_wins,
+            "today_losses": today_losses,
+            "today_pnl_cents": today_pnl,
             "kalshi_synced": True,
             "kalshi_fills": len(all_fills),
             "kalshi_settlements": len(all_settlements),
@@ -1851,7 +1911,10 @@ def _sync_pnl_from_kalshi(client, intel=None):
             intel.pnl_data = pnl_data
 
         print(f"  [P&L SYNC] Kalshi: {len(all_fills)} fills, {len(all_settlements)} settlements, "
-              f"{len(open_tickers)} open → P&L ${total_pnl/100:+.2f} ({wins}W/{losses}L)")
+              f"{len(open_tickers)} open")
+        print(f"  [P&L SYNC] All-time: ${total_pnl/100:+.2f} ({wins}W/{losses}L)")
+        if today_wins + today_losses > 0:
+            print(f"  [P&L SYNC] Today:    ${today_pnl/100:+.2f} ({today_wins}W/{today_losses}L)")
 
     except Exception as e:
         print(f"  [P&L SYNC] Error: {e}")
