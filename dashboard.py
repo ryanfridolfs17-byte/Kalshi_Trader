@@ -32,6 +32,7 @@ STATE_FILES = {
     "backtest": config.BACKTEST_RESULTS_FILE,
     "attribution": config.EDGE_ATTRIBUTION_FILE,
     "analysis": config.TRADE_ANALYSIS_FILE,
+    "scan_log": config.SCAN_LOG_FILE,
 }
 
 DASHBOARD_PORT = int(os.environ.get("PORT", 8050))
@@ -251,7 +252,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path == "/api/state":
             state = {}
             for key, filepath in STATE_FILES.items():
-                if key in ("trades", "pending", "reports", "attribution", "analysis"):
+                if key in ("trades", "pending", "reports", "attribution", "analysis", "scan_log"):
                     state[key] = _read_json(filepath, default=[])
                 else:
                     state[key] = _read_json(filepath, default={})
