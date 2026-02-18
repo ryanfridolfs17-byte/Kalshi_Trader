@@ -230,8 +230,18 @@ def main():
 
     # ─── MAIN LOOP ───
     cycle = 0
+    # Clear stale daily reports and analysis — they were generated with buggy
+    # code (before consolidation fix, before settlement detection fix).
+    # They'll be regenerated from corrected trade_log data on first cycle.
+    for stale_file in [config.DAILY_REPORTS_FILE, config.TRADE_ANALYSIS_FILE]:
+        try:
+            if os.path.exists(stale_file):
+                with open(stale_file, "w") as f:
+                    json.dump([], f)
+                print(f"  [STARTUP] Cleared stale {os.path.basename(stale_file)}")
+        except Exception:
+            pass
     # Force daily report regeneration on first cycle by using yesterday's date.
-    # This ensures the report is rebuilt with cleaned-up (phantom-free) data.
     last_report_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     while True:
         try:
@@ -1809,6 +1819,7 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
             ticker = s.get("ticker", "")
             if ticker:
                 settle_rev[ticker] = (s.get("revenue", 0) or 0)
+        settle_rev_copy = dict(settle_rev)  # Keep a copy before .pop() modifies it
 
         # Compute realized P&L: only for tickers that are closed
         settled_tickers = set(settle_rev.keys())
@@ -1883,27 +1894,74 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
                 elif t_pnl < 0:
                     today_losses += 1
 
-        # ── Clean up phantom trades in trade_log ──
-        # Trades marked as settled "win"/"loss" but which have NO
-        # corresponding Kalshi fill are phantom (from the old bug where
-        # resting orders were marked as filled). Reset them.
+        # ── Reconcile trade_log with Kalshi bulk data ──
+        # Two tasks:
+        #   1. Mark unsettled trades as settled if Kalshi shows the ticker is closed
+        #   2. Clean up phantom trades (settled but no fills)
+        trade_log_changed = False
+        settled_count = 0
         phantom_count = 0
+
         if trade_log:
             for trade in trade_log:
-                if not trade.get("settled"):
+                t_ticker = trade.get("ticker", "")
+                if not t_ticker:
                     continue
+
+                # Task 1: Detect settlements that check_settlements() missed.
+                # If trade is unsettled, has a matching fill, and the ticker
+                # is no longer open on Kalshi → it settled.
+                if not trade.get("settled"):
+                    status = trade.get("status", "")
+                    if any(x in status for x in ("resting", "cancelled", "error", "submitted")):
+                        continue  # Not a real trade
+
+                    if t_ticker not in filled_tickers:
+                        continue  # No fills, can't determine
+
+                    if t_ticker in open_tickers:
+                        continue  # Still open
+
+                    # Ticker has fills and is NOT open → it's closed
+                    # Determine win/loss from settlement data or P&L
+                    flows = ticker_flows.get(t_ticker, {})
+                    buy_cost = flows.get("buy_cost", 0)
+                    sell_revenue = flows.get("sell_revenue", 0)
+                    s_revenue = settle_rev_copy.get(t_ticker, 0)
+                    t_pnl = sell_revenue + s_revenue - buy_cost
+
+                    # Apportion P&L to this trade entry based on its contracts
+                    trade_contracts = trade.get("contracts", 0)
+                    trade_cost = trade.get("cost_cents", 0)
+                    if t_pnl >= 0:
+                        trade["result"] = "win"
+                        trade["profit_cents"] = max(0, trade_contracts * 100 - trade_cost) if s_revenue > 0 else t_pnl
+                    else:
+                        trade["result"] = "loss"
+                        trade["profit_cents"] = -trade_cost
+
+                    trade["settled"] = True
+                    trade["settled_at"] = datetime.now(timezone.utc).isoformat()
+                    settled_count += 1
+                    trade_log_changed = True
+                    continue
+
+                # Task 2: Phantom cleanup — settled trades with no fills
                 result = trade.get("result", "")
                 if result not in ("win", "loss"):
                     continue
-                t_ticker = trade.get("ticker", "")
                 if t_ticker and t_ticker not in filled_tickers:
-                    # This trade was never actually filled on Kalshi
-                    trade["settled"] = True  # keep settled so we don't recheck
                     trade["result"] = "phantom_not_filled"
                     trade["profit_cents"] = 0
                     phantom_count += 1
-            if phantom_count > 0:
+                    trade_log_changed = True
+
+            if trade_log_changed:
                 _save_trade_log(trade_log)
+            if settled_count > 0:
+                print(f"  [P&L SYNC] Settled {settled_count} trades from Kalshi bulk data "
+                      f"(missed by per-ticker check)")
+            if phantom_count > 0:
                 print(f"  [P&L SYNC] Cleaned up {phantom_count} phantom trades "
                       f"(orders that never filled)")
 
