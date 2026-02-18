@@ -686,6 +686,12 @@ class Strategy:
 
         Returns a max-sized signal or None if outcome is not yet confirmed.
         """
+        # HARD GUARD: target_date MUST come from the ticker, not a default.
+        # If the ticker date couldn't be parsed, we don't know what day this
+        # market is for → never treat it as a confirmed outcome.
+        if not target_date:
+            return None
+
         # Calculate local hour FIRST — before any case checks
         utc_now = datetime.now(timezone.utc)
         city_info = CITIES.get(city_code, {})
@@ -702,15 +708,17 @@ class Strategy:
             offset = -5  # Eastern
         local_hour = (utc_now.hour + offset) % 24
 
-        # GLOBAL MINIMUM: No confirmed outcomes before noon local time.
-        # Before noon, temperatures haven't risen meaningfully and overnight
-        # observations may contain stale data from the previous day.
-        if local_hour < 12:
-            return None
-
-        # Use LOCAL date for "today" check, not UTC
+        # HARD GUARD: Only today's markets. Never trade confirmed outcomes
+        # for tomorrow's weather — the temperature hasn't happened yet.
         local_date = (utc_now + timedelta(hours=offset)).strftime("%Y-%m-%d")
         if target_date != local_date:
+            return None
+
+        # HARD GUARD: Temperature must have already peaked for the day.
+        # Daily highs typically occur between 2-4 PM local. Before 1 PM,
+        # temperatures are still climbing and observations are unreliable
+        # for confirming outcomes.
+        if local_hour < 13:
             return None
 
         todays_high = self.intel.get_todays_high_so_far(city_code)

@@ -147,8 +147,8 @@ MAX_TOTAL_EXPOSURE_CENTS = 6000     # $60.00 fallback if balance unknown
 MAX_OPEN_POSITIONS = 20
 
 # Max exposure per city (weather) — percentage-based with fallback
-MAX_PER_CITY_PCT = 0.30             # 30% of bankroll per city
-MAX_PER_CITY_CENTS = 3000           # $30.00 fallback if balance unknown
+MAX_PER_CITY_PCT = 0.20             # 20% of bankroll per city
+MAX_PER_CITY_CENTS = 1000           # $10.00 fallback if balance unknown
 
 # Cumulative daily spending cap per city — prevents sell-and-rebuy chasing
 # Unlike MAX_PER_CITY_CENTS (tracks open exposure), this tracks TOTAL dollars
