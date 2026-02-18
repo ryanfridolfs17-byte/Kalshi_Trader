@@ -301,6 +301,23 @@ class RiskManager:
     def check_kill_switch(self, trade_log):
         """Check if the bot should enter observation mode.
         Returns (is_observation, reason)."""
+        # Reload observation_mode from disk — the dashboard's /api/resume
+        # endpoint writes directly to risk_state.json, so we need to pick
+        # up external changes each cycle.
+        try:
+            if os.path.exists(config.RISK_STATE_FILE):
+                with open(config.RISK_STATE_FILE) as f:
+                    disk_state = json.load(f)
+                if not disk_state.get("observation_mode") and self.state.get("observation_mode"):
+                    # Dashboard resumed trading — apply to in-memory state
+                    self.state["observation_mode"] = False
+                    self.state["observation_reason"] = ""
+                    self.state["consecutive_losses"] = disk_state.get("consecutive_losses", 0)
+                    self.state["loss_pause_until"] = disk_state.get("loss_pause_until")
+                    print("  [RISK] Observation mode cleared via dashboard")
+        except Exception:
+            pass
+
         # Manual override from config
         if config.OBSERVATION_MODE:
             self.state["observation_mode"] = True
