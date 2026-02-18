@@ -184,6 +184,11 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 | `LIQUIDITY_RESERVE_PCT` | 50% | Reserve cash for confirmed outcome arb trades |
 | `PRE_SETTLEMENT_SIZING_MULT` | 0.6x | 60% sizing before settlements clear |
 
+### Account Tracking
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| `TOTAL_DEPOSITS_CENTS` | $100.00 | Total deposited — for account P&L display |
+
 ### Kill Switch / Circuit Breakers
 | Parameter | Value | Notes |
 |-----------|-------|-------|

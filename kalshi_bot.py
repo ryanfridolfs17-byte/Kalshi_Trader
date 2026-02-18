@@ -1850,11 +1850,9 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
                 losses += 1
             # ticker_pnl == 0 is break-even, don't count as win or loss
 
-        # Include any settlements we didn't have fills for (edge case)
-        for ticker, revenue in settle_rev.items():
-            if revenue > 0:
-                total_returned += revenue
-                wins += 1
+        # NOTE: Remaining settle_rev entries (settlements with no fills) are
+        # intentionally skipped. Without buy cost data, adding revenue alone
+        # would inflate P&L. These are rare edge cases (pagination gaps).
 
         total_pnl = total_returned - total_invested
 
@@ -1910,6 +1908,27 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
                 print(f"  [P&L SYNC] Cleaned up {phantom_count} phantom trades "
                       f"(orders that never filled)")
 
+        # Compute open position cost (money currently tied up)
+        open_cost = 0
+        for ticker, flows in ticker_flows.items():
+            if ticker in open_tickers:
+                open_cost += flows["buy_cost"] - flows["sell_revenue"]
+
+        # Get current balance for account-level P&L
+        account_balance = None
+        try:
+            bal_resp = client.get_balance()
+            if bal_resp and isinstance(bal_resp, dict):
+                account_balance = bal_resp.get("balance")
+        except Exception:
+            pass
+
+        # Account P&L = balance - deposits (the real number the user cares about)
+        deposits = getattr(config, "TOTAL_DEPOSITS_CENTS", 0)
+        account_pnl = None
+        if account_balance is not None and deposits > 0:
+            account_pnl = account_balance - deposits
+
         # Update pnl_history.json with Kalshi ground truth
         pnl_data = {
             "trades": [],
@@ -1921,9 +1940,14 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
             "today_wins": today_wins,
             "today_losses": today_losses,
             "today_pnl_cents": today_pnl,
+            "open_position_cost_cents": open_cost,
+            "account_balance_cents": account_balance,
+            "deposits_cents": deposits,
+            "account_pnl_cents": account_pnl,
             "kalshi_synced": True,
             "kalshi_fills": len(all_fills),
             "kalshi_settlements": len(all_settlements),
+            "open_positions": len(open_tickers),
             "last_sync": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -1937,7 +1961,11 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
 
         print(f"  [P&L SYNC] Kalshi: {len(all_fills)} fills, {len(all_settlements)} settlements, "
               f"{len(open_tickers)} open")
-        print(f"  [P&L SYNC] All-time: ${total_pnl/100:+.2f} ({wins}W/{losses}L)")
+        if account_balance is not None:
+            print(f"  [P&L SYNC] Balance: ${account_balance/100:.2f}")
+        if account_pnl is not None:
+            print(f"  [P&L SYNC] Account P&L: ${account_pnl/100:+.2f} (balance - deposits)")
+        print(f"  [P&L SYNC] Realized P&L: ${total_pnl/100:+.2f} ({wins}W/{losses}L)")
         if today_wins + today_losses > 0:
             print(f"  [P&L SYNC] Today:    ${today_pnl/100:+.2f} ({today_wins}W/{today_losses}L)")
 

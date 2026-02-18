@@ -1248,14 +1248,31 @@ class TradeIntelligence:
         today_pnl = self.pnl_data.get("today_pnl_cents", 0)
         today_total = today_w + today_l
 
+        # Account-level (balance vs deposits — the real P&L)
+        account_balance = self.pnl_data.get("account_balance_cents")
+        account_pnl = self.pnl_data.get("account_pnl_cents")
+        open_cost = self.pnl_data.get("open_position_cost_cents", 0)
+        open_count = self.pnl_data.get("open_positions", 0)
+
         print(f"\n  ┌─ Profit & Loss ────────────────────────────────")
-        if today_total > 0:
-            print(f"  │  Today:         {today_w}W/{today_l}L  P&L: ${today_pnl/100:+.2f}")
+
+        # Account P&L first (most important number)
+        if account_balance is not None:
+            print(f"  │  Balance:        ${account_balance/100:.2f}")
+        if account_pnl is not None:
+            print(f"  │  Account P&L:    ${account_pnl/100:+.2f}")
+        if open_cost > 0:
+            print(f"  │  Open positions:  {open_count} (${open_cost/100:.2f} at risk)")
+        if account_balance is not None or account_pnl is not None:
             print(f"  │  ─────────────────────────────────────────")
-        print(f"  │  All-time:      {self.pnl_data['wins']}W/{self.pnl_data['losses']}L ({win_rate:.0%})")
-        print(f"  │  Total invested: ${invested/100:.2f}")
-        print(f"  │  Total profit:   ${profit/100:+.2f}")
-        print(f"  │  ROI:            {roi:.1f}%")
+
+        if today_total > 0:
+            print(f"  │  Today:          {today_w}W/{today_l}L  P&L: ${today_pnl/100:+.2f}")
+            print(f"  │  ─────────────────────────────────────────")
+        print(f"  │  Realized:       {self.pnl_data['wins']}W/{self.pnl_data['losses']}L ({win_rate:.0%})")
+        print(f"  │  Realized P&L:   ${profit/100:+.2f}")
+        if invested > 0:
+            print(f"  │  ROI:            {roi:.1f}%")
 
         # Bias info
         for city_code in config.WEATHER_CITIES:

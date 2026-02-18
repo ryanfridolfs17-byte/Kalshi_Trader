@@ -177,6 +177,13 @@ TRADE_COOLDOWN = 180                # 3 minutes (faster for weather)
 RESTING_ORDER_TIMEOUT = 900         # 15 min — cancel unfilled buy orders
 RESTING_EXIT_TIMEOUT = 1800         # 30 min — cancel unfilled exit/hedge orders
 
+# ═══════════════════════════════════════════════════════
+# ACCOUNT TRACKING
+# ═══════════════════════════════════════════════════════
+# Total deposited into Kalshi — used to compute true account P&L
+# Account P&L = Current Balance - Deposits (most accurate measure)
+TOTAL_DEPOSITS_CENTS = 10000        # $100.00
+
 # Settlement proximity: no new positions within N hours of close
 SETTLEMENT_PROXIMITY_HOURS = 2
 SETTLEMENT_PROXIMITY_EDGE_OVERRIDE = 0.20  # Exceptional edge overrides
