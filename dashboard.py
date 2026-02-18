@@ -472,20 +472,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             )
             _write_json(STATE_FILES["risk"], risk)
 
-            # Update P&L history
-            pnl = _read_json(STATE_FILES["pnl"], default={
-                "trades": [], "total_invested_cents": 0,
-                "total_returned_cents": 0, "total_profit_cents": 0,
-                "wins": 0, "losses": 0,
-            })
-            pnl["total_invested_cents"] += cost_cents
-            pnl["total_returned_cents"] += total_payout_cents
-            pnl["total_profit_cents"] += realized_pnl
-            if realized_pnl >= 0:
-                pnl["wins"] += 1
-            else:
-                pnl["losses"] += 1
-            _write_json(STATE_FILES["pnl"], pnl)
+            # NOTE: P&L history is NOT updated here. _sync_pnl_from_kalshi()
+            # is the single writer — it rebuilds from Kalshi API each cycle.
 
             # Add exit record to trade history
             trades = _read_json(STATE_FILES["trades"], default=[])
@@ -532,20 +520,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             payout_cents = int(payout_cents)
             realized_pnl = payout_cents - cost_cents
 
-            # Update P&L history
-            pnl = _read_json(STATE_FILES["pnl"], default={
-                "trades": [], "total_invested_cents": 0,
-                "total_returned_cents": 0, "total_profit_cents": 0,
-                "wins": 0, "losses": 0,
-            })
-            pnl["total_invested_cents"] += cost_cents
-            pnl["total_returned_cents"] += payout_cents
-            pnl["total_profit_cents"] += realized_pnl
-            if realized_pnl >= 0:
-                pnl["wins"] += 1
-            else:
-                pnl["losses"] += 1
-            _write_json(STATE_FILES["pnl"], pnl)
+            # NOTE: P&L history is NOT updated here. _sync_pnl_from_kalshi()
+            # is the single writer — it rebuilds from Kalshi API each cycle.
 
             # Add to trade history
             trades = _read_json(STATE_FILES["trades"], default=[])

@@ -1723,10 +1723,15 @@ def _sync_balance(client, risk, strategy):
 
 
 def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
-    """Compute realized P&L from actual Kalshi fills and settlements.
+    """Rebuild P&L from Kalshi API — the SINGLE source of truth.
 
-    Only counts P&L from CLOSED tickers (settled markets or early exits).
-    Open positions are excluded — their buy cost is not a realized loss.
+    This is the ONLY function that writes to pnl_history.json.
+    All other P&L writers (check_settlements, dashboard endpoints)
+    have been removed to prevent data conflicts.
+
+    Two P&L numbers are computed:
+      1. Account P&L = balance - deposits (always correct, primary metric)
+      2. Realized P&L = closed position fills - costs (detail/breakdown)
 
     Per-ticker P&L = (sell fill revenue + settlement revenue) - buy fill cost
 
@@ -1735,14 +1740,7 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
       2. It has sell fills (early exit)
       3. It has buy fills but is NOT in current open positions
          (settled loss — Kalshi doesn't return settlement records for
-         losing positions with revenue=0, so we cross-reference against
-         the live positions list to detect them)
-
-    Also cleans up phantom trades in trade_log: trades marked as settled
-    but which have no corresponding Kalshi fill are reset.
-
-    This is the source of truth — it replaces any internal P&L tracking.
-    Must run AFTER check_settlements() so it overwrites the file last.
+         losing positions with revenue=0, so we cross-reference)
     """
     if config.API_KEY_ID == "YOUR_API_KEY_ID_HERE" or config.DRY_RUN:
         return
@@ -1959,15 +1957,30 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
         if intel:
             intel.pnl_data = pnl_data
 
-        print(f"  [P&L SYNC] Kalshi: {len(all_fills)} fills, {len(all_settlements)} settlements, "
-              f"{len(open_tickers)} open")
+        print(f"  [P&L SYNC] Kalshi API: {len(all_fills)} fills, "
+              f"{len(all_settlements)} settlements, {len(open_tickers)} open positions")
         if account_balance is not None:
-            print(f"  [P&L SYNC] Balance: ${account_balance/100:.2f}")
+            print(f"  [P&L SYNC] Balance:      ${account_balance/100:.2f}  "
+                  f"(deposited: ${deposits/100:.2f})")
         if account_pnl is not None:
-            print(f"  [P&L SYNC] Account P&L: ${account_pnl/100:+.2f} (balance - deposits)")
-        print(f"  [P&L SYNC] Realized P&L: ${total_pnl/100:+.2f} ({wins}W/{losses}L)")
+            print(f"  [P&L SYNC] Account P&L:  ${account_pnl/100:+.2f}  "
+                  f"(balance - deposits)")
+        print(f"  [P&L SYNC] Realized P&L: ${total_pnl/100:+.2f}  "
+              f"({wins}W/{losses}L, ${total_invested/100:.2f} invested, "
+              f"${total_returned/100:.2f} returned)")
+        if open_cost > 0:
+            print(f"  [P&L SYNC] Open risk:    ${open_cost/100:.2f}  "
+                  f"({len(open_tickers)} positions)")
         if today_wins + today_losses > 0:
-            print(f"  [P&L SYNC] Today:    ${today_pnl/100:+.2f} ({today_wins}W/{today_losses}L)")
+            print(f"  [P&L SYNC] Today:        ${today_pnl/100:+.2f}  "
+                  f"({today_wins}W/{today_losses}L)")
+
+        # Sanity check: if realized P&L diverges wildly from account P&L, warn
+        if account_pnl is not None and abs(total_pnl - account_pnl) > 500:
+            print(f"  [P&L SYNC] WARNING: Realized P&L (${total_pnl/100:+.2f}) "
+                  f"diverges from account P&L (${account_pnl/100:+.2f}) by "
+                  f"${abs(total_pnl - account_pnl)/100:.2f}. "
+                  f"Check fills/settlements data or deposit amount.")
 
     except Exception as e:
         print(f"  [P&L SYNC] Error: {e}")

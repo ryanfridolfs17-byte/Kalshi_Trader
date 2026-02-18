@@ -1010,10 +1010,6 @@ class TradeIntelligence:
                 trade["payout_cents"] = payout
                 trade["profit_cents"] = profit
 
-                self.pnl_data["total_returned_cents"] += payout
-                self.pnl_data["total_profit_cents"] += profit
-                self.pnl_data["wins"] += 1
-
                 risk_manager.record_win(profit)
                 risk_manager.release_exposure(ticker, cost_cents, trade.get("city_code", ""))
                 print(f"  ✓ WIN: {ticker} → +${profit/100:.2f}")
@@ -1025,14 +1021,9 @@ class TradeIntelligence:
                 trade["payout_cents"] = 0
                 trade["profit_cents"] = -cost_cents
 
-                self.pnl_data["total_profit_cents"] -= cost_cents
-                self.pnl_data["losses"] += 1
-
                 risk_manager.record_loss(cost_cents)
                 risk_manager.release_exposure(ticker, cost_cents, trade.get("city_code", ""))
                 print(f"  ✗ LOSS: {ticker} → -${cost_cents/100:.2f}")
-
-            self.pnl_data["total_invested_cents"] += cost_cents
 
             # Record bias data if this was a weather market
             city_code = trade.get("city_code", "")
@@ -1055,8 +1046,9 @@ class TradeIntelligence:
 
             settled.append(trade)
 
-        # Save updated P&L
-        self._save_json(PNL_DATA_FILE, self.pnl_data)
+        # NOTE: P&L is NOT saved here. _sync_pnl_from_kalshi() is the
+        # single writer to pnl_history.json — it rebuilds P&L from
+        # Kalshi fills/settlements/balance every cycle.
 
         return settled
 
