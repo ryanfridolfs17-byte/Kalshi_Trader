@@ -169,6 +169,14 @@ CONSECUTIVE_LOSS_PAUSE_MINUTES = 30
 # Cooldown between trades (seconds)
 TRADE_COOLDOWN = 180                # 3 minutes (faster for weather)
 
+# ═══════════════════════════════════════════════════════
+# RESTING ORDER MANAGEMENT
+# ═══════════════════════════════════════════════════════
+# Limit orders rest on the book until matched. Auto-cancel
+# stale orders to free up capital and avoid phantom positions.
+RESTING_ORDER_TIMEOUT = 900         # 15 min — cancel unfilled buy orders
+RESTING_EXIT_TIMEOUT = 1800         # 30 min — cancel unfilled exit/hedge orders
+
 # Settlement proximity: no new positions within N hours of close
 SETTLEMENT_PROXIMITY_HOURS = 2
 SETTLEMENT_PROXIMITY_EDGE_OVERRIDE = 0.20  # Exceptional edge overrides

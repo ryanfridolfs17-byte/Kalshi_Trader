@@ -231,6 +231,7 @@ def main():
             # ═══════════════════════════════════════════════
             _reconcile_positions(client, risk)
             _sync_balance(client, risk, strategy)
+            _check_resting_orders(client, risk, trade_log, intel=intel)
 
             # Log settlement status
             breakdown = risk.get_exposure_breakdown()
@@ -574,6 +575,229 @@ def main():
             time.sleep(60)
 
 
+def _classify_order_response(result, expected_count=0):
+    """Classify a Kalshi order API response into fill status.
+
+    Returns dict with:
+        order_id: str
+        status: 'filled' | 'partial' | 'resting' | 'error'
+        filled_count: int (contracts that filled immediately)
+        remaining_count: int (contracts still resting)
+    """
+    if not result:
+        return {"order_id": None, "status": "error", "filled_count": 0, "remaining_count": 0}
+
+    order = result.get("order", {})
+    order_id = order.get("order_id", "")
+    api_status = order.get("status", "")
+    total_count = order.get("count", expected_count)
+    remaining = order.get("remaining_count", total_count)
+
+    if api_status == "executed" or remaining == 0:
+        return {
+            "order_id": order_id,
+            "status": "filled",
+            "filled_count": total_count,
+            "remaining_count": 0,
+        }
+    elif remaining < total_count:
+        return {
+            "order_id": order_id,
+            "status": "partial",
+            "filled_count": total_count - remaining,
+            "remaining_count": remaining,
+        }
+    else:
+        return {
+            "order_id": order_id,
+            "status": "resting",
+            "filled_count": 0,
+            "remaining_count": remaining,
+        }
+
+
+def _check_resting_orders(client, risk, trade_log, intel=None):
+    """Check status of resting orders and update trade log.
+
+    For each order we're tracking as 'resting':
+      1. If no longer in Kalshi's resting list → it filled or was canceled
+      2. If still resting past timeout → auto-cancel it
+      3. _reconcile_positions() handles position state; we handle trade log.
+    """
+    if config.DRY_RUN or config.API_KEY_ID == "YOUR_API_KEY_ID_HERE":
+        return
+
+    now = datetime.now()
+
+    # Fetch all currently resting orders from Kalshi (one API call)
+    resting_order_ids = set()
+    try:
+        result = client.get_orders(status="resting")
+        if result:
+            for order in result.get("orders", []):
+                oid = order.get("order_id", "")
+                if oid:
+                    resting_order_ids.add(oid)
+    except Exception as e:
+        print(f"  [RESTING] Error fetching resting orders: {e}")
+        return
+
+    updated = False
+
+    # --- Check resting BUY orders ---
+    for trade in trade_log:
+        order_id = trade.get("order_id")
+        order_status = trade.get("order_status")
+
+        if not order_id or order_status not in ("resting", "partial"):
+            continue
+
+        if order_id in resting_order_ids:
+            # Still resting — check timeout for auto-cancel
+            placed_time = trade.get("timestamp", "")
+            if placed_time:
+                try:
+                    placed_dt = datetime.fromisoformat(placed_time)
+                    age_seconds = (now - placed_dt).total_seconds()
+                    if age_seconds > config.RESTING_ORDER_TIMEOUT:
+                        try:
+                            client.cancel_order(order_id)
+                            trade["order_status"] = "cancelled"
+                            trade["status"] = trade["status"].replace("resting", "cancelled")
+                            print(f"  [RESTING] Cancelled stale buy: {order_id} "
+                                  f"({trade['ticker']}, rested {age_seconds/60:.0f}m)")
+                            updated = True
+                        except Exception as e:
+                            print(f"  [RESTING] Cancel failed {order_id}: {e}")
+                except Exception:
+                    pass
+        else:
+            # No longer resting → filled or canceled externally
+            # _reconcile_positions() already has the correct position state
+            trade["order_status"] = "filled"
+            old_status = trade.get("status", "")
+            trade["status"] = old_status.replace("resting", "filled")
+            print(f"  [RESTING] Buy order filled: {order_id} ({trade['ticker']})")
+            updated = True
+
+    # --- Check resting EXIT orders ---
+    for trade in trade_log:
+        exit_order_id = trade.get("pending_exit_order_id")
+        if not exit_order_id:
+            continue
+
+        if exit_order_id in resting_order_ids:
+            # Still resting — check timeout
+            exit_time = trade.get("pending_exit_time", "")
+            if exit_time:
+                try:
+                    exit_dt = datetime.fromisoformat(exit_time)
+                    age_seconds = (now - exit_dt).total_seconds()
+                    if age_seconds > config.RESTING_EXIT_TIMEOUT:
+                        try:
+                            client.cancel_order(exit_order_id)
+                            del trade["pending_exit_order_id"]
+                            del trade["pending_exit_time"]
+                            trade.pop("pending_exit_price", None)
+                            print(f"  [RESTING] Cancelled stale exit: {exit_order_id} "
+                                  f"({trade['ticker']}, rested {age_seconds/60:.0f}m)")
+                            updated = True
+                        except Exception as e:
+                            print(f"  [RESTING] Cancel exit failed {exit_order_id}: {e}")
+                except Exception:
+                    pass
+        else:
+            # Exit filled — estimate P&L and mark settled
+            exit_price = trade.get("pending_exit_price", 50)
+            contracts = trade.get("contracts", 1)
+            cost_cents = trade.get("cost_cents", 0)
+            sell_value = exit_price * contracts
+            profit_cents = sell_value - cost_cents
+
+            trade["settled"] = True
+            trade["settled_at"] = datetime.now(timezone.utc).isoformat()
+            trade["result"] = "exit_win" if profit_cents > 0 else "exit_loss"
+            trade["profit_cents"] = profit_cents
+            trade["exit_price_cents"] = exit_price
+            trade["exit_order_id"] = exit_order_id
+            trade.pop("pending_exit_order_id", None)
+            trade.pop("pending_exit_time", None)
+            trade.pop("pending_exit_price", None)
+
+            print(f"  [RESTING] Exit filled: {exit_order_id} ({trade['ticker']}) "
+                  f"P&L: ${profit_cents/100:+.2f}")
+            updated = True
+
+    # --- Check resting HEDGE orders ---
+    for trade in trade_log:
+        hedge_order_id = trade.get("pending_hedge_order_id")
+        if not hedge_order_id:
+            continue
+
+        if hedge_order_id in resting_order_ids:
+            # Still resting — check timeout
+            hedge_time = trade.get("pending_hedge_time", "")
+            if hedge_time:
+                try:
+                    hedge_dt = datetime.fromisoformat(hedge_time)
+                    age_seconds = (now - hedge_dt).total_seconds()
+                    if age_seconds > config.RESTING_EXIT_TIMEOUT:
+                        try:
+                            client.cancel_order(hedge_order_id)
+                            del trade["pending_hedge_order_id"]
+                            del trade["pending_hedge_time"]
+                            print(f"  [RESTING] Cancelled stale hedge: {hedge_order_id} "
+                                  f"({trade['ticker']}, rested {age_seconds/60:.0f}m)")
+                            updated = True
+                        except Exception as e:
+                            print(f"  [RESTING] Cancel hedge failed {hedge_order_id}: {e}")
+                except Exception:
+                    pass
+        else:
+            # Hedge filled — _reconcile_positions() handles position removal
+            trade.pop("pending_hedge_order_id", None)
+            trade.pop("pending_hedge_time", None)
+            print(f"  [RESTING] Hedge filled: {hedge_order_id} ({trade['ticker']})")
+            updated = True
+
+    # --- Check resting PARE orders (on positions, not trade log) ---
+    for p in risk.state.get("positions", []):
+        pare_order_id = p.get("pending_pare_order_id")
+        if not pare_order_id:
+            continue
+
+        if pare_order_id not in resting_order_ids:
+            # Filled — _reconcile_positions() already updated contract counts
+            print(f"  [RESTING] Pare filled: {pare_order_id} ({p['ticker']})")
+            p.pop("pending_pare_order_id", None)
+            p.pop("pending_pare_time", None)
+            p.pop("pending_pare_count", None)
+            risk._save_state()
+        else:
+            # Still resting — check timeout
+            pare_time = p.get("pending_pare_time", "")
+            if pare_time:
+                try:
+                    pare_dt = datetime.fromisoformat(pare_time)
+                    age_seconds = (now - pare_dt).total_seconds()
+                    if age_seconds > config.RESTING_EXIT_TIMEOUT:
+                        try:
+                            client.cancel_order(pare_order_id)
+                            p.pop("pending_pare_order_id", None)
+                            p.pop("pending_pare_time", None)
+                            p.pop("pending_pare_count", None)
+                            risk._save_state()
+                            print(f"  [RESTING] Cancelled stale pare: {pare_order_id} "
+                                  f"({p['ticker']}, rested {age_seconds/60:.0f}m)")
+                        except Exception as e:
+                            print(f"  [RESTING] Cancel pare failed {pare_order_id}: {e}")
+                except Exception:
+                    pass
+
+    if updated:
+        _save_trade_log(trade_log)
+
+
 def _execute_trade(client, risk, signal, trade_log, market):
     """Execute a trade based on a signal."""
     ticker = signal["ticker"]
@@ -582,11 +806,12 @@ def _execute_trade(client, risk, signal, trade_log, market):
     contracts = signal["suggested_contracts"]
     cost = price * contracts
 
+    order_info = {"order_id": None, "status": "dry_run", "filled_count": 0, "remaining_count": 0}
+
     if config.DRY_RUN:
         status = "dry_run"
         print(f"    [DRY RUN] Would buy {contracts}x {side.upper()} @ {price}¢ = ${cost/100:.2f}")
     elif config.ENVIRONMENT == "demo":
-        status = "demo_submitted"
         print(f"    [DEMO] Submitting: {contracts}x {side.upper()} @ {price}¢")
         try:
             result = client.create_order(
@@ -597,14 +822,20 @@ def _execute_trade(client, risk, signal, trade_log, market):
                 yes_price=price if side == "yes" else None,
                 no_price=price if side == "no" else None,
             )
-            if result:
-                print(f"    ✓ Order submitted: {result.get('order', {}).get('order_id', 'OK')}")
+            order_info = _classify_order_response(result, contracts)
+            if order_info["status"] == "filled":
+                print(f"    ✓ Order FILLED: {order_info['order_id']}")
                 status = "demo_filled"
+            elif order_info["status"] in ("resting", "partial"):
+                print(f"    ~ Order resting on book: {order_info['order_id']} "
+                      f"({order_info['remaining_count']}/{contracts} unfilled)")
+                status = "demo_resting"
+            else:
+                status = "demo_error"
         except Exception as e:
             print(f"    ✗ Order failed: {e}")
             status = "demo_error"
     else:
-        status = "live_submitted"
         print(f"    [LIVE] Submitting: {contracts}x {side.upper()} @ {price}¢")
         try:
             result = client.create_order(
@@ -615,9 +846,16 @@ def _execute_trade(client, risk, signal, trade_log, market):
                 yes_price=price if side == "yes" else None,
                 no_price=price if side == "no" else None,
             )
-            if result:
-                print(f"    ✓ LIVE order submitted!")
+            order_info = _classify_order_response(result, contracts)
+            if order_info["status"] == "filled":
+                print(f"    ✓ LIVE order FILLED: {order_info['order_id']}")
                 status = "live_filled"
+            elif order_info["status"] in ("resting", "partial"):
+                print(f"    ~ LIVE order resting: {order_info['order_id']} "
+                      f"({order_info['remaining_count']}/{contracts} unfilled)")
+                status = "live_resting"
+            else:
+                status = "live_error"
         except Exception as e:
             print(f"    ✗ LIVE order failed: {e}")
             status = "live_error"
@@ -651,6 +889,8 @@ def _execute_trade(client, risk, signal, trade_log, market):
         "predicted_high": signal.get("predicted_high"),
         "city_code": signal.get("city_code", ""),
         "status": status,
+        "order_id": order_info.get("order_id"),
+        "order_status": order_info["status"],
         "reasoning": signal.get("reasoning", ""),
         "settled": False,
         "spread_at_entry_cents": spread_at_entry,
@@ -660,15 +900,18 @@ def _execute_trade(client, risk, signal, trade_log, market):
     trade_log.append(trade_entry)
     _save_trade_log(trade_log)
 
-    # Record with risk manager (include extra fields for dashboard)
-    city_code = signal.get("city_code", "")
-    risk.record_trade(ticker, side, cost, contracts, city_code,
-                      title=market.get("title", ""),
-                      edge=signal.get("edge", 0),
-                      expected_profit_cents=expected_profit_cents,
-                      market_description=market_description)
+    # Only record with risk manager if order was actually filled.
+    # Resting orders will be picked up by _reconcile_positions() when they fill.
+    is_filled = status in ("demo_filled", "live_filled", "dry_run")
+    if is_filled:
+        city_code = signal.get("city_code", "")
+        risk.record_trade(ticker, side, cost, contracts, city_code,
+                          title=market.get("title", ""),
+                          edge=signal.get("edge", 0),
+                          expected_profit_cents=expected_profit_cents,
+                          market_description=market_description)
 
-    return True
+    return is_filled
 
 
 def _print_performance(trade_log):
@@ -1042,47 +1285,64 @@ def _execute_exit(client, risk, trade_log, exit_rec, intel=None):
             **price_kwargs,
         )
         if result:
-            order_id = result.get("order", {}).get("order_id", "OK")
-            print(f"    ✓ Exit order submitted: {order_id}")
+            order_info = _classify_order_response(result, contracts)
+            order_id = order_info["order_id"]
 
-            # Calculate approximate P&L
-            sell_value = (current_price or 50) * contracts
-            profit_cents = sell_value - cost_cents
+            if order_info["status"] == "filled" or order_type == "market":
+                # Filled immediately (or market order) — process exit
+                print(f"    ✓ Exit order FILLED: {order_id}")
 
-            # Update trade log — mark the original trade as exited
-            for trade in trade_log:
-                if trade.get("ticker") == ticker and not trade.get("settled"):
-                    trade["settled"] = True
-                    trade["settled_at"] = datetime.now(timezone.utc).isoformat()
-                    trade["result"] = "exit_win" if profit_cents > 0 else "exit_loss"
-                    trade["profit_cents"] = profit_cents
-                    trade["exit_reason"] = exit_rec.get("reason", "")
-                    trade["exit_price_cents"] = current_price
-                    break
-            _save_trade_log(trade_log)
+                # Calculate approximate P&L
+                sell_value = (current_price or 50) * contracts
+                profit_cents = sell_value - cost_cents
 
-            # Release exposure in risk manager
-            risk.release_exposure(ticker, cost_cents, city_code)
-            if profit_cents > 0:
-                risk.record_win(profit_cents)
+                # Update trade log — mark the original trade as exited
+                for trade in trade_log:
+                    if trade.get("ticker") == ticker and not trade.get("settled"):
+                        trade["settled"] = True
+                        trade["settled_at"] = datetime.now(timezone.utc).isoformat()
+                        trade["result"] = "exit_win" if profit_cents > 0 else "exit_loss"
+                        trade["profit_cents"] = profit_cents
+                        trade["exit_reason"] = exit_rec.get("reason", "")
+                        trade["exit_price_cents"] = current_price
+                        trade["exit_order_id"] = order_id
+                        break
+                _save_trade_log(trade_log)
+
+                # Release exposure in risk manager
+                risk.release_exposure(ticker, cost_cents, city_code)
+                if profit_cents > 0:
+                    risk.record_win(profit_cents)
+                else:
+                    risk.record_loss(abs(profit_cents))
+
+                # Sync exit P&L to TradeIntelligence tracking
+                if intel:
+                    try:
+                        intel.pnl_data["total_invested_cents"] += cost_cents
+                        intel.pnl_data["total_returned_cents"] += sell_value
+                        intel.pnl_data["total_profit_cents"] += profit_cents
+                        if profit_cents > 0:
+                            intel.pnl_data["wins"] += 1
+                        else:
+                            intel.pnl_data["losses"] += 1
+                        intel._save_json(config.PNL_HISTORY_FILE, intel.pnl_data)
+                    except Exception:
+                        pass
+
+                print(f"    P&L: {'+'if profit_cents>=0 else ''}${profit_cents/100:.2f}")
             else:
-                risk.record_loss(abs(profit_cents))
-
-            # Sync exit P&L to TradeIntelligence tracking
-            if intel:
-                try:
-                    intel.pnl_data["total_invested_cents"] += cost_cents
-                    intel.pnl_data["total_returned_cents"] += sell_value
-                    intel.pnl_data["total_profit_cents"] += profit_cents
-                    if profit_cents > 0:
-                        intel.pnl_data["wins"] += 1
-                    else:
-                        intel.pnl_data["losses"] += 1
-                    intel._save_json(config.PNL_HISTORY_FILE, intel.pnl_data)
-                except Exception:
-                    pass
-
-            print(f"    P&L: {'+'if profit_cents>=0 else ''}${profit_cents/100:.2f}")
+                # Resting exit order — do NOT release exposure yet
+                print(f"    ~ Exit order resting: {order_id} "
+                      f"({order_info['remaining_count']} remaining)")
+                # Tag the original trade so _check_resting_orders can track it
+                for trade in trade_log:
+                    if trade.get("ticker") == ticker and not trade.get("settled"):
+                        trade["pending_exit_order_id"] = order_id
+                        trade["pending_exit_time"] = datetime.now().isoformat()
+                        trade["pending_exit_price"] = current_price
+                        break
+                _save_trade_log(trade_log)
         else:
             print(f"    ✗ Exit order returned no result")
     except Exception as e:
@@ -1154,56 +1414,72 @@ def _execute_partial_sell(client, risk, trade_log, review, intel=None):
             type="limit", **price_kwargs,
         )
         if result:
-            order_id = result.get("order", {}).get("order_id", "OK")
-            print(f"    ✓ Partial sell submitted: {sell_count}/{total_contracts} — {order_id}")
+            order_info = _classify_order_response(result, sell_count)
+            order_id = order_info["order_id"]
 
-            cost_per_contract = position["cost_cents"] / max(total_contracts, 1)
-            released_cost = int(cost_per_contract * sell_count)
-            sell_value = current_price * sell_count
-            partial_pnl = sell_value - released_cost
+            if order_info["status"] == "filled":
+                print(f"    ✓ Partial sell FILLED: {sell_count}/{total_contracts} — {order_id}")
 
-            risk.reduce_position(ticker, sell_count, released_cost)
+                cost_per_contract = position["cost_cents"] / max(total_contracts, 1)
+                released_cost = int(cost_per_contract * sell_count)
+                sell_value = current_price * sell_count
+                partial_pnl = sell_value - released_cost
 
-            # Log the partial exit
-            trade_log.append({
-                "timestamp": datetime.now().isoformat(),
-                "settled_at": datetime.now(timezone.utc).isoformat(),
-                "ticker": ticker,
-                "side": side,
-                "price_cents": current_price,
-                "contracts": sell_count,
-                "cost_cents": released_cost,
-                "strategy": "PARE",
-                "edge": review.get("new_edge", 0),
-                "city_code": review.get("city_code", ""),
-                "status": "partial_exit",
-                "reasoning": review.get("reason", ""),
-                "settled": True,
-                "result": "exit_win" if partial_pnl > 0 else "exit_loss",
-                "profit_cents": partial_pnl,
-            })
-            _save_trade_log(trade_log)
+                risk.reduce_position(ticker, sell_count, released_cost)
 
-            if partial_pnl > 0:
-                risk.record_win(partial_pnl)
+                # Log the partial exit
+                trade_log.append({
+                    "timestamp": datetime.now().isoformat(),
+                    "settled_at": datetime.now(timezone.utc).isoformat(),
+                    "ticker": ticker,
+                    "side": side,
+                    "price_cents": current_price,
+                    "contracts": sell_count,
+                    "cost_cents": released_cost,
+                    "strategy": "PARE",
+                    "edge": review.get("new_edge", 0),
+                    "city_code": review.get("city_code", ""),
+                    "status": "partial_exit",
+                    "order_id": order_id,
+                    "reasoning": review.get("reason", ""),
+                    "settled": True,
+                    "result": "exit_win" if partial_pnl > 0 else "exit_loss",
+                    "profit_cents": partial_pnl,
+                })
+                _save_trade_log(trade_log)
+
+                if partial_pnl > 0:
+                    risk.record_win(partial_pnl)
+                else:
+                    risk.record_loss(abs(partial_pnl))
+
+                # Sync exit P&L to TradeIntelligence tracking
+                if intel:
+                    try:
+                        intel.pnl_data["total_invested_cents"] += released_cost
+                        intel.pnl_data["total_returned_cents"] += sell_value
+                        intel.pnl_data["total_profit_cents"] += partial_pnl
+                        if partial_pnl > 0:
+                            intel.pnl_data["wins"] += 1
+                        else:
+                            intel.pnl_data["losses"] += 1
+                        intel._save_json(config.PNL_HISTORY_FILE, intel.pnl_data)
+                    except Exception:
+                        pass
+
+                print(f"    P&L: {'+'if partial_pnl>=0 else ''}${partial_pnl/100:.2f} (kept {total_contracts - sell_count} contracts)")
             else:
-                risk.record_loss(abs(partial_pnl))
-
-            # Sync exit P&L to TradeIntelligence tracking
-            if intel:
-                try:
-                    intel.pnl_data["total_invested_cents"] += released_cost
-                    intel.pnl_data["total_returned_cents"] += sell_value
-                    intel.pnl_data["total_profit_cents"] += partial_pnl
-                    if partial_pnl > 0:
-                        intel.pnl_data["wins"] += 1
-                    else:
-                        intel.pnl_data["losses"] += 1
-                    intel._save_json(config.PNL_HISTORY_FILE, intel.pnl_data)
-                except Exception:
-                    pass
-
-            print(f"    P&L: {'+'if partial_pnl>=0 else ''}${partial_pnl/100:.2f} (kept {total_contracts - sell_count} contracts)")
+                # Resting pare order — do NOT reduce position yet
+                print(f"    ~ Partial sell resting: {order_id} "
+                      f"({order_info['remaining_count']} remaining)")
+                # Tag position for tracking
+                for p in risk.state.get("positions", []):
+                    if p.get("ticker") == ticker:
+                        p["pending_pare_order_id"] = order_id
+                        p["pending_pare_time"] = datetime.now().isoformat()
+                        p["pending_pare_count"] = sell_count
+                        break
+                risk._save_state()
         else:
             print(f"    ✗ Partial sell returned no result")
     except Exception as e:
@@ -1234,65 +1510,80 @@ def _execute_hedge(client, risk, trade_log, review, intel=None):
             no_price=hedge_price if hedge_side == "no" else None,
         )
         if result:
-            order_id = result.get("order", {}).get("order_id", "OK")
-            print(f"    ✓ Hedge order submitted: {hedge_contracts}x {hedge_side.upper()} @ {hedge_price}c — {order_id}")
+            order_info = _classify_order_response(result, hedge_contracts)
+            order_id = order_info["order_id"]
 
-            # The hedge locks in value: we pay hedge_price per contract,
-            # but one side is guaranteed to pay out 100c.
-            # Net P&L per contract = 100 - entry_price_per_contract - hedge_price
-            entry_per_contract = cost_cents / max(contracts, 1)
-            net_per_contract = 100 - entry_per_contract - hedge_price
-            total_pnl = int(net_per_contract * hedge_contracts)
+            if order_info["status"] == "filled":
+                print(f"    ✓ Hedge order FILLED: {hedge_contracts}x {hedge_side.upper()} @ {hedge_price}c — {order_id}")
 
-            # Update risk state
-            if hedge_contracts >= contracts:
-                # Full hedge = position fully closed
-                risk.release_exposure(ticker, cost_cents, city_code)
+                # The hedge locks in value: we pay hedge_price per contract,
+                # but one side is guaranteed to pay out 100c.
+                # Net P&L per contract = 100 - entry_price_per_contract - hedge_price
+                entry_per_contract = cost_cents / max(contracts, 1)
+                net_per_contract = 100 - entry_per_contract - hedge_price
+                total_pnl = int(net_per_contract * hedge_contracts)
+
+                # Update risk state
+                if hedge_contracts >= contracts:
+                    # Full hedge = position fully closed
+                    risk.release_exposure(ticker, cost_cents, city_code)
+                else:
+                    # Partial hedge
+                    released_cost = int(entry_per_contract * hedge_contracts)
+                    risk.reduce_position(ticker, hedge_contracts, released_cost)
+
+                # Log the hedge exit
+                trade_log.append({
+                    "timestamp": datetime.now().isoformat(),
+                    "settled_at": datetime.now(timezone.utc).isoformat(),
+                    "ticker": ticker,
+                    "side": hedge_side,
+                    "price_cents": hedge_price,
+                    "contracts": hedge_contracts,
+                    "cost_cents": hedge_price * hedge_contracts,
+                    "strategy": "HEDGE",
+                    "edge": review.get("new_edge", 0),
+                    "city_code": city_code,
+                    "status": "hedge_exit",
+                    "order_id": order_id,
+                    "reasoning": review.get("reason", ""),
+                    "settled": True,
+                    "result": "exit_win" if total_pnl > 0 else "exit_loss",
+                    "profit_cents": total_pnl,
+                })
+                _save_trade_log(trade_log)
+
+                if total_pnl > 0:
+                    risk.record_win(total_pnl)
+                else:
+                    risk.record_loss(abs(total_pnl))
+
+                # Sync exit P&L to TradeIntelligence tracking
+                if intel:
+                    try:
+                        intel.pnl_data["total_invested_cents"] += hedge_price * hedge_contracts + cost_cents
+                        intel.pnl_data["total_returned_cents"] += 100 * hedge_contracts
+                        intel.pnl_data["total_profit_cents"] += total_pnl
+                        if total_pnl > 0:
+                            intel.pnl_data["wins"] += 1
+                        else:
+                            intel.pnl_data["losses"] += 1
+                        intel._save_json(config.PNL_HISTORY_FILE, intel.pnl_data)
+                    except Exception:
+                        pass
+
+                print(f"    P&L: {'+'if total_pnl>=0 else ''}${total_pnl/100:.2f}")
             else:
-                # Partial hedge
-                released_cost = int(entry_per_contract * hedge_contracts)
-                risk.reduce_position(ticker, hedge_contracts, released_cost)
-
-            # Log the hedge exit
-            trade_log.append({
-                "timestamp": datetime.now().isoformat(),
-                "settled_at": datetime.now(timezone.utc).isoformat(),
-                "ticker": ticker,
-                "side": hedge_side,
-                "price_cents": hedge_price,
-                "contracts": hedge_contracts,
-                "cost_cents": hedge_price * hedge_contracts,
-                "strategy": "HEDGE",
-                "edge": review.get("new_edge", 0),
-                "city_code": city_code,
-                "status": "hedge_exit",
-                "reasoning": review.get("reason", ""),
-                "settled": True,
-                "result": "exit_win" if total_pnl > 0 else "exit_loss",
-                "profit_cents": total_pnl,
-            })
-            _save_trade_log(trade_log)
-
-            if total_pnl > 0:
-                risk.record_win(total_pnl)
-            else:
-                risk.record_loss(abs(total_pnl))
-
-            # Sync exit P&L to TradeIntelligence tracking
-            if intel:
-                try:
-                    intel.pnl_data["total_invested_cents"] += hedge_price * hedge_contracts + cost_cents
-                    intel.pnl_data["total_returned_cents"] += 100 * hedge_contracts
-                    intel.pnl_data["total_profit_cents"] += total_pnl
-                    if total_pnl > 0:
-                        intel.pnl_data["wins"] += 1
-                    else:
-                        intel.pnl_data["losses"] += 1
-                    intel._save_json(config.PNL_HISTORY_FILE, intel.pnl_data)
-                except Exception:
-                    pass
-
-            print(f"    P&L: {'+'if total_pnl>=0 else ''}${total_pnl/100:.2f}")
+                # Resting hedge order — do NOT release exposure yet
+                print(f"    ~ Hedge order resting: {order_id} "
+                      f"({order_info['remaining_count']} remaining)")
+                # Tag the original trade so _check_resting_orders can track it
+                for trade in trade_log:
+                    if trade.get("ticker") == ticker and not trade.get("settled"):
+                        trade["pending_hedge_order_id"] = order_id
+                        trade["pending_hedge_time"] = datetime.now().isoformat()
+                        break
+                _save_trade_log(trade_log)
         else:
             print(f"    ✗ Hedge order returned no result — falling back to direct sell")
             exit_rec = {
