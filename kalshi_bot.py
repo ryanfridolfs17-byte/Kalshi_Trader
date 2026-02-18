@@ -1408,7 +1408,14 @@ def _sync_pnl_from_kalshi(client, intel=None):
     Open positions are excluded — their buy cost is not a realized loss.
 
     Per-ticker P&L = (sell fill revenue + settlement revenue) - buy fill cost
-    A ticker is "closed" if it has a settlement OR sell fills.
+
+    A ticker is "closed" if ANY of:
+      1. It has a settlement record (win — Kalshi returned revenue)
+      2. It has sell fills (early exit)
+      3. It has buy fills but is NOT in current open positions
+         (settled loss — Kalshi doesn't return settlement records for
+         losing positions with revenue=0, so we cross-reference against
+         the live positions list to detect them)
 
     This is the source of truth — it replaces any internal P&L tracking.
     Must run AFTER check_settlements() so it overwrites the file last.
@@ -1443,6 +1450,23 @@ def _sync_pnl_from_kalshi(client, intel=None):
             if not cursor or not settlements:
                 break
 
+        # Fetch current open positions to distinguish open vs settled-loss
+        open_tickers = set()
+        try:
+            pos_cursor = None
+            while True:
+                pos_result = client.get_positions(limit=200, cursor=pos_cursor)
+                if not pos_result:
+                    break
+                for pos in pos_result.get("market_positions", []):
+                    if pos.get("position", 0) != 0:
+                        open_tickers.add(pos.get("ticker", ""))
+                pos_cursor = pos_result.get("cursor")
+                if not pos_cursor:
+                    break
+        except Exception:
+            pass  # If positions fetch fails, fall back to old logic
+
         # Group fills by ticker
         ticker_flows = {}  # ticker → {buy_cost, sell_revenue}
         for fill in all_fills:
@@ -1470,7 +1494,6 @@ def _sync_pnl_from_kalshi(client, intel=None):
                 settle_rev[ticker] = (s.get("revenue", 0) or 0)
 
         # Compute realized P&L: only for tickers that are closed
-        # (have a settlement or have sell fills)
         settled_tickers = set(settle_rev.keys())
         total_invested = 0
         total_returned = 0
@@ -1480,9 +1503,14 @@ def _sync_pnl_from_kalshi(client, intel=None):
         for ticker, flows in ticker_flows.items():
             has_settlement = ticker in settled_tickers
             has_sells = flows["sell_revenue"] > 0
+            is_still_open = ticker in open_tickers
 
+            # A ticker is closed if it has a settlement, has sells, or
+            # is no longer in open positions (settled loss with no revenue record)
             if not has_settlement and not has_sells:
-                continue  # Open position — skip
+                if is_still_open or not open_tickers:
+                    continue  # Genuinely open, or positions fetch failed
+                # Not in open positions and no settlement record = settled loss
 
             buy_cost = flows["buy_cost"]
             sell_revenue = flows["sell_revenue"]
@@ -1494,8 +1522,9 @@ def _sync_pnl_from_kalshi(client, intel=None):
 
             if ticker_pnl > 0:
                 wins += 1
-            elif buy_cost > 0:
+            elif ticker_pnl < 0:
                 losses += 1
+            # ticker_pnl == 0 is break-even, don't count as win or loss
 
         # Include any settlements we didn't have fills for (edge case)
         for ticker, revenue in settle_rev.items():
@@ -1527,8 +1556,8 @@ def _sync_pnl_from_kalshi(client, intel=None):
         if intel:
             intel.pnl_data = pnl_data
 
-        print(f"  [P&L SYNC] Kalshi: {len(all_fills)} fills, {len(all_settlements)} settlements → "
-              f"P&L ${total_pnl/100:+.2f} ({wins}W/{losses}L)")
+        print(f"  [P&L SYNC] Kalshi: {len(all_fills)} fills, {len(all_settlements)} settlements, "
+              f"{len(open_tickers)} open → P&L ${total_pnl/100:+.2f} ({wins}W/{losses}L)")
 
     except Exception as e:
         print(f"  [P&L SYNC] Error: {e}")
