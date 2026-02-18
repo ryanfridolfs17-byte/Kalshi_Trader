@@ -1355,11 +1355,15 @@ function shortTicker(t) {
 
 function timeSince(ts) {
   if (!ts) return '-';
-  const diff = (Date.now() - new Date(ts).getTime()) / 1000;
-  if (diff < 60) return Math.round(diff) + 's ago';
-  if (diff < 3600) return Math.round(diff/60) + 'm ago';
-  if (diff < 86400) return Math.round(diff/3600) + 'h ago';
-  return Math.round(diff/86400) + 'd ago';
+  const diff = Math.abs(Date.now() - new Date(ts).getTime()) / 1000;
+  if (diff < 120) return '< 1m ago';
+  const mins = Math.floor(diff / 60);
+  if (mins < 60) return mins + 'm ago';
+  const hrs = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  if (hrs < 24) return remMins > 0 ? hrs + 'h ' + remMins + 'm ago' : hrs + 'h ago';
+  const days = Math.floor(hrs / 24);
+  return days + 'd ' + (hrs % 24) + 'h ago';
 }
 
 function isSameDay(a, b) { return a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate(); }
