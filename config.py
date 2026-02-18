@@ -124,7 +124,14 @@ MAX_AUTO_TRADE_CENTS = 2000         # $20.00
 MAX_POSITION_PCT = 0.20             # 20% of bankroll
 
 # Confirmed outcome trades (near-guaranteed) can size bigger
-CONFIRMED_OUTCOME_POSITION_PCT = 0.25  # 25% of bankroll
+CONFIRMED_OUTCOME_POSITION_PCT = 0.25  # 25% of bankroll (CASE 1: NO on exceeded buckets)
+
+# CASE 2: YES on current bucket — riskier, temp can still rise
+# Smaller sizing + later time gate + buffer from bucket ceiling
+CASE2_POSITION_PCT = 0.10              # 10% of bankroll (vs 25% for CASE 1)
+CASE2_MIN_LOCAL_HOUR = 16              # 4 PM local (vs immediate for CASE 1)
+CASE2_NARROW_MIN_LOCAL_HOUR = 17       # 5 PM local for narrow buckets (≤5°F wide)
+CASE2_NARROW_BUCKET_WIDTH = 5          # Buckets ≤5°F wide get stricter rules
 
 # Trades above this require manual approval
 APPROVAL_THRESHOLD_CENTS = 2500     # $25.00
@@ -139,7 +146,12 @@ MAX_TOTAL_EXPOSURE_CENTS = 8000     # $80.00 (80% of ~$100 bankroll)
 MAX_OPEN_POSITIONS = 20
 
 # Max exposure per city (weather)
-MAX_PER_CITY_CENTS = 2500           # $25.00 per city
+MAX_PER_CITY_CENTS = 2500           # $25.00 per city (current open exposure)
+
+# Cumulative daily spending cap per city — prevents sell-and-rebuy chasing
+# Unlike MAX_PER_CITY_CENTS (tracks open exposure), this tracks TOTAL dollars
+# spent on a city in one day, even if positions were closed/sold.
+MAX_DAILY_CITY_SPEND_CENTS = 3500   # $35.00 cumulative per city per day
 
 # Max positions per city+date combination
 MAX_CORRELATED_POSITIONS = 3

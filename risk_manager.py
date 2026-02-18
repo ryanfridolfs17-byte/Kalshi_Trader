@@ -32,6 +32,7 @@ class RiskManager:
             "consecutive_losses": 0,
             "loss_pause_until": None,
             "city_exposure": {},  # {"NYC": 300, "CHI": 150, ...}
+            "daily_city_spend": {},  # Cumulative daily spending per city (not reduced by sells)
         }
         self._load_state()
 
@@ -98,6 +99,13 @@ class RiskManager:
             city_exp = self.state["city_exposure"].get(city, 0)
             if city_exp + cost > config.MAX_PER_CITY_CENTS:
                 return False, f"{city} exposure: ${city_exp/100:.2f} + ${cost/100:.2f} > ${config.MAX_PER_CITY_CENTS/100:.2f}"
+
+        # 4a2. Cumulative daily city spending cap (prevents sell-and-rebuy chasing)
+        if city:
+            daily_spend = self.state.get("daily_city_spend", {}).get(city, 0)
+            if daily_spend + cost > config.MAX_DAILY_CITY_SPEND_CENTS:
+                return False, (f"{city} daily spend cap: ${daily_spend/100:.2f} + ${cost/100:.2f} "
+                               f"> ${config.MAX_DAILY_CITY_SPEND_CENTS/100:.2f} cumulative")
 
         # 4b. Correlated positions cap (same city + same date)
         if city:
@@ -202,6 +210,10 @@ class RiskManager:
 
         if city_code:
             self.state["city_exposure"][city_code] = self.state["city_exposure"].get(city_code, 0) + cost_cents
+            # Track cumulative daily spending (never reduced by sells — resets at midnight)
+            if "daily_city_spend" not in self.state:
+                self.state["daily_city_spend"] = {}
+            self.state["daily_city_spend"][city_code] = self.state["daily_city_spend"].get(city_code, 0) + cost_cents
 
         self._save_state()
 
@@ -419,6 +431,11 @@ class RiskManager:
         print(f"  │  Trades today:   {self.state['daily_trade_count']}")
         print(f"  │  Loss streak:    {self.state['consecutive_losses']}")
 
+        daily_spend = self.state.get("daily_city_spend", {})
+        if daily_spend:
+            spend_str = ", ".join(f"{c}: ${v/100:.2f}" for c, v in daily_spend.items())
+            print(f"  │  Daily spend:    {spend_str} (cap: ${config.MAX_DAILY_CITY_SPEND_CENTS/100:.2f})")
+
         if self.state["city_exposure"]:
             city_str = ", ".join(f"{c}: ${v/100:.2f}" for c, v in self.state["city_exposure"].items())
             print(f"  │  City exposure:  {city_str}")
@@ -444,6 +461,7 @@ class RiskManager:
             self.state["last_reset_date"] = today
             self.state["consecutive_losses"] = 0
             self.state["loss_pause_until"] = None
+            self.state["daily_city_spend"] = {}  # Reset cumulative city spending
             self._cleanup_expired_positions()
             self._save_state()
 

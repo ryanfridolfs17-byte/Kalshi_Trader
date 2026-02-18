@@ -666,11 +666,19 @@ class Strategy:
             offset = -5  # Eastern
         local_hour = (utc_now.hour + offset) % 24
 
-        # CASE 2 (NEW): High is currently INSIDE the bucket → YES confirmed
-        # At 2 PM+, if the observed high is within [temp_low, temp_high], YES is
-        # very likely to win — temps can only go up from here, so the high stays
-        # in or moves above the bucket (either way, it reached the bucket).
-        if local_hour >= 14 and temp_low <= todays_high <= temp_high:
+        # CASE 2: High is currently INSIDE the bucket → YES likely
+        # Riskier than CASE 1 because temp can still rise out of the bucket.
+        # Guards: later time gate, midpoint buffer for narrow buckets, reduced sizing.
+        bucket_width = temp_high - temp_low
+        is_narrow = bucket_width <= config.CASE2_NARROW_BUCKET_WIDTH
+        min_hour = config.CASE2_NARROW_MIN_LOCAL_HOUR if is_narrow else config.CASE2_MIN_LOCAL_HOUR
+
+        # Midpoint buffer: for narrow buckets, observed high must be in the lower
+        # half of the bucket to leave room for further temperature rise.
+        bucket_midpoint = (temp_low + temp_high) / 2.0
+        has_buffer = (not is_narrow) or (todays_high < bucket_midpoint)
+
+        if local_hour >= min_hour and temp_low <= todays_high <= temp_high and has_buffer:
             yes_ask = market.get("yes_ask", 0) or ref_price
             if yes_ask <= 0 or yes_ask >= 95:
                 return None  # Already priced in or no reasonable ask
@@ -679,18 +687,19 @@ class Strategy:
             if edge < 0.05:
                 return None
 
+            # Reduced sizing: 10% of bankroll (vs 25% for CASE 1)
             bankroll_cents = getattr(self, 'balance_cents', None) or config.MAX_TOTAL_EXPOSURE_CENTS
-            max_bet_cents = int(bankroll_cents * config.CONFIRMED_OUTCOME_POSITION_PCT)
+            max_bet_cents = int(bankroll_cents * config.CASE2_POSITION_PCT)
             contracts = max(1, int(max_bet_cents / yes_ask))
 
-            print(f"    [CONFIRMED] {city_code} high {todays_high}°F is IN bucket {temp_low}-{temp_high}°F")
-            print(f"    [CONFIRMED] YES @ {yes_ask}¢ is near-guaranteed → MAX POSITION {contracts} contracts")
+            print(f"    [CASE2] {city_code} high {todays_high}°F is IN bucket {temp_low}-{temp_high}°F (mid={bucket_midpoint})")
+            print(f"    [CASE2] YES @ {yes_ask}¢ → {contracts} contracts (10% sizing, {local_hour}:00 local)")
 
             return {
                 "signal": "buy_yes",
                 "side": "yes",
                 "edge": edge,
-                "confidence": 0.95,
+                "confidence": 0.90,
                 "price_cents": yes_ask,
                 "confirmation_multiplier": 1.0,
                 "confirmation_verdict": "CONFIRMED_OUTCOME",
@@ -702,9 +711,9 @@ class Strategy:
                 "seasonal_regime": "confirmed",
                 "seasonal_multiplier": 1.0,
                 "reasoning": (
-                    f"[CONFIRMED] {city_code}: NWS observed high {todays_high}°F is inside "
-                    f"bucket {temp_low}-{temp_high}°F at {local_hour}:00 local. YES @ {yes_ask}¢ is near-guaranteed. "
-                    f"Max position: {contracts} contracts."
+                    f"[CASE2] {city_code}: NWS observed high {todays_high}°F is inside "
+                    f"bucket {temp_low}-{temp_high}°F at {local_hour}:00 local. YES @ {yes_ask}¢. "
+                    f"Reduced sizing: {contracts} contracts (10% bankroll)."
                 ),
                 "strategy": "S1-Weather",
             }

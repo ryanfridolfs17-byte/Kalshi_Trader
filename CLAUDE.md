@@ -2,6 +2,17 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Git & Deployment
+
+- **Working branch:** `master` — day-to-day development happens here.
+- **Production branch:** `main` — Railway auto-deploys from this branch.
+- **Deploy workflow:** After committing to `master`, merge into `main` and push to trigger a Railway deploy:
+  ```bash
+  git checkout main && git merge master && git push && git checkout master
+  ```
+- When the user says "push to Railway" or "deploy", this means merge `master` → `main` and push `main`.
+- Never force-push to `main`.
+
 ## Running the Bot
 
 ```bash
