@@ -805,7 +805,7 @@ function updateDashboard(data) {
   if (recentTrades.length > 0) {
     trEmpty.style.display = 'none';
     trBody.innerHTML = recentTrades.map(t => {
-      const time = new Date(t.timestamp).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+      const time = timeSince(t.timestamp);
       const conf = t.confirmation || '';
       const confClass = conf === 'CONFIRMED_OUTCOME' ? 'badge-confirmed' : conf === 'STRONG' ? 'badge-strong' : conf === 'CONFIRM' ? 'badge-confirm' : 'badge-weak';
       let statusBadge = '';
