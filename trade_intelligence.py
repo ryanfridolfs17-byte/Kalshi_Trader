@@ -296,6 +296,24 @@ class TradeIntelligence:
                                 })
                                 continue
 
+                        # ROUNDING BUFFER EXIT for NO positions:
+                        # NWS 5-min stations have ±1°F conversion error. The real temperature
+                        # (from raw 1-min readings used for settlement) can be higher than
+                        # the displayed value. If observed high is within 1°F of bucket floor,
+                        # the REAL temp may already be inside the bucket.
+                        if is_today and side == "no" and obs_high is not None and now_hour >= 14:
+                            if obs_high >= temp_low - config.ROUNDING_BUFFER_HARD_F and obs_high < temp_low:
+                                actions.append({
+                                    "ticker": ticker, "action": "full_exit", "urgency": "high",
+                                    "reason": (f"Rounding buffer exit: observed high {obs_high:.0f}F is within "
+                                              f"{config.ROUNDING_BUFFER_HARD_F}°F of bucket floor {temp_low}F — "
+                                              f"real temp may already be inside bucket"),
+                                    "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
+                                    "city_code": city_code, "side": side, "contracts": contracts,
+                                    "cost_cents": cost_cents,
+                                })
+                                continue
+
             # Skip positions that are too young for probabilistic review (whipsaw guard)
             # Note: observation-based confirmed losses above bypass this gate
             if age_minutes is not None and age_minutes < config.MIN_REVIEW_AGE_MINUTES:
@@ -646,6 +664,12 @@ class TradeIntelligence:
         Positive = station reads warmer than models predict.
         Negative = station reads cooler.
 
+        Two modes:
+        1. Streak detection (fast): if last 3+ records all bias same direction
+           with ≥0.5°F magnitude, apply the streak average immediately.
+           Catches trends like haze/wildfire conditions or cold snaps early.
+        2. Rolling average (standard): 30-day average, requires 5+ data points.
+
         Returns 0.0 if not enough data yet.
         """
         city_key = f"bias_{city_code}"
@@ -653,10 +677,34 @@ class TradeIntelligence:
             return 0.0
 
         records = self.bias_data[city_key]
-        if len(records) < 5:
-            return 0.0  # Need at least 5 data points
+        if not records:
+            return 0.0
 
-        # Use last 30 records (rolling window)
+        # Check for consecutive-day streak (3+ days same direction, ≥0.5°F each)
+        recent_7 = records[-7:]
+        if len(recent_7) >= 3:
+            streak_biases = []
+            streak_dir = None
+            for r in reversed(recent_7):
+                bias = r["actual"] - r["predicted"]
+                direction = "hot" if bias > 0 else "cold"
+                if streak_dir is None:
+                    streak_dir = direction
+                if direction == streak_dir and abs(bias) >= 0.5:
+                    streak_biases.append(bias)
+                else:
+                    break
+
+            if len(streak_biases) >= 3:
+                streak_avg = round(sum(streak_biases) / len(streak_biases), 1)
+                print(f"    [BIAS] {city_code}: {len(streak_biases)}-day {streak_dir} streak "
+                      f"(avg {streak_avg:+.1f}°F) — applying streak adjustment")
+                return streak_avg
+
+        # Fall back to standard rolling average (need 5+ data points)
+        if len(records) < 5:
+            return 0.0
+
         recent = records[-30:]
         biases = [r["actual"] - r["predicted"] for r in recent]
         avg_bias = sum(biases) / len(biases)

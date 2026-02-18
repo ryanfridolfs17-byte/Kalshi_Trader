@@ -131,11 +131,11 @@ CITIES = {
         "timezone": "America/New_York",
     },
     "HOU": {
-        "name": "Houston",
-        "lat": 29.9902,
-        "lon": -95.3368,
+        "name": "Houston Hobby",
+        "lat": 29.6458,
+        "lon": -95.2772,
         "series_ticker": "KXHIGHTHOU",
-        "nws_station": "KIAH",
+        "nws_station": "KHOU",
         "timezone": "America/Chicago",
     },
     "LV": {

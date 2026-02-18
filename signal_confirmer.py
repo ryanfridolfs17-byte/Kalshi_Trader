@@ -8,10 +8,9 @@ step from the decision flow.
 CONFIRMATION SOURCES:
   1. NWS/GFS HRRR   - US Government deterministic forecast
   2. ECMWF IFS       - European deterministic forecast (best global model)
-  3. GFS Ensemble    - Does the GFS ensemble agree independently?
-  4. ICON Model      - German weather service model
-  5. GEM Model       - Canadian weather service model
-  6. Bias Tracker    - Historical accuracy of each source for this city
+  3. ICON Model      - German weather service model
+  4. GEM Model       - Canadian weather service model
+  5. NWS Point Fcst  - Actual NWS station-area forecast (most authoritative for settlement)
 
 VOTING SYSTEM:
   Each source votes: AGREE, DISAGREE, or ABSTAIN
@@ -61,6 +60,7 @@ class SignalConfirmer:
             "ecmwf": {"correct": 0, "total": 0},
             "icon": {"correct": 0, "total": 0},
             "gem": {"correct": 0, "total": 0},
+            "nws_point": {"correct": 0, "total": 0},
         }
 
     def confirm_signal(self, city_info, target_date, temp_low, temp_high, ensemble_prob, market_price_cents):
@@ -147,6 +147,50 @@ class SignalConfirmer:
                         f"(in bucket) → DISAGREE with overpriced signal"
                     )
 
+        # 5th source: NWS station point forecast (most authoritative for settlement)
+        nws_point_high = self._get_nws_point_forecast(city_info, target_date)
+        if nws_point_high is not None:
+            in_bucket = temp_low <= nws_point_high <= temp_high
+            our_direction = "underpriced" if our_prob > market_prob else "overpriced"
+
+            if our_direction == "underpriced":
+                if in_bucket:
+                    votes["nws_point"] = "AGREE"
+                    vote_details["nws_point"] = (
+                        f"NWS Station Forecast: {nws_point_high}°F "
+                        f"(in bucket {temp_low}-{temp_high}) → AGREE"
+                    )
+                else:
+                    dist = min(abs(nws_point_high - temp_low), abs(nws_point_high - temp_high))
+                    if dist <= 2:  # Tighter abstain zone (NWS is authoritative)
+                        votes["nws_point"] = "ABSTAIN"
+                        vote_details["nws_point"] = (
+                            f"NWS Station Forecast: {nws_point_high}°F "
+                            f"(near bucket, {dist}°F away) → ABSTAIN"
+                        )
+                    else:
+                        votes["nws_point"] = "DISAGREE"
+                        vote_details["nws_point"] = (
+                            f"NWS Station Forecast: {nws_point_high}°F "
+                            f"(outside bucket by {dist}°F) → DISAGREE"
+                        )
+            else:  # overpriced
+                if not in_bucket:
+                    votes["nws_point"] = "AGREE"
+                    vote_details["nws_point"] = (
+                        f"NWS Station Forecast: {nws_point_high}°F "
+                        f"(outside bucket) → AGREE with overpriced signal"
+                    )
+                else:
+                    votes["nws_point"] = "DISAGREE"
+                    vote_details["nws_point"] = (
+                        f"NWS Station Forecast: {nws_point_high}°F "
+                        f"(in bucket) → DISAGREE with overpriced signal"
+                    )
+        else:
+            votes["nws_point"] = "ABSTAIN"
+            vote_details["nws_point"] = "NWS Station Forecast: no data → ABSTAIN"
+
         # Count votes
         agree_count = sum(1 for v in votes.values() if v == "AGREE")
         disagree_count = sum(1 for v in votes.values() if v == "DISAGREE")
@@ -224,6 +268,59 @@ class SignalConfirmer:
                         "fetched_at": datetime.now(),
                     }
                     return temp
+
+        except Exception:
+            pass
+
+        return None
+
+    def _get_nws_point_forecast(self, city_info, target_date):
+        """
+        Fetch the actual NWS grid-point forecast for the station's coordinates.
+        This is the same forecast system NWS uses for their Daily Climate Reports —
+        the most authoritative source for Kalshi settlement.
+
+        Returns temperature in °F (integer) or None.
+        """
+        cache_key = f"nws_point_{city_info.get('nws_station', '')}_{target_date}"
+        if cache_key in self._cache:
+            cached = self._cache[cache_key]
+            age = (datetime.now() - cached["fetched_at"]).total_seconds()
+            if age < 3600:  # 1 hour cache (NWS updates less frequently)
+                return cached["temp"]
+
+        try:
+            headers = {
+                "User-Agent": "KalshiBot/3.2 (trading-bot@example.com)",
+                "Accept": "application/geo+json",
+            }
+
+            # Step 1: Get the forecast grid endpoint for this lat/lon
+            points_url = f"https://api.weather.gov/points/{city_info['lat']},{city_info['lon']}"
+            resp = requests.get(points_url, headers=headers, timeout=15)
+            if resp.status_code != 200:
+                return None
+
+            forecast_url = resp.json().get("properties", {}).get("forecast")
+            if not forecast_url:
+                return None
+
+            # Step 2: Get the actual period forecast
+            resp2 = requests.get(forecast_url, headers=headers, timeout=15)
+            if resp2.status_code != 200:
+                return None
+
+            periods = resp2.json().get("properties", {}).get("periods", [])
+            for period in periods:
+                start = period.get("startTime", "")
+                if target_date in start and period.get("isDaytime", False):
+                    temp = period.get("temperature")
+                    if temp is not None:
+                        self._cache[cache_key] = {
+                            "temp": temp,
+                            "fetched_at": datetime.now(),
+                        }
+                        return temp
 
         except Exception:
             pass

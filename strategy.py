@@ -250,10 +250,25 @@ class Strategy:
         market_prob = ref_price / 100.0
         edge = our_prob - market_prob  # Positive = underpriced YES
 
-        # Need at least 8% edge
+        # Need at least 8% raw edge
         min_weather_edge = 0.08
         if abs(edge) < min_weather_edge:
             return None
+
+        # Fee-adjusted edge: subtract expected Kalshi fee drag
+        # Fees are ~7% of expected profit per contract (taker rate, worst case)
+        if config.FEE_ADJUSTMENT_ENABLED:
+            if edge > 0:
+                win_prob = min(0.95, market_prob + edge)
+            else:
+                win_prob = min(0.95, (1 - market_prob) + abs(edge))
+            fee_cents = config.KALSHI_FEE_PCT * (100 - ref_price)
+            fee_drag = (fee_cents / 100.0) * win_prob
+            net_edge = abs(edge) - fee_drag
+            if net_edge < config.FEE_ADJUSTED_MIN_EDGE:
+                print(f"    [STRATEGY] Fee-adjusted edge {net_edge:.1%} < {config.FEE_ADJUSTED_MIN_EDGE:.0%} "
+                      f"(raw={abs(edge):.1%}, fee_drag={fee_drag:.1%}) — skipping")
+                return None
 
         # Sanity check: ensemble mean must not strongly contradict signal direction
         forecast_mean = distribution["forecasted_high_mean"]
@@ -321,13 +336,19 @@ class Strategy:
                       f"too narrow to trade reliably")
                 return None
 
-            # FIX 2: Model disagreement detector — if model families disagree by >5°F, skip
+            # FIX 2: Model disagreement detector — if model families disagree by >4°F, skip
             model_spread = distribution.get("model_spread", 0)
-            if model_spread > 5:
+            if model_spread > config.MAX_MODEL_DIVERGENCE_F:
                 model_means = distribution.get("model_means", {})
                 print(f"    [STRATEGY] Skipped YES: model families disagree by {model_spread:.1f}°F "
-                      f"({model_means}) — too uncertain")
+                      f"({model_means}) — too uncertain (max {config.MAX_MODEL_DIVERGENCE_F}°F)")
                 return None
+
+            # Model convergence boost — when all models agree tightly, increase confidence
+            model_convergence_mult = 1.0
+            if model_spread < config.MODEL_CONVERGENCE_BOOST_F:
+                model_convergence_mult = 1.2
+                print(f"    [STRATEGY] Models converge within {model_spread:.1f}°F — 1.2x confidence boost")
 
             # FIX 3: Spread-to-bucket ratio guard — if ensemble spread / bucket width > 6, skip
             ensemble_spread = distribution.get("spread", 0)
@@ -342,8 +363,41 @@ class Strategy:
                 if edge < 0.35 or confirmation["agree_count"] < 3:
                     print(f"    [STRATEGY] Skipped YES on narrow {bucket_width}°F bucket "
                           f"{temp_low}-{temp_high}°F: edge={edge:.0%} (need 35%), "
-                          f"agree={confirmation['agree_count']}/4 (need 3)")
+                          f"agree={confirmation['agree_count']}/5 (need 3)")
                     return None
+
+            # FIX 5: NWS Rounding buffer zone
+            # 5-minute NWS stations have ±1°F+ error from °F→°C→°F conversion.
+            # Settlement uses raw 1-minute readings which can differ from displayed values.
+            rounding_multiplier = 1.0
+            if temp_high < 200 and temp_low > -100:  # Bounded bucket
+                dist_to_low = abs(forecast_mean - temp_low)
+                dist_to_high = abs(forecast_mean - temp_high)
+                nearest_strike_dist = min(dist_to_low, dist_to_high)
+                if nearest_strike_dist <= config.ROUNDING_BUFFER_HARD_F:
+                    print(f"    [STRATEGY] Rounding buffer: forecast {forecast_mean:.1f}°F is "
+                          f"{nearest_strike_dist:.1f}°F from strike — NO TRADE")
+                    return None
+                elif nearest_strike_dist <= config.ROUNDING_BUFFER_SOFT_F:
+                    rounding_multiplier = 0.5
+                    print(f"    [STRATEGY] Rounding buffer: forecast {forecast_mean:.1f}°F is "
+                          f"{nearest_strike_dist:.1f}°F from strike — 50% size reduction")
+            elif temp_low == -100:  # "X or below" — only upper boundary matters
+                dist_to_strike = abs(forecast_mean - temp_high)
+                if dist_to_strike <= config.ROUNDING_BUFFER_HARD_F:
+                    print(f"    [STRATEGY] Rounding buffer: forecast {forecast_mean:.1f}°F is "
+                          f"{dist_to_strike:.1f}°F from strike {temp_high}°F — NO TRADE")
+                    return None
+                elif dist_to_strike <= config.ROUNDING_BUFFER_SOFT_F:
+                    rounding_multiplier = 0.5
+            elif temp_high == 200:  # "X or above" — only lower boundary matters
+                dist_to_strike = abs(forecast_mean - temp_low)
+                if dist_to_strike <= config.ROUNDING_BUFFER_HARD_F:
+                    print(f"    [STRATEGY] Rounding buffer: forecast {forecast_mean:.1f}°F is "
+                          f"{dist_to_strike:.1f}°F from strike {temp_low}°F — NO TRADE")
+                    return None
+                elif dist_to_strike <= config.ROUNDING_BUFFER_SOFT_F:
+                    rounding_multiplier = 0.5
 
             # Underpriced YES — buy YES
             price = smart_price if smart_price else (market.get("yes_ask", 0) or ref_price)
@@ -353,7 +407,7 @@ class Strategy:
                 "edge": edge,
                 "confidence": min(0.75, distribution["confidence"] * 0.8 + abs(edge)),
                 "price_cents": price,
-                "confirmation_multiplier": confirmation["size_multiplier"] * time_mult * regime_mult * seasonal_mult,
+                "confirmation_multiplier": confirmation["size_multiplier"] * time_mult * regime_mult * seasonal_mult * rounding_multiplier * model_convergence_mult,
                 "confirmation_verdict": confirmation["verdict"],
                 "predicted_high": distribution["forecasted_high_mean"],
                 "seasonal_regime": seasonal_regime,
@@ -367,6 +421,8 @@ class Strategy:
                     f"{distribution['total_members']} members. "
                     f"Time: {time_reason} ({time_mult}x). "
                     f"Seasonal: {seasonal_regime} ({seasonal_mult:.2f}x). "
+                    + (f"Rounding: {rounding_multiplier}x. " if rounding_multiplier < 1.0 else "")
+                    + (f"Convergence: {model_convergence_mult}x. " if model_convergence_mult > 1.0 else "")
                     + (f"Bias adj: {bias_applied:+.1f}°F. " if bias_applied else "")
                 ),
                 "strategy": "S1-Weather",
@@ -375,11 +431,17 @@ class Strategy:
             # Overpriced YES — buy NO
             # Model disagreement check for NO trades too
             model_spread = distribution.get("model_spread", 0)
-            if model_spread > 5:
+            if model_spread > config.MAX_MODEL_DIVERGENCE_F:
                 model_means = distribution.get("model_means", {})
                 print(f"    [STRATEGY] Skipped NO: model families disagree by {model_spread:.1f}°F "
-                      f"({model_means}) — too uncertain")
+                      f"({model_means}) — too uncertain (max {config.MAX_MODEL_DIVERGENCE_F}°F)")
                 return None
+
+            # Model convergence boost for NO trades
+            model_convergence_mult = 1.0
+            if model_spread < config.MODEL_CONVERGENCE_BOOST_F:
+                model_convergence_mult = 1.2
+                print(f"    [STRATEGY] Models converge within {model_spread:.1f}°F — 1.2x confidence boost")
 
             # Forecast-strike separation: don't bet NO when the forecast
             # is too close to the bucket range (high chance of landing inside)
@@ -390,10 +452,24 @@ class Strategy:
                 separation = temp_low - forecast_mean
             else:
                 separation = forecast_mean - temp_high
-            if separation < 3:
+            if separation < config.MIN_FORECAST_STRIKE_SEPARATION_F:
                 print(f"    [STRATEGY] Skipped NO on {city_code} {temp_low}-{temp_high}°F: "
-                      f"forecast {forecast_mean:.1f}°F only {separation:.1f}°F away (insufficient_separation)")
+                      f"forecast {forecast_mean:.1f}°F only {separation:.1f}°F away "
+                      f"(need {config.MIN_FORECAST_STRIKE_SEPARATION_F}°F)")
                 return None
+
+            # Rounding buffer for NO trades
+            rounding_multiplier = 1.0
+            if temp_high < 200 and temp_low > -100:  # Bounded bucket
+                dist_to_low = abs(forecast_mean - temp_low)
+                dist_to_high = abs(forecast_mean - temp_high)
+                nearest_strike_dist = min(dist_to_low, dist_to_high)
+                if nearest_strike_dist <= config.ROUNDING_BUFFER_HARD_F:
+                    print(f"    [STRATEGY] Rounding buffer: forecast {forecast_mean:.1f}°F is "
+                          f"{nearest_strike_dist:.1f}°F from strike — NO TRADE")
+                    return None
+                elif nearest_strike_dist <= config.ROUNDING_BUFFER_SOFT_F:
+                    rounding_multiplier = 0.5
 
             no_price = smart_price if smart_price else (market.get("no_ask", 0) or (100 - ref_price))
             signal = {
@@ -402,7 +478,7 @@ class Strategy:
                 "edge": abs(edge),
                 "confidence": min(0.75, distribution["confidence"] * 0.8 + abs(edge)),
                 "price_cents": no_price,
-                "confirmation_multiplier": confirmation["size_multiplier"] * time_mult * regime_mult * seasonal_mult,
+                "confirmation_multiplier": confirmation["size_multiplier"] * time_mult * regime_mult * seasonal_mult * rounding_multiplier * model_convergence_mult,
                 "confirmation_verdict": confirmation["verdict"],
                 "predicted_high": distribution["forecasted_high_mean"],
                 "seasonal_regime": seasonal_regime,
@@ -416,6 +492,8 @@ class Strategy:
                     f"{distribution['total_members']} members. "
                     f"Time: {time_reason} ({time_mult}x). "
                     f"Seasonal: {seasonal_regime} ({seasonal_mult:.2f}x). "
+                    + (f"Rounding: {rounding_multiplier}x. " if rounding_multiplier < 1.0 else "")
+                    + (f"Convergence: {model_convergence_mult}x. " if model_convergence_mult > 1.0 else "")
                     + (f"Bias adj: {bias_applied:+.1f}°F. " if bias_applied else "")
                 ),
                 "strategy": "S1-Weather",
@@ -644,7 +722,9 @@ class Strategy:
         # CASE 1: High already ABOVE the bucket's upper bound
         # If observed high is 86°F and bucket is 83-84°F,
         # the daily high will be >= 86 (it can only go up), so NO on 83-84 wins.
-        if todays_high > temp_high:
+        # NWS rounding buffer: displayed temps can be ±1°F off from raw readings,
+        # so require the observed high to exceed the boundary by the buffer amount.
+        if todays_high > temp_high + config.ROUNDING_BUFFER_HARD_F:
             # NO side is near-guaranteed — the high already exceeded this bucket
             no_price = market.get("no_ask", 0) or (100 - ref_price)
             if no_price <= 0 or no_price >= 95:
@@ -744,7 +824,8 @@ class Strategy:
         # 1 PM: need 6°F gap (very confident temps won't spike that much)
         # 3 PM: need 3°F gap (peak temps usually hit by now)
         # 4 PM+: need 2°F gap (original threshold, temps are falling)
-        temp_gap = temp_low - todays_high
+        # NWS rounding buffer: displayed high could be 1°F+ below actual raw reading
+        temp_gap = temp_low - todays_high - config.ROUNDING_BUFFER_HARD_F
         case3_triggered = False
         if local_hour >= 16 and temp_gap > 2:
             case3_triggered = True

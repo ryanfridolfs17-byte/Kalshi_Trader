@@ -140,13 +140,15 @@ APPROVAL_THRESHOLD_CENTS = 2500     # $25.00
 DAILY_LOSS_LIMIT_CENTS = 2000       # $20.00
 
 # Max total money at risk across all active positions
-MAX_TOTAL_EXPOSURE_CENTS = 8000     # $80.00 (80% of ~$100 bankroll)
+MAX_TOTAL_EXPOSURE_PCT = 0.60       # 60% of bankroll (dynamic, percentage-based)
+MAX_TOTAL_EXPOSURE_CENTS = 6000     # $60.00 fallback if balance unknown
 
 # Max open positions at once
 MAX_OPEN_POSITIONS = 20
 
-# Max exposure per city (weather)
-MAX_PER_CITY_CENTS = 2500           # $25.00 per city (current open exposure)
+# Max exposure per city (weather) — percentage-based with fallback
+MAX_PER_CITY_PCT = 0.30             # 30% of bankroll per city
+MAX_PER_CITY_CENTS = 3000           # $30.00 fallback if balance unknown
 
 # Cumulative daily spending cap per city — prevents sell-and-rebuy chasing
 # Unlike MAX_PER_CITY_CENTS (tracks open exposure), this tracks TOTAL dollars
@@ -170,6 +172,39 @@ TRADE_COOLDOWN = 180                # 3 minutes (faster for weather)
 # Settlement proximity: no new positions within N hours of close
 SETTLEMENT_PROXIMITY_HOURS = 2
 SETTLEMENT_PROXIMITY_EDGE_OVERRIDE = 0.20  # Exceptional edge overrides
+
+# ═══════════════════════════════════════════════════════
+# NWS ROUNDING BUFFER
+# ═══════════════════════════════════════════════════════
+# Per NWS research: 5-minute stations have ±1°F+ error from
+# DOS-era °F→°C→°F conversion. Settlement uses raw 1-minute
+# readings which can be higher than displayed time series.
+ROUNDING_BUFFER_HARD_F = 1              # ±1°F of strike = NO TRADE
+ROUNDING_BUFFER_SOFT_F = 2              # ±2°F of strike = 50% size reduction
+MIN_FORECAST_STRIKE_SEPARATION_F = 3    # Forecast mean must be ≥3°F from nearest strike
+
+# ═══════════════════════════════════════════════════════
+# MODEL DIVERGENCE GATE (tightened from hardcoded 5°F)
+# ═══════════════════════════════════════════════════════
+MAX_MODEL_DIVERGENCE_F = 4              # >4°F model spread = NO TRADE
+MODEL_CONVERGENCE_BOOST_F = 2           # <2°F model spread = 1.2x confidence
+
+# ═══════════════════════════════════════════════════════
+# FEE-ADJUSTED EDGE
+# ═══════════════════════════════════════════════════════
+# Kalshi charges ~7% of profit on taker fills. Limit orders
+# (our maker strategy) pay lower/zero fees, but we model
+# worst-case taker rate as conservative safety margin.
+KALSHI_FEE_PCT = 0.07                   # 7% of expected profit per contract
+FEE_ADJUSTED_MIN_EDGE = 0.05            # 5% minimum net edge after fees
+FEE_ADJUSTMENT_ENABLED = True
+
+# ═══════════════════════════════════════════════════════
+# DAILY TRADE COUNT CAP
+# ═══════════════════════════════════════════════════════
+# Fewer, higher-conviction trades. Confirmed outcomes and
+# arbitrage are exempt (near risk-free).
+MAX_DAILY_FORECAST_TRADES = 4
 
 # ═══════════════════════════════════════════════════════
 # SETTLEMENT-AWARE CAPITAL MANAGEMENT

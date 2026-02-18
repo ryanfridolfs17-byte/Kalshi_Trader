@@ -61,14 +61,16 @@ class RiskManager:
         active_exposure = classified["active_exposure_cents"]
         pending_exposure = classified["pending_exposure_cents"]
 
-        # 2a. Active exposure cap: only active positions gate new trades
-        if active_exposure + cost > config.MAX_TOTAL_EXPOSURE_CENTS:
+        # 2a. Active exposure cap: dynamic percentage-based (60% of bankroll)
+        balance = self.state.get("balance_cents", config.MAX_TOTAL_EXPOSURE_CENTS)
+        exposure_cap = max(int(balance * config.MAX_TOTAL_EXPOSURE_PCT), config.MAX_TOTAL_EXPOSURE_CENTS)
+        if active_exposure + cost > exposure_cap:
             return False, (f"Active exposure cap: ${active_exposure/100:.2f} + ${cost/100:.2f} "
-                           f"> ${config.MAX_TOTAL_EXPOSURE_CENTS/100:.2f}"
+                           f"> ${exposure_cap/100:.2f} ({config.MAX_TOTAL_EXPOSURE_PCT:.0%} of ${balance/100:.2f})"
                            f" (+${pending_exposure/100:.2f} pending settlement)")
 
         # 2b. Hard ceiling: active + pending can't grow unbounded
-        hard_ceiling = config.MAX_TOTAL_EXPOSURE_CENTS * 2
+        hard_ceiling = exposure_cap * 2
         if active_exposure + pending_exposure + cost > hard_ceiling:
             return False, (f"Total capital guard: ${(active_exposure + pending_exposure)/100:.2f} "
                            f"+ ${cost/100:.2f} > ${hard_ceiling/100:.2f}")
@@ -82,7 +84,7 @@ class RiskManager:
         # 2d. Liquidity reserve: keep % of bankroll liquid for next-day overnight edge window
         # Confirmed outcomes bypass: near-guaranteed wins shouldn't be blocked by reserve
         reserve_cents = int(balance * config.LIQUIDITY_RESERVE_PCT)
-        available = config.MAX_TOTAL_EXPOSURE_CENTS - active_exposure
+        available = exposure_cap - active_exposure
         is_confirmed = signal.get("confirmation_verdict") == "CONFIRMED_OUTCOME"
         if available - cost < reserve_cents:
             if not is_confirmed and edge < 0.20:  # Override for exceptional edge or confirmed outcomes
@@ -93,12 +95,14 @@ class RiskManager:
         if len(classified["active"]) >= config.MAX_OPEN_POSITIONS:
             return False, f"Max {config.MAX_OPEN_POSITIONS} active positions reached"
 
-        # 4. Per-city exposure (weather strategy)
+        # 4. Per-city exposure (weather strategy) — dynamic percentage-based (30% of bankroll)
         city = signal.get("city_code", "")
         if city:
+            city_cap = max(int(balance * config.MAX_PER_CITY_PCT), config.MAX_PER_CITY_CENTS)
             city_exp = self.state["city_exposure"].get(city, 0)
-            if city_exp + cost > config.MAX_PER_CITY_CENTS:
-                return False, f"{city} exposure: ${city_exp/100:.2f} + ${cost/100:.2f} > ${config.MAX_PER_CITY_CENTS/100:.2f}"
+            if city_exp + cost > city_cap:
+                return False, (f"{city} exposure: ${city_exp/100:.2f} + ${cost/100:.2f} "
+                               f"> ${city_cap/100:.2f} ({config.MAX_PER_CITY_PCT:.0%} of bankroll)")
 
         # 4a2. Cumulative daily city spending cap (prevents sell-and-rebuy chasing)
         if city:
@@ -151,6 +155,15 @@ class RiskManager:
             if elapsed < config.TRADE_COOLDOWN:
                 remaining = config.TRADE_COOLDOWN - elapsed
                 return False, f"Cooldown: {remaining:.0f}s remaining"
+
+        # 6b. Daily forecast trade count cap (confirmed outcomes + arbitrage exempt)
+        is_confirmed = signal.get("confirmation_verdict") == "CONFIRMED_OUTCOME"
+        is_arbitrage = signal.get("strategy") == "S2-Arbitrage"
+        if not is_confirmed and not is_arbitrage:
+            forecast_trades_today = self.state.get("daily_forecast_trades", 0)
+            if forecast_trades_today >= config.MAX_DAILY_FORECAST_TRADES:
+                return False, (f"Daily forecast trade cap: {forecast_trades_today} trades "
+                               f"(max {config.MAX_DAILY_FORECAST_TRADES}/day)")
 
         # 7. Manual approval
         if cost > config.APPROVAL_THRESHOLD_CENTS:
@@ -207,6 +220,10 @@ class RiskManager:
 
         self.state["last_trade_time"] = datetime.now().isoformat()
         self.state["daily_trade_count"] += 1
+        # Track forecast trades for daily cap (initialized on first use)
+        if "daily_forecast_trades" not in self.state:
+            self.state["daily_forecast_trades"] = 0
+        self.state["daily_forecast_trades"] += 1
 
         if city_code:
             self.state["city_exposure"][city_code] = self.state["city_exposure"].get(city_code, 0) + cost_cents
@@ -458,6 +475,7 @@ class RiskManager:
         if self.state["last_reset_date"] != today:
             self.state["daily_loss_cents"] = 0
             self.state["daily_trade_count"] = 0
+            self.state["daily_forecast_trades"] = 0  # Reset forecast trade counter
             self.state["last_reset_date"] = today
             self.state["consecutive_losses"] = 0
             self.state["loss_pause_until"] = None
