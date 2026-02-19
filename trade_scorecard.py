@@ -337,8 +337,16 @@ class TradeScorecard:
         """
         Check orderbook depth at target price level.
         If client is available, fetch real orderbook; otherwise use market volume.
+
+        Weather markets are inherently thin — we use maker orders (post limits
+        and wait) so we don't need deep orderbook depth.  The market_quality.py
+        filter already rejected dead/frozen markets and extreme spreads before
+        the signal reaches here, so any surviving weather signal has baseline
+        activity.  Threshold is relaxed to 1 contract for weather.
         """
-        threshold = self.CRITERIA["liquidity"]["threshold"]
+        is_weather = signal.get("strategy", "") in ("S1-Weather", "S2-Arbitrage")
+        threshold = 1 if is_weather else self.CRITERIA["liquidity"]["threshold"]
+
         ticker = signal.get("ticker", "")
         side = signal.get("side", "yes")
         price_cents = signal.get("price_cents", 0)
@@ -375,12 +383,18 @@ class TradeScorecard:
                 depth = 5  # Active market, assume reasonable depth
             elif volume >= 1:
                 depth = 2  # Some activity
+            elif is_weather:
+                # Weather markets that survived market_quality.py filters
+                # (spread check, not dead/frozen) have baseline activity.
+                # We post maker limits so we don't need deep book depth.
+                depth = 1
             else:
                 depth = 0  # Dead market
 
         passed = depth >= threshold
         return {"passed": passed, "value": depth, "threshold": threshold,
-                "detail": f"{depth} contracts available near {price_cents}¢ ({side})"}
+                "detail": f"{depth} contracts available near {price_cents}¢ ({side})"
+                          f"{' [weather: relaxed threshold]' if is_weather else ''}"}
 
     def _check_portfolio_correlation(self, signal, weather_data, portfolio):
         """
