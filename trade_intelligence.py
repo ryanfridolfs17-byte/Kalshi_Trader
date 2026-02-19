@@ -373,13 +373,16 @@ class TradeIntelligence:
                 city_info = CITIES.get(city_code)
                 if city_info:
                     try:
+                        # Confirmer expects YES-side values: bucket probability and YES price.
+                        # For NO positions, current_price is the NO bid — convert to YES price.
+                        yes_price = current_price if side == "yes" else (100 - current_price)
                         recheck = signal_confirmer.confirm_signal(
                             city_info=city_info,
                             target_date=parsed.get("target_date"),
                             temp_low=parsed["temp_low"],
                             temp_high=parsed["temp_high"],
                             ensemble_prob=new_prob,
-                            market_price_cents=current_price,
+                            market_price_cents=yes_price,
                         )
                         if recheck.get("verdict") == "REJECT":
                             nws_detail = recheck.get("summary", "NWS disagrees")
