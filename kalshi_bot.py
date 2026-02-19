@@ -345,13 +345,10 @@ def main():
                     if config.DRY_RUN:
                         print(f"    [DRY RUN] Would exit {exit_rec['ticker']} ({exit_rec['urgency']} urgency)")
                         continue
-                    should_exit = exit_rec["urgency"] == "high" or (
-                        exit_rec["urgency"] == "medium" and not sys.stdin.isatty()
-                    )
-                    if should_exit:
+                    if exit_rec["urgency"] == "high":
                         _execute_exit(client, risk, trade_log, exit_rec, intel=intel)
                     elif exit_rec["urgency"] == "medium":
-                        print(f"    → Consider exiting manually")
+                        print(f"    → Medium urgency: logged for manual review (not auto-executing)")
 
             # ═══════════════════════════════════════════════
             # STEP 1: SCAN WEATHER MARKETS
@@ -596,6 +593,24 @@ def main():
                         print(f"    ⏳ QUEUED for dashboard approval (over {config.MAX_OPEN_POSITIONS} positions, edge {signal['edge']:.1%}, STRONG)")
                         continue
 
+                    # Duplicate order detection — don't stack onto existing positions or resting orders
+                    held_tickers = {p.get("ticker") for p in risk.state.get("positions", [])}
+                    resting_tickers = {t.get("ticker") for t in trade_log
+                                       if t.get("status") == "resting" and t.get("ticker")}
+                    if ticker in held_tickers or ticker in resting_tickers:
+                        dedup_reason = "held position" if ticker in held_tickers else "resting order"
+                        print(f"    [DEDUP] Skipping {ticker}: already have {dedup_reason}")
+                        scan_entries.append({
+                            "ticker": ticker, "city": signal.get("city_code", ""),
+                            "market_date": parsed.get("target_date", "") if parsed else "",
+                            "category": "duplicate_skipped",
+                            "reason": f"Already have {dedup_reason}",
+                            "edge": round(signal["edge"], 4),
+                            "price_cents": signal["price_cents"],
+                            "side": signal["side"],
+                        })
+                        continue
+
                     # Pre-settlement sizing reduction
                     if risk.is_pre_settlement_window():
                         orig = signal["suggested_contracts"]
@@ -766,6 +781,23 @@ def main():
                         if _should_require_approval(signal, risk):
                             _add_pending_trade(signal, market)
                             print(f"    QUEUED for dashboard approval (SP500)")
+                            continue
+
+                        # Duplicate order detection
+                        held_tickers_sp = {p.get("ticker") for p in risk.state.get("positions", [])}
+                        resting_tickers_sp = {t.get("ticker") for t in trade_log
+                                              if t.get("status") == "resting" and t.get("ticker")}
+                        if ticker in held_tickers_sp or ticker in resting_tickers_sp:
+                            dedup_reason = "held position" if ticker in held_tickers_sp else "resting order"
+                            print(f"    [DEDUP] Skipping {ticker}: already have {dedup_reason}")
+                            scan_entries.append({
+                                "ticker": ticker, "city": "SP500",
+                                "category": "duplicate_skipped",
+                                "reason": f"Already have {dedup_reason}",
+                                "edge": round(signal["edge"], 4),
+                                "price_cents": signal["price_cents"],
+                                "side": signal["side"],
+                            })
                             continue
 
                         # Pre-settlement sizing reduction
@@ -1322,10 +1354,13 @@ def _process_approved_trades(client, risk, trade_log):
 
             # Re-check risk before executing
             approved, reason = risk.check_trade(signal)
-            if approved is True or approved == "NEEDS_APPROVAL":
+            if approved is True:
                 print(f"  [APPROVED] Executing: {trade['ticker']} {trade['side'].upper()} x{trade['contracts']}")
                 _execute_trade(client, risk, signal, trade_log, market)
                 executed += 1
+            elif approved == "NEEDS_APPROVAL":
+                print(f"  [APPROVED] Re-queued: {trade['ticker']} — still needs approval ({reason})")
+                remaining.append(trade)
             else:
                 print(f"  [APPROVED] Blocked by risk: {trade['ticker']} — {reason}")
         elif trade.get("status") == "rejected":

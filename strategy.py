@@ -745,7 +745,7 @@ class Strategy:
             # Confirmed outcome: 25% of bankroll (larger than normal trades)
             bankroll_cents = getattr(self, 'balance_cents', None) or config.MAX_TOTAL_EXPOSURE_CENTS
             max_bet_cents = int(bankroll_cents * config.CONFIRMED_OUTCOME_POSITION_PCT)
-            contracts = max(1, int(max_bet_cents / no_price))
+            contracts = min(max(1, int(max_bet_cents / no_price)), config.MAX_CONTRACTS_PER_TICKER)
 
             print(f"    [CONFIRMED] {city_code} high already {todays_high}°F > bucket {temp_low}-{temp_high}°F")
             print(f"    [CONFIRMED] NO @ {no_price}¢ is near-guaranteed → MAX POSITION {contracts} contracts")
@@ -799,7 +799,7 @@ class Strategy:
             # Reduced sizing: 10% of bankroll (vs 25% for CASE 1)
             bankroll_cents = getattr(self, 'balance_cents', None) or config.MAX_TOTAL_EXPOSURE_CENTS
             max_bet_cents = int(bankroll_cents * config.CASE2_POSITION_PCT)
-            contracts = max(1, int(max_bet_cents / yes_ask))
+            contracts = min(max(1, int(max_bet_cents / yes_ask)), config.MAX_CONTRACTS_PER_TICKER)
 
             print(f"    [CASE2] {city_code} high {todays_high}°F is IN bucket {temp_low}-{temp_high}°F (mid={bucket_midpoint})")
             print(f"    [CASE2] YES @ {yes_ask}¢ → {contracts} contracts (10% sizing, {local_hour}:00 local)")
@@ -853,7 +853,7 @@ class Strategy:
 
             bankroll_cents = getattr(self, 'balance_cents', None) or config.MAX_TOTAL_EXPOSURE_CENTS
             max_bet_cents = int(bankroll_cents * config.CONFIRMED_OUTCOME_POSITION_PCT)
-            contracts = max(1, int(max_bet_cents / no_price))
+            contracts = min(max(1, int(max_bet_cents / no_price)), config.MAX_CONTRACTS_PER_TICKER)
 
             print(f"    [CONFIRMED] {city_code} high only {todays_high}°F at {local_hour}:00, "
                   f"bucket {temp_low}-{temp_high}°F unreachable (gap: {temp_gap:.0f}°F)")
@@ -971,6 +971,7 @@ class Strategy:
         bet_cents = min(bet_cents, max_per_position, config.MAX_AUTO_TRADE_CENTS)
 
         contracts = max(1, int(bet_cents / price_cents))
+        contracts = min(contracts, config.MAX_CONTRACTS_PER_TICKER)
         return contracts
 
     # ═══════════════════════════════════════════════════════

@@ -161,6 +161,7 @@ MAX_CORRELATED_POSITIONS = 3
 # Max total cost per single ticker (prevents over-concentration on one contract)
 # e.g., KXHIGHNY-26FEB16-B41.5 can never exceed $15.00 total invested
 MAX_PER_TICKER_CENTS = 1500          # $15.00 per ticker
+MAX_CONTRACTS_PER_TICKER = 25        # Hard cap on contract count (prevents cheap contract explosion)
 
 # Pause after this many consecutive losses
 CONSECUTIVE_LOSS_PAUSE = 5
