@@ -135,8 +135,8 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 |-----------|-------|-------|
 | `MAX_TOTAL_EXPOSURE_PCT` | 60% of bankroll | Was 80%, tightened |
 | `MAX_TOTAL_EXPOSURE_CENTS` | $60.00 | Fallback if balance unknown |
-| `MAX_PER_CITY_PCT` | 30% of bankroll | Per-city exposure limit |
-| `MAX_PER_CITY_CENTS` | $30.00 | Fallback if balance unknown |
+| `MAX_PER_CITY_PCT` | 20% of bankroll | Per-city exposure limit |
+| `MAX_PER_CITY_CENTS` | $10.00 | Fallback if balance unknown |
 | `MAX_DAILY_CITY_SPEND_CENTS` | $35.00 | Cumulative daily per city (prevents sell-and-rebuy) |
 | `MAX_PER_TICKER_CENTS` | $15.00 | Per-ticker concentration limit |
 | `MAX_CONTRACTS_PER_TICKER` | 25 | Hard cap on contract count (prevents cheap contract explosion) |
@@ -258,6 +258,6 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 
 ## Deferred Features (NOT YET IMPLEMENTED)
 - **wethr.net API**: Needs Pro API key. Would be 6th confirmation source.
-- **DST timing logic**: Hardcoded UTC offsets will be wrong after March 9 DST. Fix: use Python `zoneinfo`.
+- ~~**DST timing logic**~~: DONE — Replaced hardcoded UTC offsets with `zoneinfo.ZoneInfo` in strategy.py and trade_intelligence.py.
 - **Dead bracket scalping**: Contradicts 12¢ longshot floor. Fee drag too high on 1-3¢ contracts.
 - **Certainty bias exploitation**: Needs multi-contract position management.

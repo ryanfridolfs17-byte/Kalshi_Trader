@@ -13,6 +13,7 @@ Kalshi uses RSA signature-based authentication:
 import base64
 import datetime
 import json
+import time
 import requests
 import config
 
@@ -105,35 +106,44 @@ class KalshiClient:
         }
 
     def _request(self, method, path, data=None, authenticated=False):
-        """Make an API request to Kalshi."""
+        """Make an API request to Kalshi with rate-limit retry."""
         url = f"{self.base_url}{path}"
-        headers = {}
 
-        if authenticated:
-            headers = self._sign_request(method, path)
-            if not headers:
-                print("  [API] Cannot make authenticated request - no API key")
+        for attempt in range(3):
+            headers = {}
+            if authenticated:
+                headers = self._sign_request(method, path)
+                if not headers:
+                    print("  [API] Cannot make authenticated request - no API key")
+                    return None
+
+            try:
+                if method == "GET":
+                    response = requests.get(url, headers=headers, timeout=30)
+                elif method == "POST":
+                    response = requests.post(url, headers=headers, json=data, timeout=30)
+                elif method == "DELETE":
+                    response = requests.delete(url, headers=headers, timeout=30)
+                else:
+                    return None
+
+                if response.status_code in (200, 201):
+                    return response.json()
+                elif response.status_code == 429:
+                    wait = int(response.headers.get("Retry-After", 2))
+                    print(f"  [API] Rate limited — retry {attempt+1}/2 in {wait}s")
+                    time.sleep(wait)
+                    continue
+                else:
+                    print(f"  [API] Error {response.status_code}: {response.text[:200]}")
+                    return None
+
+            except requests.exceptions.RequestException as e:
+                print(f"  [API] Request failed: {e}")
                 return None
 
-        try:
-            if method == "GET":
-                response = requests.get(url, headers=headers, timeout=30)
-            elif method == "POST":
-                response = requests.post(url, headers=headers, json=data, timeout=30)
-            elif method == "DELETE":
-                response = requests.delete(url, headers=headers, timeout=30)
-            else:
-                return None
-
-            if response.status_code == 200 or response.status_code == 201:
-                return response.json()
-            else:
-                print(f"  [API] Error {response.status_code}: {response.text[:200]}")
-                return None
-
-        except requests.exceptions.RequestException as e:
-            print(f"  [API] Request failed: {e}")
-            return None
+        print(f"  [API] Rate limit retries exhausted for {method} {path}")
+        return None
 
     # =========================================================
     # PUBLIC ENDPOINTS (no authentication needed)

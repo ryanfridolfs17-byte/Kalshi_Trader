@@ -1712,7 +1712,7 @@ def _execute_exit(client, risk, trade_log, exit_rec, intel=None):
                         trade["result"] = "exit_win" if profit_cents > 0 else "exit_loss"
                         trade["profit_cents"] = profit_cents
                         trade["exit_reason"] = exit_rec.get("reason", "")
-                        trade["exit_price_cents"] = current_price
+                        trade["exit_price_cents"] = current_price if current_price is not None else 50
                         trade["exit_order_id"] = order_id
                         break
                 _save_trade_log(trade_log)
@@ -1728,6 +1728,57 @@ def _execute_exit(client, risk, trade_log, exit_rec, intel=None):
                 # is the single writer — it rebuilds from Kalshi API each cycle.
 
                 print(f"    P&L: {'+'if profit_cents>=0 else ''}${profit_cents/100:.2f}")
+            elif order_info["status"] == "partial":
+                # Some contracts filled, rest still resting
+                filled = order_info["filled_count"]
+                remaining = order_info["remaining_count"]
+                print(f"    ~ Exit PARTIAL: {filled}/{contracts} filled, "
+                      f"{remaining} resting — {order_id}")
+
+                # P&L for filled portion only
+                cost_per_contract = cost_cents / max(contracts, 1)
+                filled_cost = int(cost_per_contract * filled)
+                sell_value = (current_price or 50) * filled
+                partial_pnl = sell_value - filled_cost
+
+                # Reduce position (not full release) for filled portion
+                risk.reduce_position(ticker, filled, filled_cost)
+
+                # Log partial exit
+                trade_log.append({
+                    "timestamp": datetime.now().isoformat(),
+                    "settled_at": datetime.now(timezone.utc).isoformat(),
+                    "ticker": ticker,
+                    "side": side,
+                    "price_cents": current_price or 50,
+                    "contracts": filled,
+                    "cost_cents": filled_cost,
+                    "strategy": "EXIT_PARTIAL",
+                    "city_code": city_code,
+                    "status": "partial_exit",
+                    "order_id": order_id,
+                    "reasoning": exit_rec.get("reason", ""),
+                    "settled": True,
+                    "result": "exit_win" if partial_pnl > 0 else "exit_loss",
+                    "profit_cents": partial_pnl,
+                })
+
+                if partial_pnl > 0:
+                    risk.record_win(partial_pnl)
+                else:
+                    risk.record_loss(abs(partial_pnl))
+
+                # Tag remaining as pending exit
+                for trade in trade_log:
+                    if trade.get("ticker") == ticker and not trade.get("settled"):
+                        trade["pending_exit_order_id"] = order_id
+                        trade["pending_exit_time"] = datetime.now().isoformat()
+                        trade["pending_exit_price"] = current_price
+                        break
+                _save_trade_log(trade_log)
+
+                print(f"    P&L (filled {filled}): {'+'if partial_pnl>=0 else ''}${partial_pnl/100:.2f} "
+                      f"({remaining} contracts still resting)")
             else:
                 # Resting exit order — do NOT release exposure yet
                 print(f"    ~ Exit order resting: {order_id} "
@@ -1879,6 +1930,57 @@ def _execute_partial_sell(client, risk, trade_log, review, intel=None):
                 # is the single writer — it rebuilds from Kalshi API each cycle.
 
                 print(f"    P&L: {'+'if partial_pnl>=0 else ''}${partial_pnl/100:.2f} (kept {total_contracts - sell_count} contracts)")
+            elif order_info["status"] == "partial":
+                # Some contracts filled, rest still resting
+                filled = order_info["filled_count"]
+                remaining = order_info["remaining_count"]
+                print(f"    ~ Partial sell PARTIAL: {filled}/{sell_count} filled, "
+                      f"{remaining} resting — {order_id}")
+
+                # Record P&L for the filled portion
+                cost_per_contract = position["cost_cents"] / max(total_contracts, 1)
+                released_cost = int(cost_per_contract * filled)
+                sell_value = current_price * filled
+                partial_pnl = sell_value - released_cost
+
+                risk.reduce_position(ticker, filled, released_cost)
+
+                trade_log.append({
+                    "timestamp": datetime.now().isoformat(),
+                    "settled_at": datetime.now(timezone.utc).isoformat(),
+                    "ticker": ticker,
+                    "side": side,
+                    "price_cents": current_price,
+                    "contracts": filled,
+                    "cost_cents": released_cost,
+                    "strategy": "PARE",
+                    "edge": review.get("new_edge", 0),
+                    "city_code": review.get("city_code", ""),
+                    "status": "partial_exit",
+                    "order_id": order_id,
+                    "reasoning": review.get("reason", ""),
+                    "settled": True,
+                    "result": "exit_win" if partial_pnl > 0 else "exit_loss",
+                    "profit_cents": partial_pnl,
+                })
+                _save_trade_log(trade_log)
+
+                if partial_pnl > 0:
+                    risk.record_win(partial_pnl)
+                else:
+                    risk.record_loss(abs(partial_pnl))
+
+                # Tag remaining as pending pare
+                for p in risk.state.get("positions", []):
+                    if p.get("ticker") == ticker:
+                        p["pending_pare_order_id"] = order_id
+                        p["pending_pare_time"] = datetime.now().isoformat()
+                        p["pending_pare_count"] = remaining
+                        break
+                risk._save_state()
+
+                print(f"    P&L (filled {filled}): {'+'if partial_pnl>=0 else ''}${partial_pnl/100:.2f} "
+                      f"(kept {total_contracts - filled}, {remaining} still resting)")
             else:
                 # Resting pare order — do NOT reduce position yet
                 print(f"    ~ Partial sell resting: {order_id} "
