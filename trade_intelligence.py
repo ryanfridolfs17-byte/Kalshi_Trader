@@ -386,9 +386,22 @@ class TradeIntelligence:
                         )
                         if recheck.get("verdict") == "REJECT":
                             nws_detail = recheck.get("summary", "NWS disagrees")
+                            # Safety guard: only auto-exit if position is already losing.
+                            # If profitable or near breakeven, downgrade to medium urgency
+                            # so it logs a recommendation but doesn't auto-sell winners.
+                            entry_price = cost_cents / max(contracts, 1)
+                            pnl_pct = ((current_price - entry_price) / max(entry_price, 1)) if entry_price > 0 else 0
+                            if pnl_pct >= -0.10:
+                                # Profitable or small loss — warn but don't auto-sell
+                                urgency = "medium"
+                                reason_prefix = "Confirmer REJECT (position not losing, manual review recommended)"
+                            else:
+                                # Already losing significantly — auto-exit
+                                urgency = "high"
+                                reason_prefix = "Confirmer REJECT on re-check"
                             actions.append({
-                                "ticker": ticker, "action": "full_exit", "urgency": "high",
-                                "reason": f"Confirmer REJECT on re-check: {nws_detail}",
+                                "ticker": ticker, "action": "full_exit", "urgency": urgency,
+                                "reason": f"{reason_prefix}: {nws_detail}",
                                 "current_price": current_price, "new_edge": 0,
                                 "entry_edge": entry_edge,
                                 "city_code": city_code, "side": side,
@@ -398,6 +411,8 @@ class TradeIntelligence:
                                     "action": "full_exit",
                                     "confirmer_verdict": recheck.get("verdict"),
                                     "confirmer_summary": nws_detail,
+                                    "pnl_pct_at_review": round(pnl_pct, 4),
+                                    "urgency_reason": "auto" if urgency == "high" else "manual_review",
                                 },
                             })
                             continue

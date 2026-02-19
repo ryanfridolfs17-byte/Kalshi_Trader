@@ -1753,11 +1753,17 @@ def _process_portfolio_action(client, risk, trade_log, review, intel=None):
     if action == "pare":
         _execute_partial_sell(client, risk, trade_log, review, intel=intel)
     elif action == "full_exit":
+        urgency = review["urgency"]
+        if urgency == "medium":
+            # Medium urgency = recommendation only, don't auto-sell
+            # (e.g. confirmer REJECT on a profitable position)
+            print(f"    [REVIEW] Medium urgency — logged for manual review, not auto-selling")
+            return
         exit_rec = {
             "ticker": ticker,
             "reason": review["reason"],
             "action": "sell",
-            "urgency": review["urgency"],
+            "urgency": urgency,
             "current_price": review["current_price"],
         }
         _execute_exit(client, risk, trade_log, exit_rec, intel=intel)
