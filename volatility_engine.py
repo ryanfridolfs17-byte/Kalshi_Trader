@@ -21,10 +21,40 @@ SETTLEMENT:
 
 import re
 import math
+import threading
 from datetime import datetime, timezone, timedelta
 from scipy.stats import norm
 
 import config
+
+# yfinance calls can hang indefinitely if Yahoo Finance is unresponsive.
+# This wrapper runs them in a thread with a hard timeout to prevent
+# freezing the main bot loop.
+_YFINANCE_TIMEOUT = 30  # seconds
+
+
+def _yfinance_with_timeout(func, timeout=_YFINANCE_TIMEOUT):
+    """Run a yfinance call in a thread with a hard timeout.
+    Returns the result or None if it times out or errors."""
+    result = [None]
+    error = [None]
+
+    def target():
+        try:
+            result[0] = func()
+        except Exception as e:
+            error[0] = e
+
+    t = threading.Thread(target=target, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+
+    if t.is_alive():
+        print(f"  [SP500] yfinance call timed out after {timeout}s — skipping")
+        return None
+    if error[0]:
+        raise error[0]
+    return result[0]
 
 
 class VolatilityEngine:
@@ -304,9 +334,9 @@ class VolatilityEngine:
             import yfinance as yf
             spy = yf.Ticker("SPY")
 
-            # Get current price
-            hist = spy.history(period="3mo")
-            if hist.empty:
+            # Get current price (with timeout to prevent infinite hang)
+            hist = _yfinance_with_timeout(lambda: spy.history(period="3mo"))
+            if hist is None or hist.empty:
                 return None
 
             current_price = float(hist["Close"].iloc[-1])
@@ -345,8 +375,8 @@ class VolatilityEngine:
         try:
             import yfinance as yf
             vix = yf.Ticker("^VIX")
-            hist = vix.history(period="5d")
-            if hist.empty:
+            hist = _yfinance_with_timeout(lambda: vix.history(period="5d"))
+            if hist is None or hist.empty:
                 return None
 
             current_vix = float(hist["Close"].iloc[-1])
