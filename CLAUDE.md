@@ -49,9 +49,11 @@ market_scanner.py  →  strategy.py  →  confirmer  →  risk_manager.py  →  
 
 Weather uses `signal_confirmer.py` (5-source voting: 4 deterministic models + NWS station point forecast). S&P 500 uses `spx_confirmer.py` (momentum/vol/historical).
 
+**Edge-priority execution:** Both weather and S&P 500 scan loops use a two-phase design. Phase 1 evaluates all markets and collects actionable signals. Phase 2 sorts signals by edge descending, then processes through risk checks and execution. This ensures the highest-edge trade gets first shot at per-city and per-position caps.
+
 ### Module Responsibilities
 
-- **`kalshi_bot.py`** — Entry point and main loop. Orchestrates scan→analyze→trade cycle per market type. Handles exits and settlement tracking.
+- **`kalshi_bot.py`** — Entry point and main loop. Orchestrates scan→analyze→trade cycle per market type. Two-phase scan: evaluate all markets first, then sort by edge and execute highest-edge trades first. Handles exits and settlement tracking.
 - **`kalshi_client.py`** — Kalshi API wrapper. RSA-PSS signature auth, dual environment support (demo vs production URLs), market fetching, order placement, position queries.
 - **`config.py`** — All tunable parameters: credentials, risk limits, strategy thresholds, scan intervals, market type toggles. Values are in cents (100 cents = $1.00).
 - **`market_scanner.py`** — Queries Kalshi for weather series + S&P 500 brackets. `scan_all_enabled_markets()` respects `MARKET_TYPES` toggles.
@@ -68,7 +70,7 @@ Weather uses `signal_confirmer.py` (5-source voting: 4 deterministic models + NW
 
 ### Data Files (Runtime State)
 
-All state is persisted as JSON in `STATE_DIR` (defaults to `.`, set to `/data` on Railway for volume persistence): `trade_history.json`, `risk_state.json`, `pnl_history.json`, `backtest_results.json`, `edge_attribution.json`, `bot_status.json`, `pending_trades.json`.
+All state is persisted as JSON in `STATE_DIR` (defaults to `.`, set to `/data` on Railway for volume persistence): `trade_history.json`, `risk_state.json`, `pnl_history.json`, `backtest_results.json`, `edge_attribution.json`, `bot_status.json`, `pending_trades.json`, `scan_log.json` (per-market evaluation log, 7-day rolling retention, exposed via `/api/state`).
 
 ### Key Design Decisions
 
