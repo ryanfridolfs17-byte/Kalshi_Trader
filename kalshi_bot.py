@@ -345,8 +345,9 @@ def main():
                 scanner.print_weather_summary(weather_markets)
 
                 # ═══════════════════════════════════════════
-                # STEPS 2-6: EVALUATE EACH MARKET
+                # PHASE 1: EVALUATE ALL MARKETS (collect signals)
                 # ═══════════════════════════════════════════
+                actionable_signals = []  # (signal, market, parsed) tuples — sorted by edge before execution
 
                 for market in weather_markets:
                     ticker = market.get("ticker", "")
@@ -394,6 +395,27 @@ def main():
                         })
                         continue
 
+                    # Add city info for risk check
+                    parsed = strategy.weather.parse_market_bucket(market)
+                    if parsed:
+                        signal["city_code"] = parsed["city_code"]
+                    if market.get("close_time"):
+                        signal["close_time"] = market["close_time"]
+
+                    actionable_signals.append((signal, market, parsed))
+
+                # ═══════════════════════════════════════════
+                # PHASE 2: PROCESS SIGNALS (highest edge first)
+                # ═══════════════════════════════════════════
+                actionable_signals.sort(key=lambda x: x[0].get("edge", 0), reverse=True)
+
+                if actionable_signals:
+                    print(f"\n  [PRIORITY] {len(actionable_signals)} signals sorted by edge (highest first)")
+
+                for signal, market, parsed in actionable_signals:
+                    ticker = signal["ticker"]
+                    title = market.get("title", "")
+
                     # Market passed filters — print it
                     print(f"\n  [STEP 2-3] Evaluating: {ticker}")
                     print(f"            {title}")
@@ -412,15 +434,6 @@ def main():
                     # ═══════════════════════════════════════
                     # STEP 5: RISK CHECK
                     # ═══════════════════════════════════════
-                    # Add city info for per-city risk check
-                    parsed = strategy.weather.parse_market_bucket(market)
-                    if parsed:
-                        signal["city_code"] = parsed["city_code"]
-
-                    # Pass close_time for settlement proximity check
-                    if market.get("close_time"):
-                        signal["close_time"] = market["close_time"]
-
                     approved, reason = risk.check_trade(signal)
 
                     if approved is False:
@@ -518,6 +531,9 @@ def main():
                 if sp500_markets:
                     scanner.print_sp500_summary(sp500_markets)
 
+                    # Phase 1: Evaluate all SP500 markets
+                    sp500_signals = []
+
                     for market in sp500_markets:
                         ticker = market.get("ticker", "")
                         title = market.get("title", "")
@@ -547,6 +563,20 @@ def main():
                             })
                             continue
 
+                        signal["city_code"] = "SP500"
+                        signal["market_type"] = "sp500"
+                        if market.get("close_time"):
+                            signal["close_time"] = market["close_time"]
+
+                        sp500_signals.append((signal, market))
+
+                    # Phase 2: Process SP500 signals (highest edge first)
+                    sp500_signals.sort(key=lambda x: x[0].get("edge", 0), reverse=True)
+
+                    for signal, market in sp500_signals:
+                        ticker = signal["ticker"]
+                        title = market.get("title", "")
+
                         print(f"\n  [SP500] Evaluating: {ticker}")
                         print(f"          {title}")
 
@@ -559,13 +589,6 @@ def main():
                         print(f"    Contracts:   {signal['suggested_contracts']}")
                         print(f"    Confirm:     {signal.get('confirmation_verdict', 'N/A')}")
                         print(f"    Reasoning:   {signal['reasoning']}")
-
-                        # Use "SP500" as city_code for risk manager per-market tracking
-                        signal["city_code"] = "SP500"
-                        signal["market_type"] = "sp500"
-
-                        if market.get("close_time"):
-                            signal["close_time"] = market["close_time"]
 
                         approved, reason = risk.check_trade(signal)
 
