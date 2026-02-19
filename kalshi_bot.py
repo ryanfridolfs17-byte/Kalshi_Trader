@@ -1719,7 +1719,26 @@ def _process_portfolio_action(client, risk, trade_log, review, intel=None):
     # Persist review data on the matching position for the dashboard
     for p in risk.state.get("positions", []):
         if p.get("ticker") == ticker:
-            p["last_review"] = review.get("review_detail", {})
+            detail = review.get("review_detail", {})
+            # Ensure dashboard-critical fields exist (early-exit paths like
+            # rounding buffer, observation checks, and confirmer re-checks
+            # skip _build_review_detail — fill in from review top-level fields)
+            if "current_price" not in detail and review.get("current_price") is not None:
+                entry_price = p.get("cost_cents", 0) / max(p.get("contracts", 1), 1)
+                cur = review["current_price"]
+                pnl_pct = ((cur - entry_price) / max(entry_price, 1)) if entry_price > 0 else 0
+                detail.setdefault("reviewed_at", datetime.now(timezone.utc).isoformat())
+                detail.setdefault("current_price", cur)
+                detail.setdefault("entry_price", round(entry_price, 1))
+                detail.setdefault("pnl_pct", round(pnl_pct, 4))
+                detail.setdefault("current_edge", review.get("new_edge", 0))
+                detail.setdefault("entry_edge", review.get("entry_edge", p.get("edge", 0)))
+                edge_entry = review.get("entry_edge", p.get("edge", 0))
+                new_edge = review.get("new_edge", 0)
+                decay = 1.0 - (new_edge / edge_entry) if edge_entry and edge_entry > 0 else 0
+                detail.setdefault("edge_decay_pct", round(decay, 4))
+                detail.setdefault("is_underwater", pnl_pct < -0.10)
+            p["last_review"] = detail
             p["last_review_action"] = action
             p["last_review_reason"] = review.get("reason", "")
             break
