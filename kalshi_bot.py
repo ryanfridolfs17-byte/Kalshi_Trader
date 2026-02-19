@@ -376,16 +376,21 @@ def main():
 
                     # Quick check: skip if this city is already maxed out
                     parsed_quick = strategy.weather.parse_market_bucket(market)
+                    city_is_maxed = False
                     if parsed_quick:
                         city = parsed_quick.get("city_code", "")
                         city_exp = risk.state.get("city_exposure", {}).get(city, 0)
                         if city_exp >= config.MAX_PER_CITY_CENTS:
-                            skip_reasons["City maxed out"] = skip_reasons.get("City maxed out", 0) + 1
-                            scan_entries.append({
-                                "ticker": ticker, "city": city, "category": "city_maxed",
-                                "reason": f"{city} exposure ${city_exp/100:.2f} >= ${config.MAX_PER_CITY_CENTS/100:.2f}",
-                            })
-                            continue
+                            city_is_maxed = True
+                            # Still evaluate tickers we hold (for edge visibility)
+                            held_tickers = {p.get("ticker") for p in risk.state.get("positions", [])}
+                            if ticker not in held_tickers:
+                                skip_reasons["City maxed out"] = skip_reasons.get("City maxed out", 0) + 1
+                                scan_entries.append({
+                                    "ticker": ticker, "city": city, "category": "city_maxed",
+                                    "reason": f"{city} exposure ${city_exp/100:.2f} >= ${config.MAX_PER_CITY_CENTS/100:.2f}",
+                                })
+                                continue
 
                     # Quick-evaluate to see if this market is even worth printing
                     signal = strategy.evaluate_market(market)
@@ -422,6 +427,27 @@ def main():
                         signal["city_code"] = parsed["city_code"]
                     if market.get("close_time"):
                         signal["close_time"] = market["close_time"]
+
+                    # City maxed but we hold this ticker — log full eval but skip execution
+                    if city_is_maxed:
+                        scan_entries.append({
+                            "ticker": ticker,
+                            "city": parsed.get("city_code", "") if parsed else "",
+                            "market_date": parsed.get("target_date", "") if parsed else "",
+                            "category": "city_maxed_held",
+                            "reason": f"Held position — edge {signal['edge']:.1%}, no new trades (city capped)",
+                            "edge": round(signal["edge"], 4),
+                            "confidence": round(signal["confidence"], 3),
+                            "price_cents": signal["price_cents"],
+                            "side": signal["side"],
+                            "contracts": signal["suggested_contracts"],
+                            "confirmation": signal.get("confirmation_verdict", ""),
+                            "strategy": signal.get("strategy", ""),
+                            "market_price": market.get("last_price", 0),
+                            "yes_ask": market.get("yes_ask", 0),
+                            "no_ask": market.get("no_ask", 0),
+                        })
+                        continue
 
                     actionable_signals.append((signal, market, parsed))
 
