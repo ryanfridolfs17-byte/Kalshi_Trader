@@ -831,8 +831,10 @@ class Strategy:
             case3_triggered = True
         elif local_hour >= 15 and temp_gap > 3:
             case3_triggered = True
-        elif local_hour >= 13 and temp_gap > 6:
-            case3_triggered = True
+        elif local_hour >= 13 and temp_gap > 5:
+            case3_triggered = True                  # Was 6°F — tightened
+        elif local_hour >= 12 and temp_gap > 7:
+            case3_triggered = True                  # NEW — noon with large gap
 
         if case3_triggered:
             no_price = market.get("no_ask", 0) or (100 - ref_price)
