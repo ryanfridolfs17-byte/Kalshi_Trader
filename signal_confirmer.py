@@ -176,11 +176,19 @@ class SignalConfirmer:
                         )
             else:  # overpriced
                 if not in_bucket:
-                    votes["nws_point"] = "AGREE"
-                    vote_details["nws_point"] = (
-                        f"NWS Station Forecast: {nws_point_high}°F "
-                        f"(outside bucket) → AGREE with overpriced signal"
-                    )
+                    dist = min(abs(nws_point_high - temp_low), abs(nws_point_high - temp_high))
+                    if dist <= 2:  # NWS within 2°F of bucket = too close to call
+                        votes["nws_point"] = "ABSTAIN"
+                        vote_details["nws_point"] = (
+                            f"NWS Station Forecast: {nws_point_high}°F "
+                            f"(near bucket, {dist}°F away) → ABSTAIN"
+                        )
+                    else:
+                        votes["nws_point"] = "AGREE"
+                        vote_details["nws_point"] = (
+                            f"NWS Station Forecast: {nws_point_high}°F "
+                            f"(outside bucket by {dist}°F) → AGREE with overpriced signal"
+                        )
                 else:
                     votes["nws_point"] = "DISAGREE"
                     vote_details["nws_point"] = (
@@ -189,13 +197,19 @@ class SignalConfirmer:
                     )
         else:
             votes["nws_point"] = "ABSTAIN"
-            vote_details["nws_point"] = "NWS Station Forecast: no data → ABSTAIN"
+            vote_details["nws_point"] = "NWS Station Forecast: API failed/no data → ABSTAIN"
+            print(f"    [CONFIRM] NWS point forecast unavailable for {city_info.get('nws_station', '?')} on {target_date}")
 
         # Count votes
         agree_count = sum(1 for v in votes.values() if v == "AGREE")
         disagree_count = sum(1 for v in votes.values() if v == "DISAGREE")
         abstain_count = sum(1 for v in votes.values() if v == "ABSTAIN")
         total_voted = agree_count + disagree_count  # Abstains don't count
+
+        # NWS is the settlement source — if it abstains, disagrees, or failed,
+        # cap verdict at CONFIRM (never STRONG without explicit NWS agreement)
+        nws_vote = votes.get("nws_point", "ABSTAIN")
+        nws_caps_strong = nws_vote != "AGREE"
 
         # Determine verdict
         if total_voted == 0:
@@ -206,10 +220,15 @@ class SignalConfirmer:
             verdict = "REJECT"
             multiplier = 0.0
             summary = f"{disagree_count}/{total_voted} sources disagree — trade rejected"
-        elif agree_count >= 3:
+        elif agree_count >= 3 and not nws_caps_strong:
             verdict = "STRONG"
             multiplier = 1.5
             summary = f"{agree_count}/{total_voted} sources agree — STRONG confirmation"
+        elif agree_count >= 3 and nws_caps_strong:
+            verdict = "CONFIRM"
+            multiplier = 1.0
+            summary = (f"{agree_count}/{total_voted} sources agree but NWS {nws_vote.lower()} "
+                       f"— capped at CONFIRM")
         elif agree_count >= 2:
             verdict = "CONFIRM"
             multiplier = 1.0
