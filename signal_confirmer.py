@@ -206,13 +206,20 @@ class SignalConfirmer:
         abstain_count = sum(1 for v in votes.values() if v == "ABSTAIN")
         total_voted = agree_count + disagree_count  # Abstains don't count
 
-        # NWS is the settlement source — if it abstains, disagrees, or failed,
-        # cap verdict at CONFIRM (never STRONG without explicit NWS agreement)
+        # NWS is the settlement source — its vote carries special weight.
+        # DISAGREE = hard REJECT (NWS says settlement will contradict our thesis)
+        # ABSTAIN  = cap at CONFIRM (too close to call, never STRONG)
+        # AGREE    = eligible for STRONG
         nws_vote = votes.get("nws_point", "ABSTAIN")
-        nws_caps_strong = nws_vote != "AGREE"
 
         # Determine verdict
-        if total_voted == 0:
+        if nws_vote == "DISAGREE":
+            # Settlement source explicitly contradicts our thesis — hard block
+            verdict = "REJECT"
+            multiplier = 0.0
+            summary = (f"NWS DISAGREE — settlement source contradicts signal "
+                       f"({agree_count} model(s) agree but NWS overrides)")
+        elif total_voted == 0:
             verdict = "WEAK"
             multiplier = 0.5
             summary = "No sources could confirm (all abstained)"
@@ -220,14 +227,14 @@ class SignalConfirmer:
             verdict = "REJECT"
             multiplier = 0.0
             summary = f"{disagree_count}/{total_voted} sources disagree — trade rejected"
-        elif agree_count >= 3 and not nws_caps_strong:
+        elif agree_count >= 3 and nws_vote == "AGREE":
             verdict = "STRONG"
             multiplier = 1.5
-            summary = f"{agree_count}/{total_voted} sources agree — STRONG confirmation"
-        elif agree_count >= 3 and nws_caps_strong:
+            summary = f"{agree_count}/{total_voted} sources agree + NWS — STRONG confirmation"
+        elif agree_count >= 3 and nws_vote == "ABSTAIN":
             verdict = "CONFIRM"
             multiplier = 1.0
-            summary = (f"{agree_count}/{total_voted} sources agree but NWS {nws_vote.lower()} "
+            summary = (f"{agree_count}/{total_voted} sources agree but NWS abstained "
                        f"— capped at CONFIRM")
         elif agree_count >= 2:
             verdict = "CONFIRM"
