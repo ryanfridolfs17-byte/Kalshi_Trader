@@ -39,7 +39,7 @@ class MarketQualityFilter:
 
         # Maximum bid-ask spread in cents
         # Wider than this = illiquid, likely can't exit
-        self.max_spread_cents = 15
+        self.max_spread_cents = 20   # Was 15 — weather markets trade wider, we use limit orders
 
         # Minimum open interest (contracts currently held by traders)
         # Weather markets often have low OI; don't reject on this alone
@@ -55,7 +55,7 @@ class MarketQualityFilter:
         # ─── PROBABILITY GUARDRAILS ───
         # NEVER buy contracts priced below this (longshot death zone)
         # Academic research: <10¢ contracts lose 60%+ of money
-        self.min_price_cents = 12
+        self.min_price_cents = 5    # Was 12 — lowered to capture confirmed outcomes at 5-11¢
 
         # NEVER buy contracts priced above this (paying too much for certainty)
         # 93¢+ contracts: you risk 93¢ to make 7¢, terrible risk/reward

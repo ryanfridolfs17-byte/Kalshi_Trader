@@ -175,7 +175,7 @@ TRADE_COOLDOWN = 180                # 3 minutes (faster for weather)
 # ═══════════════════════════════════════════════════════
 # Limit orders rest on the book until matched. Auto-cancel
 # stale orders to free up capital and avoid phantom positions.
-RESTING_ORDER_TIMEOUT = 900         # 15 min — cancel unfilled buy orders
+RESTING_ORDER_TIMEOUT = 1500        # 25 min — cancel unfilled buy orders (was 15 min)
 RESTING_EXIT_TIMEOUT = 1800         # 30 min — cancel unfilled exit/hedge orders
 
 # ═══════════════════════════════════════════════════════
@@ -212,7 +212,7 @@ MODEL_CONVERGENCE_BOOST_F = 2           # <2°F model spread = 1.2x confidence
 # (our maker strategy) pay lower/zero fees, but we model
 # worst-case taker rate as conservative safety margin.
 KALSHI_FEE_PCT = 0.07                   # 7% of expected profit per contract
-FEE_ADJUSTED_MIN_EDGE = 0.05            # 5% minimum net edge after fees
+FEE_ADJUSTED_MIN_EDGE = 0.04            # 4% minimum net edge after fees (was 5%)
 FEE_ADJUSTMENT_ENABLED = True
 
 # ═══════════════════════════════════════════════════════
@@ -234,8 +234,8 @@ MAX_DAILY_FORECAST_TRADES = 4
 #   06Z pulse:   6:00 AM - 9:00 AM   (supplementary GFS/ECMWF runs)
 #   12Z cascade: 2:30 PM - 6:30 PM   (second full refresh, new listings from 10 AM)
 SETTLEMENT_HOUR_ET = 10             # Hour (ET) when settlements process
-LIQUIDITY_RESERVE_PCT = 0.50        # 50% of bankroll — reserve cash for confirmed outcome arb trades
-PRE_SETTLEMENT_SIZING_MULT = 0.6    # 60% sizing before settlements clear
+LIQUIDITY_RESERVE_PCT = 0.30        # 30% of bankroll — reserve cash for confirmed outcomes (was 50%)
+PRE_SETTLEMENT_SIZING_MULT = 0.75   # 75% sizing before settlements clear (was 60%)
 
 # ═══════════════════════════════════════════════════════
 # PORTFOLIO REVIEW SETTINGS
@@ -333,7 +333,7 @@ LOG_LEVEL = "DEBUG"  # "DEBUG" for verbose output
 SCORECARD_ENABLED = True
 SCORECARD_MAX_ITERATIONS = 3              # Max diagnose-fix-retry loops
 MIN_FORECAST_CONVERGENCE = 0.60           # 60% of ensemble must agree within 2°F
-MIN_EDGE_AFTER_FEES = 0.05               # 5% minimum edge (same as FEE_ADJUSTED_MIN_EDGE)
+MIN_EDGE_AFTER_FEES = 0.04               # 4% minimum edge (same as FEE_ADJUSTED_MIN_EDGE)
 MIN_TIMING_MULTIPLIER = 0.50             # Don't trade in bad timing windows
 MIN_LIQUIDITY_CONTRACTS = 3              # Need 3+ contracts at target price
 MAX_CORRELATION_EXPOSURE = 0.40          # 40% max in correlated positions

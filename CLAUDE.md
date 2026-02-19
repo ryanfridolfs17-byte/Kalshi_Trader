@@ -65,7 +65,7 @@ Weather uses `signal_confirmer.py` (5-source voting: 4 deterministic models + NW
 - **`risk_manager.py`** — 19 safety layers (see Risk Parameters section below). Key checks: daily loss limit, dynamic exposure cap (60% bankroll), per-city cap (30% bankroll), per-ticker cap ($15), daily forecast trade cap (4/day, confirmed outcomes exempt), correlated position cap, loss streak pause, cooldown, settlement proximity, liquidity reserve, kill switch (Sharpe + consecutive loss). State persisted in `risk_state.json`.
 - **`trade_intelligence.py`** — Position exit logic (including rounding-buffer exits for NO positions), forecast bias learning per NWS station (with 3-day streak detection), time-of-day sizing adjustments, intraday observation tracking, settlement P&L recording with `settled_at` timestamps.
 - **`quant_analytics.py`** — Backtesting against 90 days of historical data, per-model accuracy weighting, regime detection (stable vs volatile), smart order placement, correlation-aware position sizing.
-- **`market_quality.py`** — Liquidity filter (max 15c spread, min 1 contract volume), probability guardrails (rejects <12c longshots and >88c near-certainties).
+- **`market_quality.py`** — Liquidity filter (max 20c spread, min 1 contract volume), probability guardrails (rejects <5c longshots and >88c near-certainties).
 - **`trade_scorecard.py`** — v4.0 recursive evaluation loop. 8 criteria (data integrity, forecast convergence, edge magnitude, timing window, liquidity, portfolio correlation, position sizing, adversarial check). Max 3 iterations of diagnose→fix→retry. Confirmed outcomes and arbitrage bypass. Actions: execute/reject/defer.
 - **`maker_strategy.py`** — v4.0 maker execution engine. Posts limit orders at fair_value - spread_buffer (default 2¢). Manages order lifecycle: placement, fill tracking, stale order cancellation (30min), adverse selection detection. State persisted in `maker_orders.json`.
 - **`dashboard.py`** — Flask-based web dashboard with health monitoring, email alerts, position/trade display with market type badges.
@@ -160,7 +160,7 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | `KALSHI_FEE_PCT` | 7% | Worst-case taker fee (maker is lower/zero) |
-| `FEE_ADJUSTED_MIN_EDGE` | 5% | Min net edge after fee drag |
+| `FEE_ADJUSTED_MIN_EDGE` | 4% | Min net edge after fee drag (was 5%) |
 | `MIN_EDGE` | 8% | Raw minimum edge before fee adjustment |
 
 ### Trade Limits
@@ -171,7 +171,7 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 | `CONSECUTIVE_LOSS_PAUSE` | 5 losses | Pause trading after 5 consecutive losses |
 | `CONSECUTIVE_LOSS_PAUSE_MINUTES` | 30 min | Duration of loss pause |
 | `TRADE_COOLDOWN` | 180 sec | Minimum time between trades |
-| `RESTING_ORDER_TIMEOUT` | 15 min | Auto-cancel unfilled buy orders |
+| `RESTING_ORDER_TIMEOUT` | 25 min | Auto-cancel unfilled buy orders (was 15 min) |
 | `RESTING_EXIT_TIMEOUT` | 30 min | Auto-cancel unfilled exit/hedge orders |
 
 ### Confirmed Outcome Rules (CASE 1 & 2)
@@ -189,8 +189,8 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 | `SETTLEMENT_HOUR_ET` | 10 AM ET | When Kalshi processes settlements |
 | `SETTLEMENT_PROXIMITY_HOURS` | 2 hrs | No new positions within 2hrs of close |
 | `SETTLEMENT_PROXIMITY_EDGE_OVERRIDE` | 20% | Exceptional edge overrides proximity block |
-| `LIQUIDITY_RESERVE_PCT` | 50% | Reserve cash for confirmed outcome arb trades |
-| `PRE_SETTLEMENT_SIZING_MULT` | 0.6x | 60% sizing before settlements clear |
+| `LIQUIDITY_RESERVE_PCT` | 30% | Reserve cash for confirmed outcomes (was 50%) |
+| `PRE_SETTLEMENT_SIZING_MULT` | 0.75x | 75% sizing before settlements clear (was 60%) |
 
 ### Account Tracking
 | Parameter | Value | Notes |
@@ -215,14 +215,14 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 - **Order fill verification**: Kalshi API response `order.status` is checked — only `"executed"` or `remaining_count == 0` counts as filled. All other orders are tracked as "resting".
 - **Resting buy orders**: NOT recorded as positions in risk manager. `_reconcile_positions()` picks them up when they fill on Kalshi's side.
 - **Resting exit/hedge/pare orders**: Do NOT release exposure or record P&L. Tagged with `pending_exit_order_id` etc. for tracking.
-- **Auto-cancel**: Buy orders cancelled after 15 min. Exit/hedge/pare orders cancelled after 30 min.
+- **Auto-cancel**: Buy orders cancelled after 25 min (was 15 min). Exit/hedge/pare orders cancelled after 30 min.
 - **`_check_resting_orders()`**: Runs each cycle (after reconciliation). Compares tracked order_ids against `client.get_orders(status="resting")`. Updates trade log when orders fill or are cancelled.
 
 ### Strategy Guards (in `strategy.py`)
-- **Fee-adjusted edge**: `net_edge = raw_edge - fee_drag` must be ≥5% after Kalshi's 7% profit fee
+- **Fee-adjusted edge**: `net_edge = raw_edge - fee_drag` must be ≥4% after Kalshi's 7% profit fee (was 5%)
 - **Rounding buffer**: Forecast mean within ±1°F of any bucket strike = skip. Within ±2°F = 50% size.
 - **Model divergence**: Ensemble spread >4°F = skip. Spread <2°F = 1.2x boost.
-- **Longshot floor**: No contracts below 12¢ (market_quality.py)
+- **Longshot floor**: No contracts below 5¢ (market_quality.py) — was 12¢, lowered to capture confirmed outcomes
 - **Near-certainty cap**: No contracts above 88¢
 - **Narrow bucket guard**: Extra caution on ≤5°F buckets
 - **Bias streak detection**: 3+ consecutive days of same-direction bias (≥0.5°F each) triggers immediate adjustment without waiting for 5-datapoint minimum
@@ -236,7 +236,7 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 |-----------|-----------|---------|-------------|
 | `data_integrity` | pass/fail | No | NWS station correct for settlement? |
 | `forecast_convergence` | 60% | No | Ensemble members agree within 2°F? |
-| `edge_magnitude` | 5% net | Yes | Edge survives fees + uncertainty? |
+| `edge_magnitude` | 4% net | Yes | Edge survives fees + uncertainty? (was 5%) |
 | `timing_window` | 0.5x mult | Yes | Favorable entry timing (hours to settlement)? |
 | `liquidity` | 1 (weather) / 3 (other) | Yes | Enough depth at target price? Weather relaxed — maker orders + market_quality pre-filter |
 | `portfolio_correlation` | 40% | Yes | Not over-concentrated in correlated markets? |
@@ -259,5 +259,5 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 ## Deferred Features (NOT YET IMPLEMENTED)
 - **wethr.net API**: Needs Pro API key. Would be 6th confirmation source.
 - ~~**DST timing logic**~~: DONE — Replaced hardcoded UTC offsets with `zoneinfo.ZoneInfo` in strategy.py and trade_intelligence.py.
-- **Dead bracket scalping**: Contradicts 12¢ longshot floor. Fee drag too high on 1-3¢ contracts.
+- **Dead bracket scalping**: Fee drag too high on 1-3¢ contracts (floor is 5¢).
 - **Certainty bias exploitation**: Needs multi-contract position management.
