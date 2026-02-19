@@ -24,6 +24,7 @@ import os
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import config
 
 
@@ -257,6 +258,7 @@ def main():
             pass
     # Force daily report regeneration on first cycle by using yesterday's date.
     last_report_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    last_analysis_hour = -1  # Track post-settlement re-analysis
     while True:
         try:
             cycle += 1
@@ -311,12 +313,23 @@ def main():
             _sync_pnl_from_kalshi(client, trade_log=trade_log, intel=intel)
             intel.print_pnl()
 
-            # Daily report + analysis on day change
+            # Daily report + analysis on day change OR after settlements arrive.
+            # Settlements happen at 10 AM ET; ANALYSIS_HOUR_ET (11 AM) re-runs
+            # so the analysis uses Kalshi ground truth instead of stale estimates.
             today_str = datetime.now().strftime("%Y-%m-%d")
+            current_hour_et = datetime.now(ZoneInfo("America/New_York")).hour
             if today_str != last_report_date:
                 _generate_daily_report(trade_log, strategy)
                 _run_daily_analysis(trade_log)
                 last_report_date = today_str
+                last_analysis_hour = -1  # Reset for today
+            elif (current_hour_et >= config.ANALYSIS_HOUR_ET and
+                  last_analysis_hour < config.ANALYSIS_HOUR_ET):
+                # Re-run after settlements to correct stale midnight analysis
+                print("  [ANALYSIS] Post-settlement re-run (Kalshi ground truth now available)")
+                _generate_daily_report(trade_log, strategy)
+                _run_daily_analysis(trade_log)
+                last_analysis_hour = current_hour_et
 
             # Check for dashboard-approved pending trades
             _process_approved_trades(client, risk, trade_log)
@@ -2439,15 +2452,16 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
                     s_revenue = settle_rev_copy.get(t_ticker, 0)
                     t_pnl = sell_revenue + s_revenue - buy_cost
 
-                    # Apportion P&L to this trade entry based on its contracts
-                    trade_contracts = trade.get("contracts", 0)
+                    # Apportion P&L to this trade entry proportionally by cost.
+                    # Old formula assumed all contracts won at $1 and assigned
+                    # total ticker P&L to each entry — caused inflation when
+                    # multiple entries existed or partial exits occurred.
                     trade_cost = trade.get("cost_cents", 0)
-                    if t_pnl >= 0:
-                        trade["result"] = "win"
-                        trade["profit_cents"] = max(0, trade_contracts * 100 - trade_cost) if s_revenue > 0 else t_pnl
+                    if buy_cost > 0 and trade_cost > 0:
+                        trade["profit_cents"] = round(t_pnl * (trade_cost / buy_cost))
                     else:
-                        trade["result"] = "loss"
-                        trade["profit_cents"] = -trade_cost
+                        trade["profit_cents"] = 0
+                    trade["result"] = "win" if t_pnl >= 0 else "loss"
 
                     trade["settled"] = True
                     trade["settled_at"] = datetime.now(timezone.utc).isoformat()
