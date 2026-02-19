@@ -144,6 +144,16 @@ class RiskManager:
                 return False, (f"Ticker {ticker} capped: ${existing_ticker_cost/100:.2f} + ${cost/100:.2f} "
                                f"> ${config.MAX_PER_TICKER_CENTS/100:.2f}")
 
+            # 4d. Per-ticker contract count cap (prevents cheap contract explosion)
+            existing_contracts = sum(
+                p.get("contracts", 0) for p in self.state["positions"]
+                if p.get("ticker") == ticker
+            )
+            new_contracts = signal.get("suggested_contracts", 0)
+            if existing_contracts + new_contracts > config.MAX_CONTRACTS_PER_TICKER:
+                return False, (f"Contract cap: {existing_contracts} + {new_contracts} "
+                               f"> {config.MAX_CONTRACTS_PER_TICKER}")
+
         # 5. Consecutive loss pause
         if self.state["loss_pause_until"]:
             pause_until = datetime.fromisoformat(self.state["loss_pause_until"])

@@ -83,6 +83,9 @@ All state is persisted as JSON in `STATE_DIR` (defaults to `.`, set to `/data` o
 - **Fee-adjusted edge** — Raw edge is reduced by estimated Kalshi fee drag (7% of profit) before checking minimum edge threshold. Net edge must survive at 5%+ after fees.
 - **Longshot avoidance** — Never buys contracts priced below 12c, per academic research on prediction market biases.
 - **Market type isolation** — Each market type is gated behind a toggle. New market code paths only execute when explicitly enabled. SP500 uses `city_code="SP500"` in the risk manager for per-market exposure tracking.
+- **Duplicate order detection** — Before executing any trade, checks `risk.state["positions"]` and `trade_log` resting orders for the same ticker. Prevents multi-cycle order stacking (e.g., 3 identical orders across 3 cycles).
+- **Contract count cap** — Hard cap of 25 contracts per ticker (`MAX_CONTRACTS_PER_TICKER`), applied in Kelly sizing, confirmed outcome sizing, and risk manager. Prevents cheap contract explosion (e.g., 68 contracts at 22c each).
+- **Medium urgency exits never auto-execute** — Only `high` urgency exits (confirmed losses from observations) auto-sell. Medium urgency (edge decay, confirmer disagreement on profitable positions) logs recommendation for manual review.
 
 ## NWS Station Mappings (20 Cities)
 
@@ -136,6 +139,7 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 | `MAX_PER_CITY_CENTS` | $30.00 | Fallback if balance unknown |
 | `MAX_DAILY_CITY_SPEND_CENTS` | $35.00 | Cumulative daily per city (prevents sell-and-rebuy) |
 | `MAX_PER_TICKER_CENTS` | $15.00 | Per-ticker concentration limit |
+| `MAX_CONTRACTS_PER_TICKER` | 25 | Hard cap on contract count (prevents cheap contract explosion) |
 | `MAX_OPEN_POSITIONS` | 20 | Total open positions |
 | `MAX_CORRELATED_POSITIONS` | 3 | Same city + same date |
 
