@@ -87,16 +87,22 @@ class TradeAnalyzer:
 
         # Consolidate by ticker: partial exits are ONE position, not N trades.
         # Pick the first trade per ticker for analysis (has the entry metadata),
-        # and sum up profit_cents across all entries for that ticker.
+        # sum up profit_cents, contracts, and cost across all entries.
         ticker_first_trade = {}
         ticker_total_pnl = {}
+        ticker_total_contracts = {}
+        ticker_total_cost = {}
         for t in settled_trades:
             tk = t.get("ticker", "")
             if tk not in ticker_first_trade:
                 ticker_first_trade[tk] = dict(t)  # Copy first entry
                 ticker_total_pnl[tk] = t.get("profit_cents", 0)
+                ticker_total_contracts[tk] = t.get("contracts", 0)
+                ticker_total_cost[tk] = t.get("cost_cents", 0)
             else:
                 ticker_total_pnl[tk] += t.get("profit_cents", 0)
+                ticker_total_contracts[tk] += t.get("contracts", 0)
+                ticker_total_cost[tk] += t.get("cost_cents", 0)
 
         # Override P&L from Kalshi ground truth when available.
         # This corrects any stale/wrong profit_cents in trade_log.
@@ -132,6 +138,13 @@ class TradeAnalyzer:
             else:
                 trade["profit_cents"] = ticker_total_pnl.get(tk, 0)
                 pnl = trade["profit_cents"]
+            # Show total contracts and cost across all fills, not just first entry
+            trade["contracts"] = ticker_total_contracts.get(tk, trade.get("contracts", 0))
+            trade["cost_cents"] = ticker_total_cost.get(tk, trade.get("cost_cents", 0))
+            total_c = trade["contracts"]
+            total_cost = trade["cost_cents"]
+            if total_c > 0:
+                trade["price_cents"] = round(total_cost / total_c)
             # Update result based on P&L
             if pnl > 0:
                 trade["result"] = "win" if trade.get("result") in ("win",) else "exit_win"
