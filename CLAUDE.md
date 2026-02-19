@@ -234,7 +234,7 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 | `forecast_convergence` | 60% | No | Ensemble members agree within 2°F? |
 | `edge_magnitude` | 5% net | Yes | Edge survives fees + uncertainty? |
 | `timing_window` | 0.5x mult | Yes | Favorable entry timing (hours to settlement)? |
-| `liquidity` | 3 contracts | Yes | Enough depth at target price? |
+| `liquidity` | 1 (weather) / 3 (other) | Yes | Enough depth at target price? Weather relaxed — maker orders + market_quality pre-filter |
 | `portfolio_correlation` | 40% | Yes | Not over-concentrated in correlated markets? |
 | `position_sizing` | 20% bankroll | Yes | Within per-position and total exposure caps? |
 | `adversarial_check` | <2 warnings | Yes | Passes devil's advocate stress test? |
