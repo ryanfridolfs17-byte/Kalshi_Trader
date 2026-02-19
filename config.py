@@ -321,7 +321,32 @@ BOT_STATUS_FILE = os.path.join(STATE_DIR, "bot_status.json")
 PNL_HISTORY_FILE = os.path.join(STATE_DIR, "pnl_history.json")
 BACKTEST_RESULTS_FILE = os.path.join(STATE_DIR, "backtest_results.json")
 SCAN_LOG_FILE = os.path.join(STATE_DIR, "scan_log.json")
+MAKER_ORDERS_FILE = os.path.join(STATE_DIR, "maker_orders.json")
 LOG_LEVEL = "DEBUG"  # "DEBUG" for verbose output
+
+# ═══════════════════════════════════════════════════════
+# TRADE SCORECARD THRESHOLDS (v4.0)
+# ═══════════════════════════════════════════════════════
+# Recursive evaluation loop: every trade must pass all 8 criteria.
+# Confirmed outcomes and arbitrage bypass the scorecard.
+SCORECARD_ENABLED = True
+SCORECARD_MAX_ITERATIONS = 3              # Max diagnose-fix-retry loops
+MIN_FORECAST_CONVERGENCE = 0.60           # 60% of ensemble must agree within 2°F
+MIN_EDGE_AFTER_FEES = 0.05               # 5% minimum edge (same as FEE_ADJUSTED_MIN_EDGE)
+MIN_TIMING_MULTIPLIER = 0.50             # Don't trade in bad timing windows
+MIN_LIQUIDITY_CONTRACTS = 3              # Need 3+ contracts at target price
+MAX_CORRELATION_EXPOSURE = 0.40          # 40% max in correlated positions
+
+# ═══════════════════════════════════════════════════════
+# MAKER EXECUTION STRATEGY (v4.0)
+# ═══════════════════════════════════════════════════════
+# Post limit orders below fair value (maker side) and wait for fills.
+# Makers earn +0.77%-1.25% excess returns on Kalshi per Becker dataset.
+MAKER_STRATEGY_ENABLED = True
+MAKER_SPREAD_BUFFER_CENTS = 2            # Post limit orders 2¢ below fair value
+STALE_ORDER_MINUTES = 30                 # Cancel and re-evaluate after 30 min
+MAX_OPEN_ORDERS = 10                     # Cap on simultaneous open maker orders
+ADVERSE_SELECTION_PAUSE_MINUTES = 60     # Pause market after adverse selection detected
 
 # ═══════════════════════════════════════════════════════
 # HEALTH MONITORING & EMAIL ALERTS

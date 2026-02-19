@@ -43,11 +43,11 @@ Multi-market prediction market trading bot for Kalshi. It runs a continuous loop
 ### Decision Flow
 
 ```
-market_scanner.py  →  strategy.py  →  confirmer  →  risk_manager.py  →  kalshi_client.py
-   (discover)         (evaluate)     (validate)      (safety check)      (execute)
+market_scanner.py → strategy.py → confirmer → trade_scorecard.py → risk_manager.py → maker_strategy.py → kalshi_client.py
+   (discover)       (evaluate)    (validate)   (8-criteria gate)    (safety check)    (maker pricing)     (execute)
 ```
 
-Weather uses `signal_confirmer.py` (5-source voting: 4 deterministic models + NWS station point forecast). S&P 500 uses `spx_confirmer.py` (momentum/vol/historical).
+Weather uses `signal_confirmer.py` (5-source voting: 4 deterministic models + NWS station point forecast). S&P 500 uses `spx_confirmer.py` (momentum/vol/historical). All trades pass through `trade_scorecard.py` recursive evaluation (confirmed outcomes and arbitrage bypass).
 
 **Edge-priority execution:** Both weather and S&P 500 scan loops use a two-phase design. Phase 1 evaluates all markets and collects actionable signals. Phase 2 sorts signals by edge descending, then processes through risk checks and execution. This ensures the highest-edge trade gets first shot at per-city and per-position caps.
 
@@ -66,11 +66,13 @@ Weather uses `signal_confirmer.py` (5-source voting: 4 deterministic models + NW
 - **`trade_intelligence.py`** — Position exit logic (including rounding-buffer exits for NO positions), forecast bias learning per NWS station (with 3-day streak detection), time-of-day sizing adjustments, intraday observation tracking, settlement P&L recording with `settled_at` timestamps.
 - **`quant_analytics.py`** — Backtesting against 90 days of historical data, per-model accuracy weighting, regime detection (stable vs volatile), smart order placement, correlation-aware position sizing.
 - **`market_quality.py`** — Liquidity filter (max 15c spread, min 1 contract volume), probability guardrails (rejects <12c longshots and >88c near-certainties).
+- **`trade_scorecard.py`** — v4.0 recursive evaluation loop. 8 criteria (data integrity, forecast convergence, edge magnitude, timing window, liquidity, portfolio correlation, position sizing, adversarial check). Max 3 iterations of diagnose→fix→retry. Confirmed outcomes and arbitrage bypass. Actions: execute/reject/defer.
+- **`maker_strategy.py`** — v4.0 maker execution engine. Posts limit orders at fair_value - spread_buffer (default 2¢). Manages order lifecycle: placement, fill tracking, stale order cancellation (30min), adverse selection detection. State persisted in `maker_orders.json`.
 - **`dashboard.py`** — Flask-based web dashboard with health monitoring, email alerts, position/trade display with market type badges.
 
 ### Data Files (Runtime State)
 
-All state is persisted as JSON in `STATE_DIR` (defaults to `.`, set to `/data` on Railway for volume persistence): `trade_history.json`, `risk_state.json`, `pnl_history.json`, `backtest_results.json`, `edge_attribution.json`, `bot_status.json`, `pending_trades.json`, `scan_log.json` (per-market evaluation log, 7-day rolling retention, exposed via `/api/state`).
+All state is persisted as JSON in `STATE_DIR` (defaults to `.`, set to `/data` on Railway for volume persistence): `trade_history.json`, `risk_state.json`, `pnl_history.json`, `backtest_results.json`, `edge_attribution.json`, `bot_status.json`, `pending_trades.json`, `scan_log.json` (per-market evaluation log, 7-day rolling retention, exposed via `/api/state`), `maker_orders.json` (tracked open maker orders).
 
 ### Key Design Decisions
 
@@ -220,6 +222,35 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 - **Near-certainty cap**: No contracts above 88¢
 - **Narrow bucket guard**: Extra caution on ≤5°F buckets
 - **Bias streak detection**: 3+ consecutive days of same-direction bias (≥0.5°F each) triggers immediate adjustment without waiting for 5-datapoint minimum
+
+### Trade Scorecard (v4.0, in `trade_scorecard.py`)
+- **Recursive evaluation**: Max 3 iterations of diagnose→fix→retry. Actions: execute/reject/defer.
+- **Bypass**: Confirmed outcomes (`CONFIRMED_OUTCOME`) and arbitrage (`S2-Arbitrage`) skip the scorecard entirely.
+- **8 criteria** (all must pass):
+
+| Criterion | Threshold | Fixable | Description |
+|-----------|-----------|---------|-------------|
+| `data_integrity` | pass/fail | No | NWS station correct for settlement? |
+| `forecast_convergence` | 60% | No | Ensemble members agree within 2°F? |
+| `edge_magnitude` | 5% net | Yes | Edge survives fees + uncertainty? |
+| `timing_window` | 0.5x mult | Yes | Favorable entry timing (hours to settlement)? |
+| `liquidity` | 3 contracts | Yes | Enough depth at target price? |
+| `portfolio_correlation` | 40% | Yes | Not over-concentrated in correlated markets? |
+| `position_sizing` | 20% bankroll | Yes | Within per-position and total exposure caps? |
+| `adversarial_check` | <2 warnings | Yes | Passes devil's advocate stress test? |
+
+- **Fix engine**: Fixable failures trigger automatic adjustments (reduce_size, wait, retarget, adjust_price). Unfixable failures → immediate reject.
+- **Timing multipliers** (default, before Becker calibration): >72h: 0.7x, 48-72h: 0.9x, 24-48h: 1.2x, 12-24h: 1.0x, 6-12h: 0.8x, <6h: 0.5x
+- **Config**: `SCORECARD_ENABLED`, `SCORECARD_MAX_ITERATIONS`, `MIN_FORECAST_CONVERGENCE`, `MIN_TIMING_MULTIPLIER`, `MIN_LIQUIDITY_CONTRACTS`, `MAX_CORRELATION_EXPOSURE`
+
+### Maker Execution Strategy (v4.0, in `maker_strategy.py`)
+- **Spread buffer**: Posts limit orders at `fair_value - MAKER_SPREAD_BUFFER_CENTS` (default 2¢ below)
+- **Dynamic buffer**: High edge (>15%) → tighter buffer (1¢). Low edge (<8%) → wider buffer (3¢).
+- **Order lifecycle**: place → monitor fills → cancel stale (30min) → track adverse selection
+- **Bypass**: Confirmed outcomes and arbitrage skip maker pricing (need fast fills)
+- **Adverse selection**: 3+ fills in <10min window → caution (reduce sizes 50%)
+- **Config**: `MAKER_STRATEGY_ENABLED`, `MAKER_SPREAD_BUFFER_CENTS`, `STALE_ORDER_MINUTES`, `MAX_OPEN_ORDERS`, `ADVERSE_SELECTION_PAUSE_MINUTES`
+- **State file**: `maker_orders.json` in STATE_DIR
 
 ## Deferred Features (NOT YET IMPLEMENTED)
 - **wethr.net API**: Needs Pro API key. Would be 6th confirmation source.
