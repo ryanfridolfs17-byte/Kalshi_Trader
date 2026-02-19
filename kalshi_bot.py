@@ -129,12 +129,18 @@ def main():
     from market_scanner import MarketScanner
     from strategy import Strategy
     from trade_intelligence import TradeIntelligence
+    from trade_scorecard import TradeScorecard
+    from maker_strategy import MakerStrategy
 
     client = KalshiClient()
     risk = RiskManager()
     scanner = MarketScanner(client)
     strategy = Strategy(kalshi_client=client)
     intel = strategy.intel  # Shared instance
+
+    # v4.0: Scorecard + Maker Strategy
+    scorecard = TradeScorecard(kalshi_client=client, risk_manager=risk)
+    maker = MakerStrategy(kalshi_client=client, risk_manager=risk)
 
     trade_log = _load_trade_log()
 
@@ -192,6 +198,14 @@ def main():
 
     # Print strategy info
     print(strategy.get_strategy_summary())
+
+    # v4.0 module status
+    if config.SCORECARD_ENABLED:
+        print("  [v4.0] Trade Scorecard: ENABLED (8 criteria, recursive evaluation)")
+    if config.MAKER_STRATEGY_ENABLED:
+        print(f"  [v4.0] Maker Strategy: ENABLED (buffer: {config.MAKER_SPREAD_BUFFER_CENTS}¢, "
+              f"stale: {config.STALE_ORDER_MINUTES}min)")
+    print()
 
     # Offer backtest before live trading (only in interactive mode)
     if sys.stdin.isatty():
@@ -267,6 +281,13 @@ def main():
             _reconcile_positions(client, risk)
             _sync_balance(client, risk, strategy)
             _check_resting_orders(client, risk, trade_log, intel=intel)
+
+            # v4.0: Manage maker orders (check fills, cancel stale)
+            if config.MAKER_STRATEGY_ENABLED:
+                maker_updates = maker.manage_open_orders()
+                open_count = maker.get_open_order_count()
+                if open_count > 0:
+                    print(maker.get_open_orders_summary())
 
             # Log settlement status
             breakdown = risk.get_exposure_breakdown()
@@ -432,6 +453,61 @@ def main():
                     print(f"    Reasoning:   {signal['reasoning']}")
 
                     # ═══════════════════════════════════════
+                    # STEP 4.5: TRADE SCORECARD (v4.0)
+                    # ═══════════════════════════════════════
+                    if config.SCORECARD_ENABLED:
+                        # Build weather_data from strategy's cached distribution
+                        weather_data = {}
+                        if parsed:
+                            try:
+                                weather_data = strategy.weather.get_temperature_distribution(
+                                    parsed["city_code"], parsed.get("target_date", "")
+                                ) or {}
+                            except Exception:
+                                pass
+
+                        portfolio_state = {
+                            "positions": risk.state.get("positions", []),
+                            "balance_cents": risk.state.get("balance_cents", config.MAX_TOTAL_EXPOSURE_CENTS),
+                            "city_exposure": risk.state.get("city_exposure", {}),
+                            "total_exposure_cents": risk.state.get("total_exposure_cents", 0),
+                        }
+
+                        sc_result = scorecard.evaluate(signal, weather_data, portfolio_state)
+                        print(scorecard.format_scorecard_summary(sc_result))
+
+                        if sc_result["action"] == "reject":
+                            scan_entries.append({
+                                "ticker": ticker, "city": signal.get("city_code", ""),
+                                "market_date": parsed.get("target_date", "") if parsed else "",
+                                "category": "scorecard_rejected",
+                                "reason": sc_result["final_reasoning"][:120],
+                                "edge": round(signal["edge"], 4),
+                                "confidence": round(signal["confidence"], 3),
+                                "price_cents": signal["price_cents"],
+                                "side": signal["side"],
+                                "contracts": signal["suggested_contracts"],
+                                "confirmation": signal.get("confirmation_verdict", ""),
+                                "strategy": signal.get("strategy", ""),
+                                "scorecard_scores": {k: v.get("passed") for k, v in sc_result["scores"].items()},
+                            })
+                            continue
+
+                        if sc_result["action"] == "defer":
+                            print(f"    [SCORECARD] Deferred — will re-evaluate next cycle")
+                            scan_entries.append({
+                                "ticker": ticker, "city": signal.get("city_code", ""),
+                                "market_date": parsed.get("target_date", "") if parsed else "",
+                                "category": "scorecard_deferred",
+                                "reason": sc_result["final_reasoning"][:120],
+                                "edge": round(signal["edge"], 4),
+                            })
+                            continue
+
+                        # Scorecard passed — use potentially modified signal
+                        signal = sc_result["signal"]
+
+                    # ═══════════════════════════════════════
                     # STEP 5: RISK CHECK
                     # ═══════════════════════════════════════
                     approved, reason = risk.check_trade(signal)
@@ -501,9 +577,9 @@ def main():
                         if signal["suggested_contracts"] < orig:
                             print(f"    [SETTLE] Reduced {orig} → {signal['suggested_contracts']} contracts (pre-settlement)")
 
-                    # Execute the trade
+                    # Execute the trade (with maker pricing)
                     trade_result = _execute_trade(
-                        client, risk, signal, trade_log, market
+                        client, risk, signal, trade_log, market, maker=maker
                     )
 
                     if trade_result:
@@ -590,6 +666,30 @@ def main():
                         print(f"    Confirm:     {signal.get('confirmation_verdict', 'N/A')}")
                         print(f"    Reasoning:   {signal['reasoning']}")
 
+                        # v4.0: Trade Scorecard for SP500
+                        if config.SCORECARD_ENABLED:
+                            portfolio_state = {
+                                "positions": risk.state.get("positions", []),
+                                "balance_cents": risk.state.get("balance_cents", config.MAX_TOTAL_EXPOSURE_CENTS),
+                                "city_exposure": risk.state.get("city_exposure", {}),
+                                "total_exposure_cents": risk.state.get("total_exposure_cents", 0),
+                            }
+                            sc_result = scorecard.evaluate(signal, {}, portfolio_state)
+                            print(scorecard.format_scorecard_summary(sc_result))
+
+                            if sc_result["action"] == "reject":
+                                scan_entries.append({
+                                    "ticker": ticker, "city": "SP500",
+                                    "category": "scorecard_rejected",
+                                    "reason": sc_result["final_reasoning"][:120],
+                                    "edge": round(signal["edge"], 4),
+                                })
+                                continue
+                            if sc_result["action"] == "defer":
+                                print(f"    [SCORECARD] Deferred — will re-evaluate next cycle")
+                                continue
+                            signal = sc_result["signal"]
+
                         approved, reason = risk.check_trade(signal)
 
                         if approved is False:
@@ -650,7 +750,7 @@ def main():
                                 print(f"    [SETTLE] Reduced {orig} → {signal['suggested_contracts']} contracts (pre-settlement)")
 
                         trade_result = _execute_trade(
-                            client, risk, signal, trade_log, market
+                            client, risk, signal, trade_log, market, maker=maker
                         )
                         if trade_result:
                             trade_count_this_cycle += 1
@@ -956,12 +1056,27 @@ def _check_resting_orders(client, risk, trade_log, intel=None):
         _save_trade_log(trade_log)
 
 
-def _execute_trade(client, risk, signal, trade_log, market):
-    """Execute a trade based on a signal."""
+def _execute_trade(client, risk, signal, trade_log, market, maker=None):
+    """Execute a trade based on a signal. Uses maker pricing when enabled."""
     ticker = signal["ticker"]
     side = signal["side"]
     price = signal["price_cents"]
     contracts = signal["suggested_contracts"]
+
+    # v4.0: Apply maker spread buffer for better fill prices
+    # Confirmed outcomes skip maker buffer (need fills, not better price)
+    if (maker and config.MAKER_STRATEGY_ENABLED
+            and signal.get("confirmation_verdict") != "CONFIRMED_OUTCOME"
+            and signal.get("strategy") != "S2-Arbitrage"):
+        maker_pricing = maker.calculate_maker_price(signal)
+        if maker_pricing["viable"] and maker_pricing["buffer_applied"] > 0:
+            old_price = price
+            price = maker_pricing["limit_price_cents"]
+            signal["price_cents"] = price
+            print(f"    [MAKER] Price improved: {old_price}¢ → {price}¢ "
+                  f"(buffer: {maker_pricing['buffer_applied']}¢, "
+                  f"effective edge: {maker_pricing['effective_edge']:.1%})")
+
     cost = price * contracts
 
     order_info = {"order_id": None, "status": "dry_run", "filled_count": 0, "remaining_count": 0}
