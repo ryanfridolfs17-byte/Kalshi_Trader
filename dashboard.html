@@ -120,6 +120,22 @@ body {
   display: none;
 }
 .pending-banner.visible { display: block; }
+
+/* Stale position review alert */
+.stale-alert {
+  background: rgba(248,113,113,0.12);
+  border: 1px solid rgba(248,113,113,0.4);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  margin-bottom: 16px;
+  display: none;
+  animation: pulse-border 2s ease-in-out infinite;
+}
+.stale-alert.visible { display: flex; align-items: center; gap: 12px; }
+.stale-alert-icon { font-size: 22px; flex-shrink: 0; }
+.stale-alert-text { font-size: 13px; line-height: 1.5; }
+.stale-alert-text strong { color: var(--accent-red); }
+.stale-alert-text .stale-detail { color: var(--text-secondary); margin-top: 2px; }
 .pending-card {
   display: flex;
   flex-direction: column;
@@ -519,6 +535,15 @@ tr.underwater td:first-child { box-shadow: inset 3px 0 0 var(--accent-red); }
   </div>
 </div>
 
+<!-- Stale Position Review Alert -->
+<div id="staleAlert" class="stale-alert">
+  <div class="stale-alert-icon">&#9888;</div>
+  <div class="stale-alert-text">
+    <strong>POSITION REVIEW STALE</strong> &mdash; <span id="staleAlertMsg">Open positions have not been reviewed recently.</span>
+    <div class="stale-detail" id="staleAlertDetail">The bot may have crashed. Positions are unmonitored and could take maximum loss. Check Railway logs or manually review positions on Kalshi.</div>
+  </div>
+</div>
+
 <!-- Active Positions -->
 <div class="grid grid-full" style="margin-bottom: 16px;">
   <div class="card">
@@ -796,6 +821,53 @@ function updateDashboard(data) {
   } else {
     posEmpty.style.display = 'block';
     posBody.innerHTML = '';
+  }
+
+  // Stale position review alert
+  const staleEl = document.getElementById('staleAlert');
+  const STALE_MINUTES = 30;
+  if (positions.length > 0) {
+    let worstStaleMin = 0;
+    let stalePositions = [];
+    const now = Date.now();
+    for (const p of positions) {
+      const rv = p.last_review || {};
+      const reviewedAt = rv.reviewed_at;
+      if (!reviewedAt) {
+        // Never reviewed — use position open time
+        const openedAt = p.timestamp ? new Date(p.timestamp).getTime() : 0;
+        if (openedAt > 0) {
+          const ageMin = (now - openedAt) / 60000;
+          if (ageMin > STALE_MINUTES) {
+            stalePositions.push({ticker: p.ticker, desc: p.market_description || p.title || p.ticker, minutes: Math.round(ageMin)});
+            worstStaleMin = Math.max(worstStaleMin, ageMin);
+          }
+        }
+      } else {
+        const revTime = new Date(reviewedAt).getTime();
+        const ageMin = (now - revTime) / 60000;
+        if (ageMin > STALE_MINUTES) {
+          stalePositions.push({ticker: p.ticker, desc: p.market_description || p.title || p.ticker, minutes: Math.round(ageMin)});
+          worstStaleMin = Math.max(worstStaleMin, ageMin);
+        }
+      }
+    }
+    if (stalePositions.length > 0) {
+      const hours = Math.floor(worstStaleMin / 60);
+      const mins = Math.round(worstStaleMin % 60);
+      const ageStr = hours > 0 ? hours + 'h ' + mins + 'm' : mins + 'm';
+      const names = stalePositions.map(s => s.desc).join(', ');
+      document.getElementById('staleAlertMsg').innerHTML =
+        '<strong>' + stalePositions.length + ' position' + (stalePositions.length > 1 ? 's' : '') +
+        '</strong> not reviewed in ' + ageStr + ': ' + names;
+      document.getElementById('staleAlertDetail').textContent =
+        'The bot may have crashed. Positions are unmonitored and could take maximum loss. Check Railway logs or manually review on Kalshi.';
+      staleEl.classList.add('visible');
+    } else {
+      staleEl.classList.remove('visible');
+    }
+  } else {
+    staleEl.classList.remove('visible');
   }
 
   // Trade history
