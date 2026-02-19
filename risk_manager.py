@@ -76,10 +76,19 @@ class RiskManager:
                            f"+ ${cost/100:.2f} > ${hard_ceiling/100:.2f}")
 
         # 2c. Dynamic per-position cap: never more than 20% of capital in one trade
+        # If over cap, reduce contracts to fit instead of rejecting outright
         balance = self.state.get("balance_cents", config.MAX_TOTAL_EXPOSURE_CENTS)
         max_per_position = int(balance * config.MAX_POSITION_PCT)
-        if cost > max_per_position:
-            return False, f"Per-position cap: ${cost/100:.2f} > ${max_per_position/100:.2f} (20% of ${balance/100:.2f})"
+        if cost > max_per_position and price > 0:
+            capped_contracts = max(1, max_per_position // price)
+            capped_cost = price * capped_contracts
+            if capped_cost > max_per_position:
+                return False, f"Per-position cap: even 1 contract @ {price}c > ${max_per_position/100:.2f}"
+            print(f"    [RISK] Position cap: {contracts} → {capped_contracts} contracts "
+                  f"(${cost/100:.2f} → ${capped_cost/100:.2f}, cap ${max_per_position/100:.2f})")
+            signal["suggested_contracts"] = capped_contracts
+            contracts = capped_contracts
+            cost = capped_cost
 
         # 2d. Liquidity reserve: keep % of bankroll liquid for next-day overnight edge window
         # Confirmed outcomes bypass: near-guaranteed wins shouldn't be blocked by reserve

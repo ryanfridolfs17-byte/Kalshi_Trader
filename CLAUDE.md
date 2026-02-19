@@ -118,7 +118,7 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 ### Position Sizing
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `MAX_POSITION_PCT` | 20% of bankroll | Max single position |
+| `MAX_POSITION_PCT` | 20% of bankroll | Max single position (caps contracts down instead of rejecting) |
 | `CONFIRMED_OUTCOME_POSITION_PCT` | 25% of bankroll | CASE 1 confirmed (NO on exceeded buckets) |
 | `CASE2_POSITION_PCT` | 10% of bankroll | CASE 2 confirmed (YES on current bucket, riskier) |
 | Quarter-Kelly | Kelly/4 | Base sizing formula, multiplied by confirmation level |
