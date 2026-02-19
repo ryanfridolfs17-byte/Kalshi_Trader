@@ -365,6 +365,42 @@ class TradeIntelligence:
             if new_prob is None:
                 continue
 
+            # ─── CONFIRMER RE-CHECK (NWS settlement source validation) ───
+            # Re-run the signal confirmer on open positions to catch cases where
+            # NWS now disagrees with our thesis.  NWS is the settlement source —
+            # if it says we're wrong, exit regardless of ensemble edge.
+            if is_weather and signal_confirmer and parsed and current_price > 0:
+                city_info = CITIES.get(city_code)
+                if city_info:
+                    try:
+                        recheck = signal_confirmer.confirm_signal(
+                            city_info=city_info,
+                            target_date=parsed.get("target_date"),
+                            temp_low=parsed["temp_low"],
+                            temp_high=parsed["temp_high"],
+                            ensemble_prob=new_prob,
+                            market_price_cents=current_price,
+                        )
+                        if recheck.get("verdict") == "REJECT":
+                            nws_detail = recheck.get("summary", "NWS disagrees")
+                            actions.append({
+                                "ticker": ticker, "action": "full_exit", "urgency": "high",
+                                "reason": f"Confirmer REJECT on re-check: {nws_detail}",
+                                "current_price": current_price, "new_edge": 0,
+                                "entry_edge": entry_edge,
+                                "city_code": city_code, "side": side,
+                                "contracts": contracts, "cost_cents": cost_cents,
+                                "review_detail": {
+                                    "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                                    "action": "full_exit",
+                                    "confirmer_verdict": recheck.get("verdict"),
+                                    "confirmer_summary": nws_detail,
+                                },
+                            })
+                            continue
+                    except Exception as e:
+                        print(f"    [REVIEW] Confirmer re-check failed for {ticker}: {e}")
+
             # Absolute probability floor — exit if ensemble strongly contradicts position
             # regardless of entry edge. Catches positions entered on stale/bad data.
             if side == "yes" and new_prob < 0.15:
