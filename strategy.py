@@ -17,6 +17,7 @@ Decision flow:
 
 import math
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from weather_engine import WeatherEngine, CITIES
 from signal_confirmer import SignalConfirmer
 from trade_intelligence import TradeIntelligence
@@ -693,24 +694,15 @@ class Strategy:
             return None
 
         # Calculate local hour FIRST — before any case checks
-        utc_now = datetime.now(timezone.utc)
+        # DST-safe via zoneinfo (handles March/November transitions)
         city_info = CITIES.get(city_code, {})
         tz_name = city_info.get("timezone", "America/New_York")
-        if "Pacific" in tz_name or "Los_Angeles" in tz_name:
-            offset = -8
-        elif "Mountain" in tz_name or "Denver" in tz_name:
-            offset = -7
-        elif "Phoenix" in tz_name:
-            offset = -7
-        elif "Chicago" in tz_name or "Central" in tz_name:
-            offset = -6
-        else:
-            offset = -5  # Eastern
-        local_hour = (utc_now.hour + offset) % 24
+        local_now = datetime.now(ZoneInfo(tz_name))
+        local_hour = local_now.hour
 
         # HARD GUARD: Only today's markets. Never trade confirmed outcomes
         # for tomorrow's weather — the temperature hasn't happened yet.
-        local_date = (utc_now + timedelta(hours=offset)).strftime("%Y-%m-%d")
+        local_date = local_now.strftime("%Y-%m-%d")
         if target_date != local_date:
             return None
 

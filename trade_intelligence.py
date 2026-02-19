@@ -29,6 +29,7 @@ import os
 import math
 import requests
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from weather_engine import CITIES
 import config
 
@@ -831,15 +832,8 @@ class TradeIntelligence:
         city = CITIES.get(city_code, {})
         tz_name = city.get("timezone", "America/New_York")
 
-        # Approximate local hour (proper timezone would need pytz)
-        utc_now = datetime.now(timezone.utc)
-        # Simple offset: Eastern = -5, Central = -6
-        if "Chicago" in tz_name or "Central" in tz_name:
-            offset = -6
-        else:
-            offset = -5
-
-        local_hour = (utc_now.hour + offset) % 24
+        # DST-safe local hour via zoneinfo
+        local_hour = datetime.now(ZoneInfo(tz_name)).hour
 
         if 6 <= local_hour < 9:
             return 1.3, "Early morning — peak edge window"
@@ -950,18 +944,8 @@ class TradeIntelligence:
             # timestamps pollute "today's" readings, and early-morning UTC
             # checks pick up yesterday's stale data.
             tz_name = city.get("timezone", "America/New_York")
-            if "Pacific" in tz_name or "Los_Angeles" in tz_name:
-                tz_offset = -8
-            elif "Mountain" in tz_name or "Denver" in tz_name:
-                tz_offset = -7
-            elif "Phoenix" in tz_name:
-                tz_offset = -7
-            elif "Chicago" in tz_name or "Central" in tz_name:
-                tz_offset = -6
-            else:
-                tz_offset = -5  # Eastern
-            utc_now = datetime.now(timezone.utc)
-            local_date = (utc_now + timedelta(hours=tz_offset)).strftime("%Y-%m-%d")
+            tz = ZoneInfo(tz_name)
+            local_date = datetime.now(tz).strftime("%Y-%m-%d")
             todays_temps = []
 
             for obs in features:
@@ -970,7 +954,7 @@ class TradeIntelligence:
                 # Convert observation UTC timestamp to local date
                 try:
                     obs_utc = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-                    obs_local_date = (obs_utc + timedelta(hours=tz_offset)).strftime("%Y-%m-%d")
+                    obs_local_date = obs_utc.astimezone(tz).strftime("%Y-%m-%d")
                 except Exception:
                     obs_local_date = ""
                 if obs_local_date == local_date:
