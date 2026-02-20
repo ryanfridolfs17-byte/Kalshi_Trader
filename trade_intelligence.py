@@ -332,7 +332,10 @@ class TradeIntelligence:
             # ─── WEATHER-SPECIFIC PROFIT CHECKS ───
             if is_weather:
                 # Take profit check (both YES and NO positions)
-                if current_price > 0 and entry_price > 0:
+                # SKIP take-profit when position is deep in the money (>90c) —
+                # selling a 94c or 99c contract to "take profit" loses the remaining
+                # 1-6c upside plus incurs sell-side fees. Let it settle at 100c.
+                if current_price > 0 and entry_price > 0 and current_price <= 90:
                     profit_pct = (current_price - entry_price) / max(entry_price, 1)
                     if profit_pct >= config.TAKE_PROFIT_PCT:
                         actions.append({
