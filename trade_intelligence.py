@@ -958,13 +958,20 @@ class TradeIntelligence:
                 return cached["temp"]
 
         try:
-            # Get last 24 hours of observations
+            # Query observations from midnight local time using the 'start' param.
+            # Many NWS stations report every 5 minutes, so limit=48 only covers
+            # ~4 hours and misses overnight highs (e.g., cold front at 2 AM).
+            tz_name = city.get("timezone", "America/New_York")
+            tz = ZoneInfo(tz_name)
+            midnight_local = datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0)
+            midnight_utc = midnight_local.astimezone(timezone.utc)
+
             url = f"https://api.weather.gov/stations/{station}/observations"
             headers = {
                 "User-Agent": "KalshiBot/3.1 (trading-bot@example.com)",
                 "Accept": "application/geo+json",
             }
-            params = {"limit": 48}  # ~24 hours of hourly observations
+            params = {"start": midnight_utc.isoformat()}
             response = requests.get(url, headers=headers, params=params, timeout=15)
 
             if response.status_code != 200:
@@ -973,12 +980,6 @@ class TradeIntelligence:
             data = response.json()
             features = data.get("features", [])
 
-            # Use city's LOCAL date, not system time (which is UTC on Railway).
-            # Without this, late-evening local observations with next-day UTC
-            # timestamps pollute "today's" readings, and early-morning UTC
-            # checks pick up yesterday's stale data.
-            tz_name = city.get("timezone", "America/New_York")
-            tz = ZoneInfo(tz_name)
             local_date = datetime.now(tz).strftime("%Y-%m-%d")
             todays_temps = []
 
