@@ -706,11 +706,10 @@ class Strategy:
         if target_date != local_date:
             return None
 
-        # HARD GUARD: Temperature must have already peaked for the day.
-        # Daily highs typically occur between 2-4 PM local. Before 1 PM,
-        # temperatures are still climbing and observations are unreliable
-        # for confirming outcomes.
-        if local_hour < 13:
+        # HARD GUARD: Need enough daytime observations for reliable high.
+        # CASE 1 & 3 use observed high (can only go up), so early detection
+        # is safe — the earlier we confirm, the better the price.
+        if local_hour < config.CASE1_MIN_LOCAL_HOUR:
             return None
 
         todays_high = self.intel.get_todays_high_so_far(city_code)
@@ -834,7 +833,9 @@ class Strategy:
         elif local_hour >= 13 and temp_gap > 5:
             case3_triggered = True                  # Was 6°F — tightened
         elif local_hour >= 12 and temp_gap > 7:
-            case3_triggered = True                  # NEW — noon with large gap
+            case3_triggered = True                  # Noon with large gap
+        elif local_hour >= 11 and temp_gap > 10:
+            case3_triggered = True                  # 11 AM — need 10°F gap (very conservative)
 
         if case3_triggered:
             no_price = market.get("no_ask", 0) or (100 - ref_price)

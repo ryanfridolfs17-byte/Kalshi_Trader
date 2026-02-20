@@ -170,18 +170,20 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 | `DAILY_LOSS_LIMIT_CENTS` | $20.00 | Stop trading if daily losses hit this |
 | `CONSECUTIVE_LOSS_PAUSE` | 5 losses | Pause trading after 5 consecutive losses |
 | `CONSECUTIVE_LOSS_PAUSE_MINUTES` | 30 min | Duration of loss pause |
-| `TRADE_COOLDOWN` | 180 sec | Minimum time between trades |
+| `TRADE_COOLDOWN` | 120 sec | Was 180 — matches scan interval for max throughput |
 | `RESTING_ORDER_TIMEOUT` | 25 min | Auto-cancel unfilled buy orders (was 15 min) |
 | `RESTING_EXIT_TIMEOUT` | 30 min | Auto-cancel unfilled exit/hedge orders |
 
-### Confirmed Outcome Rules (CASE 1 & 2)
+### Confirmed Outcome Rules (CASE 1, 2 & 3)
 | Parameter | Value | Notes |
 |-----------|-------|-------|
+| `CASE1_MIN_LOCAL_HOUR` | 11 AM local | CASE 1 & 3 earliest detection — high can only go up (was 1 PM) |
 | `CASE2_MIN_LOCAL_HOUR` | 4 PM local | CASE 2 time gate (YES on current bucket) |
 | `CASE2_NARROW_MIN_LOCAL_HOUR` | 5 PM local | Stricter for narrow buckets (≤5°F) |
 | `CASE2_NARROW_BUCKET_WIDTH` | 5°F | Definition of "narrow" bucket |
 | CASE 1 rounding buffer | +1°F | `todays_high > temp_high + 1°F` before confirming |
 | CASE 3 rounding buffer | -1°F | Gap reduced by 1°F (real temp could be higher) |
+| CASE 3 graduated gaps | 11AM:10°F, 12PM:7°F, 1PM:5°F, 3PM:3°F, 4PM+:2°F | Earlier = larger gap required |
 
 ### Settlement & Timing
 | Parameter | Value | Notes |

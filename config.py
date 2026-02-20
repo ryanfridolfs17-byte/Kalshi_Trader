@@ -129,7 +129,8 @@ CONFIRMED_OUTCOME_POSITION_PCT = 0.25  # 25% of bankroll (CASE 1: NO on exceeded
 # CASE 2: YES on current bucket — riskier, temp can still rise
 # Smaller sizing + later time gate + buffer from bucket ceiling
 CASE2_POSITION_PCT = 0.10              # 10% of bankroll (vs 25% for CASE 1)
-CASE2_MIN_LOCAL_HOUR = 16              # 4 PM local (vs immediate for CASE 1)
+CASE1_MIN_LOCAL_HOUR = 11              # 11 AM local — high can only go up, safe to confirm early
+CASE2_MIN_LOCAL_HOUR = 16              # 4 PM local (vs 11 AM for CASE 1)
 CASE2_NARROW_MIN_LOCAL_HOUR = 17       # 5 PM local for narrow buckets (≤5°F wide)
 CASE2_NARROW_BUCKET_WIDTH = 5          # Buckets ≤5°F wide get stricter rules
 
@@ -168,7 +169,7 @@ CONSECUTIVE_LOSS_PAUSE = 5
 CONSECUTIVE_LOSS_PAUSE_MINUTES = 30
 
 # Cooldown between trades (seconds)
-TRADE_COOLDOWN = 180                # 3 minutes (faster for weather)
+TRADE_COOLDOWN = 120                # 2 minutes — matches scan interval (was 180)
 
 # ═══════════════════════════════════════════════════════
 # RESTING ORDER MANAGEMENT
