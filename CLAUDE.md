@@ -166,7 +166,7 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 ### Trade Limits
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `MAX_DAILY_FORECAST_TRADES` | 4/day | Confirmed outcomes + arbitrage exempt |
+| `MAX_DAILY_FORECAST_TRADES` | 8/day | Was 4 — volume scaled for $40 bankroll. Confirmed outcomes + arbitrage exempt |
 | `DAILY_LOSS_LIMIT_CENTS` | $20.00 | Stop trading if daily losses hit this |
 | `CONSECUTIVE_LOSS_PAUSE` | 5 losses | Pause trading after 5 consecutive losses |
 | `CONSECUTIVE_LOSS_PAUSE_MINUTES` | 30 min | Duration of loss pause |
@@ -224,6 +224,7 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 - **Model divergence**: Ensemble spread >4°F = skip. Spread <2°F = 1.2x boost.
 - **Longshot floor**: No contracts below 5¢ (market_quality.py) — was 12¢, lowered to capture confirmed outcomes
 - **Near-certainty cap**: No contracts above 88¢
+- **Minimum payout**: $1.50 total payout floor (was $5 — scaled for $40 bankroll)
 - **Narrow bucket guard**: Extra caution on ≤5°F buckets
 - **Bias streak detection**: 3+ consecutive days of same-direction bias (≥0.5°F each) triggers immediate adjustment without waiting for 5-datapoint minimum
 
