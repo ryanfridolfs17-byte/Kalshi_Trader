@@ -610,7 +610,8 @@ def main():
                     # Duplicate order detection — don't stack onto existing positions or resting orders
                     held_tickers = {p.get("ticker") for p in risk.state.get("positions", [])}
                     resting_tickers = {t.get("ticker") for t in trade_log
-                                       if t.get("status") == "resting" and t.get("ticker")}
+                                       if t.get("order_status") in ("resting", "partial")
+                                       and not t.get("settled") and t.get("ticker")}
                     if ticker in held_tickers or ticker in resting_tickers:
                         dedup_reason = "held position" if ticker in held_tickers else "resting order"
                         print(f"    [DEDUP] Skipping {ticker}: already have {dedup_reason}")
@@ -800,7 +801,8 @@ def main():
                         # Duplicate order detection
                         held_tickers_sp = {p.get("ticker") for p in risk.state.get("positions", [])}
                         resting_tickers_sp = {t.get("ticker") for t in trade_log
-                                              if t.get("status") == "resting" and t.get("ticker")}
+                                              if t.get("order_status") in ("resting", "partial")
+                                              and not t.get("settled") and t.get("ticker")}
                         if ticker in held_tickers_sp or ticker in resting_tickers_sp:
                             dedup_reason = "held position" if ticker in held_tickers_sp else "resting order"
                             print(f"    [DEDUP] Skipping {ticker}: already have {dedup_reason}")
