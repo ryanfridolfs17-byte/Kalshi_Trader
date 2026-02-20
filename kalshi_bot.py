@@ -1041,12 +1041,27 @@ def _check_resting_orders(client, risk, trade_log, intel=None):
                 except Exception:
                     pass
         else:
-            # No longer resting → filled or canceled externally
+            # No longer resting → verify actual status via API
             # _reconcile_positions() already has the correct position state
-            trade["order_status"] = "filled"
+            actual_status = "filled"  # Default assumption
+            try:
+                order_resp = client._request("GET", f"/portfolio/orders/{order_id}", authenticated=True)
+                if order_resp:
+                    order_data = order_resp.get("order", order_resp)
+                    api_status = order_data.get("status", "")
+                    if api_status in ("canceled", "cancelled"):
+                        actual_status = "cancelled"
+                    elif api_status == "executed":
+                        actual_status = "filled"
+                    else:
+                        actual_status = api_status or "filled"
+            except Exception:
+                pass  # API error — fall back to "filled" assumption
+
+            trade["order_status"] = actual_status
             old_status = trade.get("status", "")
-            trade["status"] = old_status.replace("resting", "filled")
-            print(f"  [RESTING] Buy order filled: {order_id} ({trade['ticker']})")
+            trade["status"] = old_status.replace("resting", actual_status)
+            print(f"  [RESTING] Buy order {actual_status}: {order_id} ({trade['ticker']})")
             updated = True
 
     # --- Check resting EXIT orders ---
@@ -1252,9 +1267,15 @@ def _execute_trade(client, risk, signal, trade_log, market, maker=None):
     # Build human-readable description from ticker
     market_description = _build_market_description(ticker, signal.get("city_code", ""), market.get("title", ""))
 
-    # Expected profit: edge * contracts * 100 (simplified expected value in cents)
+    # Expected profit: edge * contracts * 100, minus estimated Kalshi fees
     edge = signal.get("edge", 0)
-    expected_profit_cents = round(edge * contracts * 100)
+    raw_expected_cents = edge * contracts * 100
+    # Estimate fee drag: fee is charged on profit when winning
+    # est_win_prob = market_prob + edge (works for both YES and NO sides)
+    est_win_prob = min(0.95, (price / 100.0) + edge)
+    profit_if_win_per_contract = 100 - price  # cents
+    estimated_fee_cents = config.KALSHI_FEE_PCT * profit_if_win_per_contract * est_win_prob * contracts
+    expected_profit_cents = round(raw_expected_cents - estimated_fee_cents)
 
     # Record trade
     trade_entry = {
@@ -1293,7 +1314,9 @@ def _execute_trade(client, risk, signal, trade_log, market, maker=None):
                           title=market.get("title", ""),
                           edge=signal.get("edge", 0),
                           expected_profit_cents=expected_profit_cents,
-                          market_description=market_description)
+                          market_description=market_description,
+                          confirmation_verdict=signal.get("confirmation_verdict", ""),
+                          strategy=signal.get("strategy", ""))
 
     return is_filled
 

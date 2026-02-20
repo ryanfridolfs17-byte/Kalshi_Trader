@@ -261,9 +261,10 @@ class Strategy:
         if config.FEE_ADJUSTMENT_ENABLED:
             if edge > 0:
                 win_prob = min(0.95, market_prob + edge)
+                fee_cents = config.KALSHI_FEE_PCT * (100 - ref_price)  # YES profit = 100 - yes_price
             else:
                 win_prob = min(0.95, (1 - market_prob) + abs(edge))
-            fee_cents = config.KALSHI_FEE_PCT * (100 - ref_price)
+                fee_cents = config.KALSHI_FEE_PCT * ref_price  # NO profit = 100 - no_price = yes_price
             fee_drag = (fee_cents / 100.0) * win_prob
             net_edge = abs(edge) - fee_drag
             if net_edge < config.FEE_ADJUSTED_MIN_EDGE:
@@ -779,44 +780,64 @@ class Strategy:
         has_buffer = (not is_narrow) or (todays_high < bucket_midpoint)
 
         if local_hour >= min_hour and temp_low <= todays_high <= temp_high and has_buffer:
-            yes_ask = market.get("yes_ask", 0) or ref_price
-            if yes_ask <= 0 or yes_ask >= 95:
-                return None  # Already priced in or no reasonable ask
+            # Ensemble sanity check: if models predict mean above bucket ceiling,
+            # the temperature is likely to rise out of the bucket
+            case2_vetoed = False
+            try:
+                dist = self.weather.get_temperature_distribution(city_code, target_date)
+                if dist:
+                    forecast_mean = dist.get("forecasted_high_mean", 0)
+                    forecast_max = dist.get("forecasted_high_max", 0)
+                    if forecast_mean > temp_high + 2:
+                        print(f"    [CASE2] Ensemble veto: mean {forecast_mean:.1f}°F > bucket ceiling "
+                              f"{temp_high}°F + 2°F — temp likely to rise out of bucket")
+                        case2_vetoed = True
+                    elif forecast_max > temp_high + 5 and forecast_mean > temp_high:
+                        print(f"    [CASE2] Ensemble veto: max member {forecast_max:.1f}°F and mean "
+                              f"{forecast_mean:.1f}°F above bucket ceiling {temp_high}°F")
+                        case2_vetoed = True
+            except Exception:
+                pass  # On error, proceed with CASE 2
 
-            edge = 1.0 - (yes_ask / 100.0)
-            if edge < 0.05:
-                return None
+            if not case2_vetoed:
+                yes_ask = market.get("yes_ask", 0) or ref_price
+                if yes_ask <= 0 or yes_ask >= 95:
+                    return None  # Already priced in or no reasonable ask
 
-            # Reduced sizing: 10% of bankroll (vs 25% for CASE 1)
-            bankroll_cents = getattr(self, 'balance_cents', None) or config.MAX_TOTAL_EXPOSURE_CENTS
-            max_bet_cents = int(bankroll_cents * config.CASE2_POSITION_PCT)
-            contracts = min(max(1, int(max_bet_cents / yes_ask)), config.MAX_CONTRACTS_PER_TICKER)
+                edge = 1.0 - (yes_ask / 100.0)
+                if edge < 0.05:
+                    return None
 
-            print(f"    [CASE2] {city_code} high {todays_high}°F is IN bucket {temp_low}-{temp_high}°F (mid={bucket_midpoint})")
-            print(f"    [CASE2] YES @ {yes_ask}¢ → {contracts} contracts (10% sizing, {local_hour}:00 local)")
+                # Reduced sizing: 10% of bankroll (vs 25% for CASE 1)
+                bankroll_cents = getattr(self, 'balance_cents', None) or config.MAX_TOTAL_EXPOSURE_CENTS
+                max_bet_cents = int(bankroll_cents * config.CASE2_POSITION_PCT)
+                contracts = min(max(1, int(max_bet_cents / yes_ask)), config.MAX_CONTRACTS_PER_TICKER)
 
-            return {
-                "signal": "buy_yes",
-                "side": "yes",
-                "edge": edge,
-                "confidence": 0.90,
-                "price_cents": yes_ask,
-                "confirmation_multiplier": 1.0,
-                "confirmation_verdict": "CONFIRMED_OUTCOME",
-                "predicted_high": todays_high,
-                "suggested_contracts": contracts,
-                "ticker": ticker,
-                "order_type": "limit",
-                "quality_score": 1.0,
-                "seasonal_regime": "confirmed",
-                "seasonal_multiplier": 1.0,
-                "reasoning": (
-                    f"[CASE2] {city_code}: NWS observed high {todays_high}°F is inside "
-                    f"bucket {temp_low}-{temp_high}°F at {local_hour}:00 local. YES @ {yes_ask}¢. "
-                    f"Reduced sizing: {contracts} contracts (10% bankroll)."
-                ),
-                "strategy": "S1-Weather",
-            }
+                print(f"    [CASE2] {city_code} high {todays_high}°F is IN bucket {temp_low}-{temp_high}°F (mid={bucket_midpoint})")
+                print(f"    [CASE2] YES @ {yes_ask}¢ → {contracts} contracts (10% sizing, {local_hour}:00 local)")
+
+                return {
+                    "signal": "buy_yes",
+                    "side": "yes",
+                    "edge": edge,
+                    "confidence": 0.90,
+                    "price_cents": yes_ask,
+                    "confirmation_multiplier": 1.0,
+                    "confirmation_verdict": "CONFIRMED_OUTCOME",
+                    "predicted_high": todays_high,
+                    "suggested_contracts": contracts,
+                    "ticker": ticker,
+                    "order_type": "limit",
+                    "quality_score": 1.0,
+                    "seasonal_regime": "confirmed",
+                    "seasonal_multiplier": 1.0,
+                    "reasoning": (
+                        f"[CASE2] {city_code}: NWS observed high {todays_high}°F is inside "
+                        f"bucket {temp_low}-{temp_high}°F at {local_hour}:00 local. YES @ {yes_ask}¢. "
+                        f"Reduced sizing: {contracts} contracts (10% bankroll)."
+                    ),
+                    "strategy": "S1-Weather",
+                }
 
         # CASE 3: High already BELOW the bucket's lower bound — graduated time thresholds
         # Earlier detection = cheaper NO contracts = more profit.
@@ -907,9 +928,8 @@ class Strategy:
     # ═══════════════════════════════════════════════════════
 
     def _get_et_hour(self):
-        """Get approximate current hour in Eastern Time."""
-        utc_now = datetime.now(timezone.utc)
-        return (utc_now.hour - 5) % 24
+        """Get current hour in Eastern Time (DST-aware)."""
+        return datetime.now(ZoneInfo("America/New_York")).hour
 
     def _get_edge_period(self):
         """Return human-readable label for current edge period."""

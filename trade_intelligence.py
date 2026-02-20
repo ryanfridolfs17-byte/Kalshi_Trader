@@ -1437,7 +1437,14 @@ class TradeIntelligence:
                 if side == "yes":
                     return market.get("yes_bid", 0) or market.get("last_price", 0)
                 else:
-                    return market.get("no_bid", 0) or (100 - (market.get("last_price", 0) or 0))
+                    no_bid = market.get("no_bid", 0)
+                    if no_bid and no_bid > 0:
+                        return no_bid
+                    last_price = market.get("last_price", 0) or 0
+                    if last_price > 0:
+                        return 100 - last_price
+                    # Both no_bid and last_price are 0 — dead/settled market
+                    return None
         except Exception:
             pass
         return None

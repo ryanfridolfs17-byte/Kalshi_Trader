@@ -17,6 +17,7 @@ CHECKS:
 import json
 import os
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import config
 
 
@@ -209,7 +210,8 @@ class RiskManager:
     # ═══════════════════════════════════════════════════════
 
     def record_trade(self, ticker, side, cost_cents, contracts, city_code="",
-                     title="", edge=0, expected_profit_cents=0, market_description=""):
+                     title="", edge=0, expected_profit_cents=0, market_description="",
+                     confirmation_verdict="", strategy=""):
         """Record a new position, or merge into existing if same ticker (scale-in)."""
         # Check if we already hold this ticker — merge if so
         existing = None
@@ -239,10 +241,13 @@ class RiskManager:
 
         self.state["last_trade_time"] = datetime.now().isoformat()
         self.state["daily_trade_count"] += 1
-        # Track forecast trades for daily cap (initialized on first use)
-        if "daily_forecast_trades" not in self.state:
-            self.state["daily_forecast_trades"] = 0
-        self.state["daily_forecast_trades"] += 1
+        # Track forecast trades for daily cap — confirmed outcomes and arbitrage are exempt
+        is_confirmed = confirmation_verdict == "CONFIRMED_OUTCOME"
+        is_arbitrage = strategy == "S2-Arbitrage"
+        if not is_confirmed and not is_arbitrage:
+            if "daily_forecast_trades" not in self.state:
+                self.state["daily_forecast_trades"] = 0
+            self.state["daily_forecast_trades"] += 1
 
         if city_code:
             self.state["city_exposure"][city_code] = self.state["city_exposure"].get(city_code, 0) + cost_cents
@@ -412,13 +417,13 @@ class RiskManager:
         Active: market date is today or future.
         Pending settlement: market date has passed, awaiting 10 AM ET settlement.
         """
-        today = datetime.now().date()
+        today_et = datetime.now(ZoneInfo("America/New_York")).date()
         active = []
         pending = []
 
         for p in self.state["positions"]:
             market_date = self._parse_market_date(p.get("ticker", ""))
-            if market_date is not None and market_date < today:
+            if market_date is not None and market_date < today_et:
                 pending.append(p)
             else:
                 active.append(p)
@@ -435,9 +440,7 @@ class RiskManager:
         classified = self.classify_positions()
         if not classified["pending_settlement"]:
             return False
-        # Approximate ET: UTC - 5 (matches existing codebase pattern)
-        utc_now = datetime.now(timezone.utc)
-        et_hour = (utc_now.hour - 5) % 24
+        et_hour = datetime.now(ZoneInfo("America/New_York")).hour
         return et_hour < config.SETTLEMENT_HOUR_ET
 
     def get_exposure_breakdown(self):
