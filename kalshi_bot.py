@@ -23,6 +23,7 @@ import json
 import os
 import sys
 import uuid
+import traceback
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import config
@@ -883,7 +884,7 @@ def main():
                 _save_scan_log(scan_entries, cycle)
 
             # Wait for next cycle — use faster scanning during peak temperature hours
-            et_hour = (datetime.now(timezone.utc).hour - 5) % 24
+            et_hour = datetime.now(ZoneInfo("America/New_York")).hour
             if config.PEAK_SCAN_START_ET <= et_hour < config.PEAK_SCAN_END_ET:
                 scan_interval = config.PEAK_SCAN_INTERVAL
                 print(f"  [PEAK] Afternoon peak hours ({config.PEAK_SCAN_START_ET}:00-{config.PEAK_SCAN_END_ET}:00 ET) — scanning every {scan_interval}s")
@@ -899,8 +900,24 @@ def main():
             sys.exit(0)
 
         except Exception as e:
+            tb = traceback.format_exc()
             print(f"\n  ⚠ Error in cycle {cycle}: {e}")
+            print(f"  Traceback:\n{tb}")
             print(f"  Retrying in 60 seconds...")
+            # Write last error to bot_status.json so dashboard can show it
+            try:
+                status = {}
+                if os.path.exists(config.BOT_STATUS_FILE):
+                    with open(config.BOT_STATUS_FILE) as f:
+                        status = json.load(f)
+                status["last_error"] = str(e)
+                status["last_error_traceback"] = tb
+                status["last_error_time"] = datetime.now(timezone.utc).isoformat()
+                status["last_error_cycle"] = cycle
+                with open(config.BOT_STATUS_FILE, "w") as f:
+                    json.dump(status, f, indent=2)
+            except Exception:
+                pass
             time.sleep(60)
 
 

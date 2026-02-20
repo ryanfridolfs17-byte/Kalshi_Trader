@@ -199,7 +199,7 @@ def _build_health_response():
     if bot_status.get("observation_mode") or risk_state.get("observation_mode"):
         status = "observation"
 
-    return {
+    response = {
         "status": status,
         "last_scan": last_scan_str,
         "last_scan_age_seconds": round(last_scan_age_sec) if last_scan_age_sec is not None else None,
@@ -210,6 +210,14 @@ def _build_health_response():
         "observation_reason": bot_status.get("observation_reason", ""),
         "timestamp": now.isoformat(),
     }
+
+    # Include last error info if present (written by main loop catch-all handler)
+    if bot_status.get("last_error"):
+        response["last_error"] = bot_status["last_error"]
+        response["last_error_time"] = bot_status.get("last_error_time")
+        response["last_error_cycle"] = bot_status.get("last_error_cycle")
+
+    return response
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
