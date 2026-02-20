@@ -36,7 +36,7 @@ Kalshi API requires RSA key-pair auth — credentials set via `API_KEY_ID` and `
 
 ## Architecture
 
-Multi-market prediction market trading bot for Kalshi. It runs a continuous loop (every 5 minutes) that scans enabled market types, detects mispricing, and places limit orders.
+Multi-market prediction market trading bot for Kalshi. It runs a continuous loop (every 2 minutes, 1 minute during peak hours 12-5 PM ET) that scans enabled market types, detects mispricing, and places limit orders.
 
 **Market types** are toggleable via env vars in `config.py` (`MARKET_TYPES` dict). Weather is ON by default; S&P 500 is OFF by default (`ENABLE_SP500=true` to activate). New market types should follow this pattern.
 
@@ -62,17 +62,19 @@ Weather uses `signal_confirmer.py` (5-source voting: 4 deterministic models + NW
 - **`volatility_engine.py`** — VIX-based price distributions for S&P 500. Uses yfinance for SPY/VIX data, scipy.stats.norm CDF for bracket probability calculations. Includes intraday vol adjustment.
 - **`signal_confirmer.py`** — Weather voting system from 5 independent sources: 4 deterministic models (GFS/HRRR, ECMWF, ICON, GEM) via Open-Meteo + NWS station point forecast (api.weather.gov). Outputs: STRONG (3+ agree AND NWS agrees, 1.5x), CONFIRM (2+, NWS abstains, 1.0x), WEAK (0.5x), REJECT. NWS source uses 2°F abstain zone on both underpriced and overpriced paths. **NWS DISAGREE = hard REJECT** — NWS is the settlement source, so if it explicitly contradicts the signal, the trade is blocked regardless of how many models agree. **NWS ABSTAIN = cap at CONFIRM** (never STRONG). **STRONG requires explicit NWS AGREE.**
 - **`spx_confirmer.py`** — S&P 500 signal confirmation: intraday momentum, realized vs implied vol ratio, historical bracket hit rate. Same verdict/multiplier interface as weather confirmer.
-- **`risk_manager.py`** — 19 safety layers (see Risk Parameters section below). Key checks: daily loss limit, dynamic exposure cap (60% bankroll), per-city cap (30% bankroll), per-ticker cap ($15), daily forecast trade cap (4/day, confirmed outcomes exempt), correlated position cap, loss streak pause, cooldown, settlement proximity, liquidity reserve, kill switch (Sharpe + consecutive loss). State persisted in `risk_state.json`.
+- **`risk_manager.py`** — Safety layers (see Risk Parameters section below). Key checks: daily loss limit, dynamic exposure cap (60% bankroll), per-city cap (20% bankroll), per-ticker cap ($15), daily forecast trade cap (8/day, confirmed outcomes exempt), correlated position cap, loss streak pause, cooldown, settlement proximity, liquidity reserve, kill switch (Sharpe + consecutive loss). State persisted in `risk_state.json`.
 - **`trade_intelligence.py`** — Position exit logic (including rounding-buffer exits for NO positions), forecast bias learning per NWS station (with 3-day streak detection), time-of-day sizing adjustments, intraday observation tracking, settlement P&L recording with `settled_at` timestamps.
 - **`quant_analytics.py`** — Backtesting against 90 days of historical data, per-model accuracy weighting (inverse-RMSE, fed into `weather_engine._build_distribution()` via `model_weights` parameter), regime detection (stable vs volatile), smart order placement, correlation-aware position sizing. Model accuracy is recorded on each settlement via `_update_model_accuracy_from_settlement()` in `trade_intelligence.py`, which prints a per-model error summary.
+- **`seasonal_confidence.py`** — Monthly position sizing multipliers (0.5–1.3x) per city based on NWP model verification and weather regime. Desert cities get boost in summer (predictable), spring transition cities get penalty (frontal chaos). Regime detection compares forecast to NOAA climatological normals. Learned weights persisted in `seasonal_weights.json`.
 - **`market_quality.py`** — Liquidity filter (max 20c spread, min 1 contract volume), probability guardrails (rejects <5c longshots and >88c near-certainties).
 - **`trade_scorecard.py`** — v4.0 recursive evaluation loop. 8 criteria (data integrity, forecast convergence, edge magnitude, timing window, liquidity, portfolio correlation, position sizing, adversarial check). Max 3 iterations of diagnose→fix→retry. Confirmed outcomes and arbitrage bypass. Actions: execute/reject/defer.
 - **`maker_strategy.py`** — v4.0 maker execution engine. Posts limit orders at fair_value - spread_buffer (default 2¢). Manages order lifecycle: placement, fill tracking, stale order cancellation (30min), adverse selection detection. State persisted in `maker_orders.json`.
+- **`trade_analyzer.py`** — End-of-day post-mortem analysis. Analyzes settled trades: entry edge vs outcome, per-model accuracy scorecard, guard effectiveness review, exit timing analysis, Kelly sizing review. Called on day change, writes to `trade_analysis.json`.
 - **`dashboard.py`** — Flask-based web dashboard with health monitoring, email alerts, position/trade display with market type badges.
 
 ### Data Files (Runtime State)
 
-All state is persisted as JSON in `STATE_DIR` (defaults to `.`, set to `/data` on Railway for volume persistence): `trade_history.json`, `risk_state.json`, `pnl_history.json`, `backtest_results.json`, `edge_attribution.json`, `bot_status.json`, `pending_trades.json`, `scan_log.json` (per-market evaluation log, 7-day rolling retention, exposed via `/api/state`), `maker_orders.json` (tracked open maker orders).
+All state is persisted as JSON in `STATE_DIR` (defaults to `.`, set to `/data` on Railway for volume persistence): `trade_history.json`, `risk_state.json`, `pnl_history.json`, `backtest_results.json`, `edge_attribution.json`, `bot_status.json`, `pending_trades.json`, `scan_log.json` (per-market evaluation log, 7-day rolling retention, exposed via `/api/state`), `maker_orders.json` (tracked open maker orders), `model_accuracy.json` (per-model forecast error tracking), `daily_reports.json` (daily P&L summaries), `trade_analysis.json` (post-settlement trade analysis), `bias_history.json` (NWS station forecast bias history), `seasonal_weights.json` (learned seasonal sizing adjustments).
 
 ### Key Design Decisions
 
@@ -81,7 +83,7 @@ All state is persisted as JSON in `STATE_DIR` (defaults to `.`, set to `/data` o
 - **NWS settlement** — Weather markets settle on NWS Daily Climate Reports from specific stations, not model forecasts. See NWS Station Mappings below.
 - **NWS rounding awareness** — NWS 5-minute stations have ±1°F+ error from DOS-era °F→°C→°F conversion. Settlement uses raw 1-minute readings (can be higher than displayed time series). Bot applies rounding buffer: ±1°F of strike = no trade, ±2°F = 50% size reduction.
 - **Fee-adjusted edge** — Raw edge is reduced by estimated Kalshi fee drag (7% of profit) before checking minimum edge threshold. Net edge must survive at 4%+ after fees. Fee formula is side-aware: YES uses `7% × (100 - yes_price)`, NO uses `7% × yes_price`.
-- **Longshot avoidance** — Never buys contracts priced below 12c, per academic research on prediction market biases.
+- **Longshot avoidance** — Never buys contracts priced below 5¢ (was 12¢, lowered to capture confirmed outcomes at 5-11¢).
 - **Market type isolation** — Each market type is gated behind a toggle. New market code paths only execute when explicitly enabled. SP500 uses `city_code="SP500"` in the risk manager for per-market exposure tracking.
 - **Duplicate order detection** — Before executing any trade, checks `risk.state["positions"]` and `trade_log` resting orders for the same ticker. Prevents multi-cycle order stacking (e.g., 3 identical orders across 3 cycles).
 - **Contract count cap** — Hard cap of 25 contracts per ticker (`MAX_CONTRACTS_PER_TICKER`), applied in Kelly sizing, confirmed outcome sizing, and risk manager. Prevents cheap contract explosion (e.g., 68 contracts at 22c each).
@@ -215,7 +217,7 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 |----------|-------|--------|---------|
 | 1 | Observation confirms loss (obs_high in bucket for NO, temp gap for YES) | EXIT | High |
 | 2 | Rounding buffer (obs_high within 1°F of bucket, after 2 PM) | EXIT | High |
-| 3 | NWS confirmer REJECT on re-check | EXIT if losing, WARN if profitable | High/Medium |
+| 3 | NWS confirmer REJECT on re-check | If thesis supports (>50% win): OVERRIDE, hold. If not losing much: WARN. If losing + thesis broken: EXIT | Low/Medium/High |
 | 4 | Ensemble probability floor (<15% YES, >85% NO) | EXIT | High |
 | 5 | **Thesis valid** (model says >50% chance of winning) | **HOLD** | Low |
 | 6 | Thesis weakening (edge decayed but still positive) | PARE | Medium |
