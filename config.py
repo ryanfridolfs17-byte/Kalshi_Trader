@@ -220,7 +220,7 @@ FEE_ADJUSTMENT_ENABLED = True
 # ═══════════════════════════════════════════════════════
 # Fewer, higher-conviction trades. Confirmed outcomes and
 # arbitrage are exempt (near risk-free).
-MAX_DAILY_FORECAST_TRADES = 4
+MAX_DAILY_FORECAST_TRADES = 8   # Was 4 — allow more volume with smaller positions
 
 # ═══════════════════════════════════════════════════════
 # SETTLEMENT-AWARE CAPITAL MANAGEMENT
@@ -280,7 +280,7 @@ ADAPTIVE_LEARNING_BLEND = 0.3        # Weight given to empirical data vs theoret
 MIN_EDGE = 0.08
 
 # Skip trades where total payout (contracts × payout_per_contract) is below this
-MIN_PAYOUT_DOLLARS = 5
+MIN_PAYOUT_DOLLARS = 1.50      # Was $5 — scaled for $40 bankroll (3% of bankroll)
 
 # Minimum volume on a market to trade it
 # Note: Kalshi weather markets are low-volume. 1+ is realistic.
