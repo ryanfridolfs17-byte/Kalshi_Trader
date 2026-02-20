@@ -134,6 +134,20 @@ CASE2_MIN_LOCAL_HOUR = 16              # 4 PM local (vs 11 AM for CASE 1)
 CASE2_NARROW_MIN_LOCAL_HOUR = 17       # 5 PM local for narrow buckets (≤5°F wide)
 CASE2_NARROW_BUCKET_WIDTH = 5          # Buckets ≤5°F wide get stricter rules
 
+# CASE 3: Graduated gap thresholds for "bucket unreachable" detection
+# Keys = minimum local hour, Values = minimum temp gap (°F) after rounding buffer
+# Earlier detection = larger gap required (more time for temp to rise)
+CASE3_GAP_THRESHOLDS = {
+    16: 3,   # 4PM+: 3°F (was 2°F — too aggressive)
+    15: 5,   # 3PM: 5°F (was 3°F — DC loss)
+    14: 6,   # 2PM: 6°F (new tier)
+    13: 7,   # 1PM: 7°F (was 5°F)
+    12: 8,   # Noon: 8°F (was 7°F)
+    11: 10,  # 11AM: 10°F (unchanged)
+}
+CASE3_ENSEMBLE_VETO_GAP_LATE = 3       # 3PM+: ensemble mean within 3°F of bucket = veto
+CASE3_ENSEMBLE_VETO_GAP_DEFAULT = 5    # Before 3PM: ensemble mean within 5°F = veto
+
 # Trades above this require manual approval
 APPROVAL_THRESHOLD_CENTS = 2500     # $25.00
 

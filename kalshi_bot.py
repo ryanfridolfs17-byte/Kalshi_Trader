@@ -1305,6 +1305,8 @@ def _execute_trade(client, risk, signal, trade_log, market, maker=None):
         "settled": False,
         "spread_at_entry_cents": spread_at_entry,
         "expected_profit_cents": expected_profit_cents,
+        "model_predictions": signal.get("model_means", {}),
+        "model_weights_used": signal.get("model_weights_used", {}),
     }
 
     trade_log.append(trade_entry)
