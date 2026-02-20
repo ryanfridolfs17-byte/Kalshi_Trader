@@ -26,6 +26,13 @@ import uuid
 import traceback
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+
+# Fix Windows cp1252 console encoding — prevents UnicodeEncodeError on emoji/unicode chars
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if sys.stderr and hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
 import config
 
 
@@ -355,7 +362,7 @@ def main():
             else:
                 exits = intel.check_exits(risk.state.get("positions", []), strategy.weather)
                 for exit_rec in exits:
-                    print(f"  ⚡ EXIT: {exit_rec['ticker']} — {exit_rec['reason']}")
+                    print(f"  >> EXIT: {exit_rec['ticker']} -- {exit_rec['reason']}")
                     if config.DRY_RUN:
                         print(f"    [DRY RUN] Would exit {exit_rec['ticker']} ({exit_rec['urgency']} urgency)")
                         continue
@@ -589,7 +596,7 @@ def main():
                     # STEP 6: EXECUTE (or queue for approval)
                     # ═══════════════════════════════════════
                     if approved == "NEEDS_APPROVAL":
-                        print(f"    ⚠ {reason}")
+                        print(f"    WARNING: {reason}")
                         if sys.stdin.isatty():
                             user_input = input("    Approve? (y/n): ").strip().lower()
                             if user_input != "y":
@@ -904,7 +911,7 @@ def main():
 
         except Exception as e:
             tb = traceback.format_exc()
-            print(f"\n  ⚠ Error in cycle {cycle}: {e}")
+            print(f"\n  WARNING: Error in cycle {cycle}: {e}")
             print(f"  Traceback:\n{tb}")
             print(f"  Retrying in 60 seconds...")
             # Write last error to bot_status.json so dashboard can show it
@@ -1323,9 +1330,9 @@ def _print_daily_volume_monitor(risk, trade_log, skip_reasons):
     print(f"  │  Forecast trades: {forecast_trades}/{daily_cap}  |  Confirmed: {confirmed_today}  |  Total: {daily_trades}")
     print(f"  │  Daily loss: ${daily_loss/100:.2f}/${config.DAILY_LOSS_LIMIT_CENTS/100:.2f}")
     if payout_blocked > 0:
-        print(f"  │  ⚠ Payout filter: {payout_blocked} blocked this cycle")
+        print(f"  |  ! Payout filter: {payout_blocked} blocked this cycle")
     if cap_blocked > 0:
-        print(f"  │  ⚠ Trade cap: {cap_blocked} blocked this cycle")
+        print(f"  |  ! Trade cap: {cap_blocked} blocked this cycle")
     print(f"  └─────────────────────────────────────────────")
 
 
