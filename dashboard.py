@@ -608,14 +608,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 
 def start_dashboard_server(port=DASHBOARD_PORT):
-    """Start the dashboard HTTP server in a background thread.
+    """Start the dashboard HTTP server in a daemon background thread.
 
-    Uses a non-daemon thread so the server stays alive even if the
-    main bot thread crashes.  On Railway this keeps the process
-    running and responding to health checks.
+    Uses a daemon thread so the process exits cleanly when the main
+    bot thread stops.  The outer restart loop in kalshi_bot.py ensures
+    the bot recovers from crashes — keeping a zombie dashboard alive
+    without the trading loop is worse than restarting the whole process.
     """
     server = HTTPServer(("0.0.0.0", port), DashboardHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=False)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     print(f"  [DASHBOARD] Running on port {port}")
     return server
