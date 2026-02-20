@@ -285,12 +285,15 @@ class TradeIntelligence:
                                 })
                                 continue
 
-                        # NO + temp currently inside bucket — position at risk
-                        if is_today and side == "no" and actual_temp is not None:
-                            if temp_low <= actual_temp <= temp_high and now_hour >= 12:
+                        # NO + daily high already in bucket — confirmed loss
+                        # Must check obs_high (daily max), NOT actual_temp (current reading).
+                        # At 7 PM the current temp drops to 65°F but daily high was 78°F.
+                        if is_today and side == "no" and now_hour >= 12:
+                            check_val = obs_high if obs_high is not None else actual_temp
+                            if check_val is not None and temp_low <= check_val <= temp_high:
                                 actions.append({
                                     "ticker": ticker, "action": "full_exit", "urgency": "high",
-                                    "reason": f"Temp {actual_temp:.0f}F is IN bucket {temp_low}-{temp_high}F at {now_hour}:00",
+                                    "reason": f"Daily high {check_val:.0f}F is IN bucket {temp_low}-{temp_high}F — NO loses",
                                     "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
                                     "city_code": city_code, "side": side, "contracts": contracts,
                                     "cost_cents": cost_cents,
@@ -351,6 +354,29 @@ class TradeIntelligence:
                         new_prob = weather_engine.calculate_bucket_probability(
                             dist, parsed["temp_low"], parsed["temp_high"]
                         )
+
+                    # Override stale ensemble with observation reality for TODAY's markets.
+                    # After 2 PM, the daily high is largely set. If obs_high is available,
+                    # use it to correct the probability — the ensemble forecast from 6+ hours
+                    # ago doesn't know the actual temperature.
+                    target_date = parsed.get("target_date")
+                    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                    now_h = datetime.now().hour
+                    if target_date == today_str and now_h >= 14:
+                        obs_h = self.get_todays_high_so_far(city_code)
+                        if obs_h is not None:
+                            t_lo = parsed["temp_low"]
+                            t_hi = parsed["temp_high"]
+                            if t_lo <= obs_h <= t_hi:
+                                # High is IN the bucket — near certain YES
+                                new_prob = 0.95
+                            elif obs_h > t_hi:
+                                # High exceeded bucket — this bucket lost
+                                new_prob = 0.02
+                            elif obs_h >= t_lo - 2:
+                                # High is close to bucket floor — uncertain
+                                new_prob = 0.40
+                            # else: obs_h well below bucket, ensemble is reasonable
 
             elif is_sp500 and volatility_engine:
                 parsed = volatility_engine.parse_market_bracket(
