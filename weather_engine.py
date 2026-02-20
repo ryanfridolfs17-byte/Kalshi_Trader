@@ -566,6 +566,9 @@ class WeatherEngine:
         # Patterns: "35°F to 39°F", "35 - 39", "above 40", "below 30"
         import re
 
+        temp_low = None
+        temp_high = None
+
         # Try range pattern: "XX°F to YY°F" or "XX - YY" or "XX to YY"
         range_match = re.search(r'(\d+)\s*(?:°F?\s*)?(?:to|-)\s*(\d+)', title + " " + subtitle)
         if range_match:
@@ -599,6 +602,21 @@ class WeatherEngine:
                 else:
                     temp_high = threshold - 1  # strict: "below 78°" → ≤77
                 temp_low = -100  # Effectively negative infinity
+
+        # Fallback: parse bucket/threshold directly from ticker suffix.
+        # Ticker format: KXHIGH...-26FEB20-B77.5 (bucket) or -T55 (threshold)
+        # This handles positions with empty titles (e.g., after reconciliation).
+        if temp_low is None:
+            bucket_match = re.search(r'-B(\d+\.?\d*)', ticker)
+            thresh_match = re.search(r'-T(\d+\.?\d*)', ticker)
+            if bucket_match:
+                midpoint = float(bucket_match.group(1))
+                temp_low = int(midpoint - 0.5)
+                temp_high = int(midpoint + 0.5)
+            elif thresh_match:
+                threshold = int(float(thresh_match.group(1)))
+                temp_low = threshold
+                temp_high = 200
             else:
                 return None
 
