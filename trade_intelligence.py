@@ -386,39 +386,12 @@ class TradeIntelligence:
                         )
 
             if new_prob is None:
-                # Can't get fresh probability (future date, API down, etc.)
-                # Record a hold with explanation instead of silently skipping,
-                # so the dashboard shows something instead of stale review data.
-                actions.append({
-                    "ticker": ticker, "action": "hold", "urgency": "low",
-                    "current_price": current_price, "new_edge": entry_edge,
-                    "entry_edge": entry_edge,
-                    "city_code": city_code, "side": side,
-                    "contracts": contracts, "cost_cents": cost_cents,
-                    "reason": "No fresh forecast available — holding (forecast data may not be available yet for this date)",
-                    "review_detail": {
-                        "reviewed_at": datetime.now(timezone.utc).isoformat(),
-                        "action": "hold",
-                        "current_price": current_price,
-                        "entry_price": round(cost_cents / max(contracts, 1), 1),
-                        "entry_edge": entry_edge,
-                        "is_underwater": False,
-                    },
-                })
                 continue
-
-            # Compute thesis support early — needed by confirmer re-check below
-            thesis_supports_position = (
-                (side == "yes" and new_prob >= 0.50) or
-                (side == "no" and new_prob <= 0.50)
-            )
 
             # ─── CONFIRMER RE-CHECK (NWS settlement source validation) ───
             # Re-run the signal confirmer on open positions to catch cases where
             # NWS now disagrees with our thesis.  NWS is the settlement source —
             # if it says we're wrong, exit regardless of ensemble edge.
-            # BUT: if our model still says >50% chance of winning, the confirmer
-            # REJECT is informational only — we hold and note the disagreement.
             if is_weather and signal_confirmer and parsed and current_price > 0:
                 city_info = CITIES.get(city_code)
                 if city_info:
@@ -436,55 +409,36 @@ class TradeIntelligence:
                         )
                         if recheck.get("verdict") == "REJECT":
                             nws_detail = recheck.get("summary", "NWS disagrees")
+                            # Safety guard: only auto-exit if position is already losing.
+                            # If profitable or near breakeven, downgrade to medium urgency
+                            # so it logs a recommendation but doesn't auto-sell winners.
                             entry_price = cost_cents / max(contracts, 1)
                             pnl_pct = ((current_price - entry_price) / max(entry_price, 1)) if entry_price > 0 else 0
-
-                            if thesis_supports_position:
-                                # Model still says >50% win — confirmer REJECT is overridden.
-                                # Don't exit; just note the disagreement and proceed to
-                                # thesis validation below for a proper HOLD action.
-                                our_win_prob = new_prob if side == "yes" else (1.0 - new_prob)
-                                print(f"    [REVIEW] {ticker}: Confirmer REJECT overridden — "
-                                      f"model says {our_win_prob:.0%} win prob. Detail: {nws_detail}")
-                                # Fall through to thesis validation — do NOT continue
-                            elif pnl_pct >= -0.10:
-                                # Thesis doesn't fully support, but not losing much — warn
-                                actions.append({
-                                    "ticker": ticker, "action": "full_exit", "urgency": "medium",
-                                    "reason": f"Confirmer REJECT (position not losing, manual review): {nws_detail}",
-                                    "current_price": current_price, "new_edge": 0,
-                                    "entry_edge": entry_edge,
-                                    "city_code": city_code, "side": side,
-                                    "contracts": contracts, "cost_cents": cost_cents,
-                                    "review_detail": {
-                                        "reviewed_at": datetime.now(timezone.utc).isoformat(),
-                                        "action": "full_exit",
-                                        "confirmer_verdict": recheck.get("verdict"),
-                                        "confirmer_summary": nws_detail,
-                                        "pnl_pct_at_review": round(pnl_pct, 4),
-                                        "urgency_reason": "manual_review",
-                                    },
-                                })
-                                continue
+                            if pnl_pct >= -0.10:
+                                # Profitable or small loss — warn but don't auto-sell
+                                urgency = "medium"
+                                reason_prefix = "Confirmer REJECT (position not losing, manual review recommended)"
                             else:
-                                # Thesis broken AND losing — auto-exit
-                                actions.append({
-                                    "ticker": ticker, "action": "full_exit", "urgency": "high",
-                                    "reason": f"Confirmer REJECT on re-check: {nws_detail}",
-                                    "current_price": current_price, "new_edge": 0,
-                                    "entry_edge": entry_edge,
-                                    "city_code": city_code, "side": side,
-                                    "contracts": contracts, "cost_cents": cost_cents,
-                                    "review_detail": {
-                                        "reviewed_at": datetime.now(timezone.utc).isoformat(),
-                                        "action": "full_exit",
-                                        "confirmer_verdict": recheck.get("verdict"),
-                                        "confirmer_summary": nws_detail,
-                                        "pnl_pct_at_review": round(pnl_pct, 4),
-                                        "urgency_reason": "auto",
-                                    },
-                                })
-                                continue
+                                # Already losing significantly — auto-exit
+                                urgency = "high"
+                                reason_prefix = "Confirmer REJECT on re-check"
+                            actions.append({
+                                "ticker": ticker, "action": "full_exit", "urgency": urgency,
+                                "reason": f"{reason_prefix}: {nws_detail}",
+                                "current_price": current_price, "new_edge": 0,
+                                "entry_edge": entry_edge,
+                                "city_code": city_code, "side": side,
+                                "contracts": contracts, "cost_cents": cost_cents,
+                                "review_detail": {
+                                    "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                                    "action": "full_exit",
+                                    "confirmer_verdict": recheck.get("verdict"),
+                                    "confirmer_summary": nws_detail,
+                                    "pnl_pct_at_review": round(pnl_pct, 4),
+                                    "urgency_reason": "auto" if urgency == "high" else "manual_review",
+                                },
+                            })
+                            continue
                     except Exception as e:
                         print(f"    [REVIEW] Confirmer re-check failed for {ticker}: {e}")
 
@@ -522,9 +476,15 @@ class TradeIntelligence:
                 entry_edge = config.MIN_EDGE
 
             # ─── THESIS VALIDATION ───
-            # thesis_supports_position was computed above (before confirmer re-check)
-            # using the fresh new_prob. If model says >50% win, we HOLD regardless
-            # of edge erosion — the market agreeing with us is confirmation, not exit signal.
+            # The key question is: "Does the model/observations still say this position
+            # wins at settlement?" If yes, hold — edge erosion just means the market
+            # caught up to our forecast. That's confirmation, not a reason to exit.
+            # Exits should only happen when the thesis is BROKEN (observations show loss,
+            # NWS disagrees, ensemble contradicts), all of which are handled above.
+            thesis_supports_position = (
+                (side == "yes" and new_prob >= 0.50) or
+                (side == "no" and new_prob <= 0.50)
+            )
 
             # ─── GRADUATED RESPONSE ───
             edge_decay_pct = max(0, min(1.0, (entry_edge - new_edge) / entry_edge)) if entry_edge > 0 else 1.0
