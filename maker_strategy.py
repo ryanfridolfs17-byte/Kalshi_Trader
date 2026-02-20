@@ -398,7 +398,6 @@ class MakerStrategy:
         """Save tracked open orders to state file."""
         filepath = os.path.join(config.STATE_DIR, "maker_orders.json")
         try:
-            with open(filepath, "w") as f:
-                json.dump(self.open_orders, f, indent=2)
+            config.atomic_json_save(filepath, self.open_orders)
         except Exception as e:
             print(f"  [MAKER] Error saving orders: {e}")

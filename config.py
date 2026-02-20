@@ -312,6 +312,27 @@ KILL_SWITCH_MIN_SHARPE_7D = 0.0
 STATE_DIR = os.environ.get("STATE_DIR", ".")
 os.makedirs(STATE_DIR, exist_ok=True)
 
+def atomic_json_save(filepath, data, indent=2):
+    """Write JSON atomically: write to temp file, then os.replace().
+
+    Prevents 0-byte corruption if the process is killed mid-write.
+    """
+    import json as _json
+    import tempfile
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=STATE_DIR, suffix=".tmp")
+    try:
+        with os.fdopen(tmp_fd, "w") as f:
+            _json.dump(data, f, indent=indent)
+        os.replace(tmp_path, filepath)
+    except Exception:
+        # Clean up temp file if replace failed
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 EDGE_ATTRIBUTION_FILE = os.path.join(STATE_DIR, "edge_attribution.json")
 TRADE_ANALYSIS_FILE = os.path.join(STATE_DIR, "trade_analysis.json")
 ANALYSIS_HOUR_ET = 11  # Run analysis 1hr after 10AM settlements

@@ -100,7 +100,7 @@ def main():
 
     # ─── START DASHBOARD FIRST ───
     # Must bind to PORT before anything else so Railway health checks pass.
-    # Runs in a non-daemon thread so it survives if the bot crashes.
+    # Runs in a daemon thread — the outer restart loop handles crash recovery.
     from dashboard import start_dashboard_server
     port = int(os.environ.get("PORT", 8050))
     start_dashboard_server(port)
@@ -154,16 +154,29 @@ def main():
     trade_log = _load_trade_log()
 
     # ─── RECONCILE WITH EXCHANGE ───
-    _reconcile_positions(client, risk)
+    # Network-dependent init steps wrapped in try/except so transient
+    # API failures don't prevent startup. The main loop retries each cycle.
+    try:
+        _reconcile_positions(client, risk)
+    except Exception as e:
+        print(f"  [STARTUP] WARNING: Position reconciliation failed: {e}")
+        print(f"  [STARTUP] Will retry next cycle")
 
     # ─── SYNC BALANCE ───
-    _sync_balance(client, risk, strategy)
+    try:
+        _sync_balance(client, risk, strategy)
+    except Exception as e:
+        print(f"  [STARTUP] WARNING: Balance sync failed: {e}")
 
     # ─── STARTUP P&L SYNC ───
     # Immediately sync P&L from Kalshi to clean up phantom trades
     # and establish correct realized P&L before first cycle.
     print("  [STARTUP] Syncing P&L from Kalshi...")
-    _sync_pnl_from_kalshi(client, trade_log=trade_log, intel=intel)
+    try:
+        _sync_pnl_from_kalshi(client, trade_log=trade_log, intel=intel)
+    except Exception as e:
+        print(f"  [STARTUP] WARNING: P&L sync failed: {e}")
+        print(f"  [STARTUP] Will retry next cycle")
 
     # ─── STARTUP CLEANUP ───
     # If DRY_RUN, expire all unsettled positions from previous sessions.
@@ -1459,8 +1472,7 @@ def _save_scan_log(entries, cycle):
         # Prune entries older than 7 days
         cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
         data = [d for d in data if d.get("timestamp", "") >= cutoff]
-        with open(config.SCAN_LOG_FILE, "w") as f:
-            json.dump(data, f, indent=2)
+        config.atomic_json_save(config.SCAN_LOG_FILE, data)
     except Exception as e:
         print(f"  [SCAN LOG] Failed to save: {e}")
 
@@ -1533,8 +1545,7 @@ def _write_bot_status(cycle, skip_reasons, trades_this_cycle, strategy, client=N
         "seasonal_confidence": seasonal_confidence,
     }
     try:
-        with open(config.BOT_STATUS_FILE, "w") as f:
-            json.dump(status, f, indent=2)
+        config.atomic_json_save(config.BOT_STATUS_FILE, status)
     except Exception:
         pass
 
@@ -2309,10 +2320,11 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
         return
 
     try:
-        # Fetch all fills (paginated)
+        # Fetch all fills (paginated, safety cap to prevent infinite loops)
+        MAX_PAGES = 50  # 50 pages x 200 = 10,000 fills max
         all_fills = []
         cursor = None
-        while True:
+        for _ in range(MAX_PAGES):
             result = client.get_fills(limit=200, cursor=cursor)
             if not result:
                 break
@@ -2325,7 +2337,7 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
         # Fetch all settlements (paginated)
         all_settlements = []
         cursor = None
-        while True:
+        for _ in range(MAX_PAGES):
             result = client.get_settlements(limit=200, cursor=cursor)
             if not result:
                 break
@@ -2340,7 +2352,7 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
         positions_fetched = False  # True if API call succeeded (even if empty)
         try:
             pos_cursor = None
-            while True:
+            for _ in range(MAX_PAGES):
                 pos_result = client.get_positions(limit=200, cursor=pos_cursor)
                 if not pos_result:
                     break
@@ -2731,11 +2743,66 @@ def _load_trade_log():
 
 def _save_trade_log(log):
     try:
-        with open(config.TRADE_LOG_FILE, "w") as f:
-            json.dump(log, f, indent=2)
+        config.atomic_json_save(config.TRADE_LOG_FILE, log)
     except Exception:
         pass
 
 
 if __name__ == "__main__":
-    main()
+    import signal
+
+    _shutdown_requested = False
+
+    def _sigterm_handler(signum, frame):
+        """Handle SIGTERM from Railway for graceful shutdown."""
+        global _shutdown_requested
+        _shutdown_requested = True
+        print("\n  [SHUTDOWN] SIGTERM received — saving state and exiting...")
+        # Save risk state if available
+        try:
+            from risk_manager import RiskManager
+            risk = RiskManager()
+            risk._save_state()
+            print("  [SHUTDOWN] Risk state saved.")
+        except Exception:
+            pass
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+
+    # Outer restart loop — if main() crashes, wait and retry.
+    # This prevents Railway zombie processes (dashboard alive, bot dead).
+    MAX_RESTARTS = 50
+    restart_count = 0
+    while restart_count < MAX_RESTARTS:
+        try:
+            main()
+            break  # Clean exit from main() — don't restart
+        except SystemExit:
+            break  # Explicit exit (Ctrl+C, SIGTERM) — don't restart
+        except Exception as e:
+            restart_count += 1
+            tb = traceback.format_exc()
+            print(f"\n  [CRASH] Bot crashed (restart {restart_count}/{MAX_RESTARTS}): {e}")
+            print(f"  {tb}")
+            # Write crash info to bot_status.json
+            try:
+                status = {}
+                if os.path.exists(config.BOT_STATUS_FILE):
+                    with open(config.BOT_STATUS_FILE) as f:
+                        status = json.load(f)
+                status["last_crash"] = str(e)
+                status["last_crash_traceback"] = tb
+                status["last_crash_time"] = datetime.now(timezone.utc).isoformat()
+                status["restart_count"] = restart_count
+                with open(config.BOT_STATUS_FILE, "w") as f:
+                    json.dump(status, f, indent=2)
+            except Exception:
+                pass
+            wait = min(60 * restart_count, 300)  # Back off: 60s, 120s, ... up to 5min
+            print(f"  [CRASH] Restarting in {wait} seconds...")
+            time.sleep(wait)
+
+    if restart_count >= MAX_RESTARTS:
+        print(f"\n  [FATAL] Exceeded {MAX_RESTARTS} restarts. Exiting.")
+        sys.exit(1)

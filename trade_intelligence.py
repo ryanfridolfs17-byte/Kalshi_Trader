@@ -1449,8 +1449,7 @@ class TradeIntelligence:
 
     def _save_json(self, filepath, data):
         try:
-            with open(filepath, "w") as f:
-                json.dump(data, f, indent=2)
+            config.atomic_json_save(filepath, data)
         except Exception:
             pass
 

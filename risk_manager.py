@@ -561,8 +561,7 @@ class RiskManager:
 
     def _save_state(self):
         try:
-            with open(config.RISK_STATE_FILE, "w") as f:
-                json.dump(self.state, f, indent=2)
+            config.atomic_json_save(config.RISK_STATE_FILE, self.state)
         except Exception:
             pass
 
