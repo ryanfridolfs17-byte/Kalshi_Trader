@@ -120,7 +120,8 @@ class TradeIntelligence:
                     # still win (high was recorded earlier). But if the
                     # current temp is way BELOW the bucket and it's late
                     # afternoon, the bucket is dead.
-                    now_hour = datetime.now().hour
+                    city_tz = CITIES.get(city_code, {}).get("timezone", "America/New_York")
+                    now_hour = datetime.now(ZoneInfo(city_tz)).hour
 
                     if side == "yes":
                         # If it's past 3 PM and current temp hasn't
@@ -245,8 +246,13 @@ class TradeIntelligence:
                         temp_low = parsed["temp_low"]
                         temp_high = parsed["temp_high"]
                         target_date = parsed.get("target_date")
-                        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                        now_hour = datetime.now().hour
+                        # Use city's local timezone for date/hour — NOT UTC.
+                        # At 7 PM CT (Dallas), UTC is already Feb 20, but the
+                        # market date is still Feb 19. Using UTC breaks is_today.
+                        city_tz_name = CITIES.get(city_code, {}).get("timezone", "America/New_York")
+                        city_now = datetime.now(ZoneInfo(city_tz_name))
+                        today_str = city_now.strftime("%Y-%m-%d")
+                        now_hour = city_now.hour
                         is_today = (target_date == today_str) if target_date else True
                         obs_high = todays_high if todays_high is not None else actual_temp
 
@@ -356,12 +362,14 @@ class TradeIntelligence:
                         )
 
                     # Override stale ensemble with observation reality for TODAY's markets.
-                    # After 2 PM, the daily high is largely set. If obs_high is available,
+                    # After 2 PM local, the daily high is largely set. If obs_high is available,
                     # use it to correct the probability — the ensemble forecast from 6+ hours
                     # ago doesn't know the actual temperature.
                     target_date = parsed.get("target_date")
-                    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                    now_h = datetime.now().hour
+                    city_tz_name = CITIES.get(city_code, {}).get("timezone", "America/New_York")
+                    city_now = datetime.now(ZoneInfo(city_tz_name))
+                    today_str = city_now.strftime("%Y-%m-%d")
+                    now_h = city_now.hour
                     if target_date == today_str and now_h >= 14:
                         obs_h = self.get_todays_high_so_far(city_code)
                         if obs_h is not None:
