@@ -1547,7 +1547,7 @@ def _update_model_accuracy_from_settlement(quant, city_code, actual_temp):
     for that day and record accuracy data in quant_analytics.
 
     This feeds the dynamic model weighting system so better models
-    get higher weight over time.
+    get higher weight over time. Prints a summary for logging.
     """
     city = CITIES.get(city_code)
     if not city:
@@ -1555,6 +1555,8 @@ def _update_model_accuracy_from_settlement(quant, city_code, actual_temp):
 
     # Use yesterday's date since settlements happen after the market date
     target_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    model_results = []
 
     for confirmer_key, api_url in _DETERMINISTIC_APIS.items():
         quant_key = _CONFIRMER_TO_QUANT.get(confirmer_key)
@@ -1580,8 +1582,19 @@ def _update_model_accuracy_from_settlement(quant, city_code, actual_temp):
             temps = data.get("daily", {}).get("temperature_2m_max", [])
             if temps and temps[0] is not None:
                 forecast_high = round(temps[0])
+                error = forecast_high - actual_temp
+                model_results.append({
+                    "model": quant_key,
+                    "forecast": forecast_high,
+                    "error": error,
+                })
                 quant.record_model_accuracy(
                     city_code, quant_key, forecast_high, actual_temp
                 )
         except Exception:
             continue
+
+    # Print summary for logging
+    if model_results:
+        parts = [f"{r['model']} predicted {r['forecast']}°F (err: {r['error']:+d}°F)" for r in model_results]
+        print(f"    [MODEL ACCURACY] {city_code}: actual {actual_temp}°F — {', '.join(parts)}")

@@ -58,13 +58,13 @@ Weather uses `signal_confirmer.py` (5-source voting: 4 deterministic models + NW
 - **`config.py`** — All tunable parameters: credentials, risk limits, strategy thresholds, scan intervals, market type toggles. Values are in cents (100 cents = $1.00).
 - **`market_scanner.py`** — Queries Kalshi for weather series + S&P 500 brackets. `scan_all_enabled_markets()` respects `MARKET_TYPES` toggles.
 - **`strategy.py`** — Three strategies: **S1 (Weather Edge)** ensemble vs market prices; **S2 (Spread Arbitrage)** YES+NO < $0.98; **S3 (SP500 Brackets)** VIX-implied distributions vs bracket prices. S3 components only initialized when sp500 is enabled.
-- **`weather_engine.py`** — Aggregates 143 ensemble members from 4 sources (GFS 31, ECMWF 51, ICON-EPS 40, GEM 21) via Open-Meteo. Builds probability distributions across temperature buckets.
+- **`weather_engine.py`** — Aggregates 143 ensemble members from 4 sources (GFS 31, ECMWF 51, ICON-EPS 40, GEM 21) via Open-Meteo. Builds weighted probability distributions across temperature buckets. Accepts `model_weights` dict from `quant_analytics.get_model_weights()` — each ensemble member is weighted by its source model's inverse-RMSE accuracy score. With no weights (or insufficient accuracy data), falls back to equal weighting.
 - **`volatility_engine.py`** — VIX-based price distributions for S&P 500. Uses yfinance for SPY/VIX data, scipy.stats.norm CDF for bracket probability calculations. Includes intraday vol adjustment.
 - **`signal_confirmer.py`** — Weather voting system from 5 independent sources: 4 deterministic models (GFS/HRRR, ECMWF, ICON, GEM) via Open-Meteo + NWS station point forecast (api.weather.gov). Outputs: STRONG (3+ agree AND NWS agrees, 1.5x), CONFIRM (2+, NWS abstains, 1.0x), WEAK (0.5x), REJECT. NWS source uses 2°F abstain zone on both underpriced and overpriced paths. **NWS DISAGREE = hard REJECT** — NWS is the settlement source, so if it explicitly contradicts the signal, the trade is blocked regardless of how many models agree. **NWS ABSTAIN = cap at CONFIRM** (never STRONG). **STRONG requires explicit NWS AGREE.**
 - **`spx_confirmer.py`** — S&P 500 signal confirmation: intraday momentum, realized vs implied vol ratio, historical bracket hit rate. Same verdict/multiplier interface as weather confirmer.
 - **`risk_manager.py`** — 19 safety layers (see Risk Parameters section below). Key checks: daily loss limit, dynamic exposure cap (60% bankroll), per-city cap (30% bankroll), per-ticker cap ($15), daily forecast trade cap (4/day, confirmed outcomes exempt), correlated position cap, loss streak pause, cooldown, settlement proximity, liquidity reserve, kill switch (Sharpe + consecutive loss). State persisted in `risk_state.json`.
 - **`trade_intelligence.py`** — Position exit logic (including rounding-buffer exits for NO positions), forecast bias learning per NWS station (with 3-day streak detection), time-of-day sizing adjustments, intraday observation tracking, settlement P&L recording with `settled_at` timestamps.
-- **`quant_analytics.py`** — Backtesting against 90 days of historical data, per-model accuracy weighting, regime detection (stable vs volatile), smart order placement, correlation-aware position sizing.
+- **`quant_analytics.py`** — Backtesting against 90 days of historical data, per-model accuracy weighting (inverse-RMSE, fed into `weather_engine._build_distribution()` via `model_weights` parameter), regime detection (stable vs volatile), smart order placement, correlation-aware position sizing. Model accuracy is recorded on each settlement via `_update_model_accuracy_from_settlement()` in `trade_intelligence.py`, which prints a per-model error summary.
 - **`market_quality.py`** — Liquidity filter (max 20c spread, min 1 contract volume), probability guardrails (rejects <5c longshots and >88c near-certainties).
 - **`trade_scorecard.py`** — v4.0 recursive evaluation loop. 8 criteria (data integrity, forecast convergence, edge magnitude, timing window, liquidity, portfolio correlation, position sizing, adversarial check). Max 3 iterations of diagnose→fix→retry. Confirmed outcomes and arbitrage bypass. Actions: execute/reject/defer.
 - **`maker_strategy.py`** — v4.0 maker execution engine. Posts limit orders at fair_value - spread_buffer (default 2¢). Manages order lifecycle: placement, fill tracking, stale order cancellation (30min), adverse selection detection. State persisted in `maker_orders.json`.
@@ -184,7 +184,8 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 | `CASE2_NARROW_BUCKET_WIDTH` | 5°F | Definition of "narrow" bucket |
 | CASE 1 rounding buffer | +1°F | `todays_high > temp_high + 1°F` before confirming |
 | CASE 3 rounding buffer | -1°F | Gap reduced by 1°F (real temp could be higher) |
-| CASE 3 graduated gaps | 11AM:10°F, 12PM:7°F, 1PM:5°F, 3PM:3°F, 4PM+:2°F | Earlier = larger gap required |
+| CASE 3 graduated gaps | 11AM:10°F, 12PM:8°F, 1PM:7°F, 2PM:6°F, 3PM:5°F, 4PM+:3°F | Config-driven (`CASE3_GAP_THRESHOLDS`). Tightened after DC loss |
+| CASE 3 ensemble veto | 3PM+:3°F, earlier:5°F | Ensemble mean within N°F of bucket floor = veto CASE 3 |
 
 ### Settlement & Timing
 | Parameter | Value | Notes |
@@ -273,6 +274,12 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 - **Adverse selection**: 3+ fills in <10min window → caution (reduce sizes 50%)
 - **Config**: `MAKER_STRATEGY_ENABLED`, `MAKER_SPREAD_BUFFER_CENTS`, `STALE_ORDER_MINUTES`, `MAX_OPEN_ORDERS`, `ADVERSE_SELECTION_PAUSE_MINUTES`
 - **State file**: `maker_orders.json` in STATE_DIR
+
+### Model Accuracy Weighting
+- **Flow**: On each settlement, `_update_model_accuracy_from_settlement()` fetches what each deterministic model (GFS, ECMWF, ICON, GEM) predicted and records the error in `model_accuracy.json` via `quant_analytics.record_model_accuracy()`. Prints a summary: `[MODEL ACCURACY] DC: ecmwf_ifs predicted 51°F (err: -3°F), gfs_ensemble predicted 49°F (err: -5°F)`.
+- **Weight calculation**: `quant_analytics.get_model_weights(city_code)` returns inverse-RMSE weights per model per city per season. Requires 10+ datapoints before activating (falls back to all 1.0).
+- **Weight application**: `strategy.py` fetches weights early in `_strategy_weather()` and passes them to `weather_engine.get_temperature_distribution()`. The engine applies weights in `_build_distribution()`: weighted mean, weighted bucket probability, weighted variance.
+- **Trade logging**: Each trade entry in `trade_history.json` records `model_predictions` (per-model means) and `model_weights_used` (accuracy weights applied).
 
 ## Deferred Features (NOT YET IMPLEMENTED)
 - **wethr.net API**: Needs Pro API key. Would be 6th confirmation source.

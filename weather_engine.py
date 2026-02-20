@@ -221,43 +221,22 @@ class WeatherEngine:
         self._cache = {}
         self._nws_cache = {}
         self.last_fetch_time = None
-        # Track model accuracy over time for weighting
-        self.model_weights = {
-            "gfs_ensemble": 1.0,
-            "ecmwf_ifs": 1.0,
-            "icon_eps": 1.0,
-            "gem_ensemble": 1.0,
-        }
 
     # ═══════════════════════════════════════════════════════
     # MAIN ENTRY: Get probability distribution for a city
     # ═══════════════════════════════════════════════════════
 
-    def get_temperature_distribution(self, city_code, target_date=None):
+    def get_temperature_distribution(self, city_code, target_date=None, model_weights=None):
         """
         Fetch all ensemble members and build a probability distribution
         of high temperatures for the given city and date.
 
-        Returns:
-        {
-            "city": "NYC",
-            "target_date": "2026-02-12",
-            "forecasted_high_mean": 38.2,
-            "forecasted_high_median": 38.0,
-            "forecasted_high_min": 32.0,
-            "forecasted_high_max": 44.0,
-            "spread": 12.0,
-            "total_members": 143,
-            "bucket_probs": {
-                "30-34": 0.12,  # 12% of members predict 30-34°F
-                "35-39": 0.45,  # 45% predict 35-39°F
-                "40-44": 0.31,  # etc.
-                ...
-            },
-            "raw_highs": [37, 38, 36, 41, ...],  # All 143 values
-            "sources_used": ["gfs_ensemble", "ecmwf_ifs", ...],
-            "confidence": 0.85,  # How tight the distribution is
-        }
+        Args:
+            model_weights: Optional dict of per-model accuracy weights from
+                quant_analytics.get_model_weights(). E.g. {"gfs_ensemble": 0.8, "ecmwf_ifs": 1.5}.
+                If None, all models weighted equally (backward compatible).
+
+        Returns dict with forecasted_high_mean, bucket_probs, raw_highs, etc.
         """
         city = CITIES.get(city_code)
         if not city:
@@ -277,34 +256,49 @@ class WeatherEngine:
 
         # Fetch from all ensemble sources
         all_highs = []
+        all_weights = []  # Parallel weights list for accuracy-based weighting
         sources_used = []
         model_family_highs = {}  # Track per-model family for disagreement detection
+
+        def _weight_for(model_key):
+            """Look up accuracy weight for a model, default 1.0."""
+            if model_weights:
+                return model_weights.get(model_key, 1.0)
+            return 1.0
 
         # Source 1: GFS Ensemble (31 members)
         gfs_highs = self._fetch_ensemble(city, target_date, "gfs_seamless_eps")
         if gfs_highs:
+            w = _weight_for("gfs_ensemble")
             all_highs.extend(gfs_highs)
+            all_weights.extend([w] * len(gfs_highs))
             sources_used.append("gfs_ensemble")
             model_family_highs["GFS"] = gfs_highs
 
         # Source 2: ECMWF IFS Ensemble (51 members)
         ecmwf_highs = self._fetch_ensemble(city, target_date, "ecmwf_ifs025_ensemble")
         if ecmwf_highs:
+            w = _weight_for("ecmwf_ifs")
             all_highs.extend(ecmwf_highs)
+            all_weights.extend([w] * len(ecmwf_highs))
             sources_used.append("ecmwf_ifs")
             model_family_highs["ECMWF"] = ecmwf_highs
 
         # Source 3: ICON-EPS (40 members)
         icon_highs = self._fetch_ensemble(city, target_date, "icon_seamless_eps")
         if icon_highs:
+            w = _weight_for("icon_eps")
             all_highs.extend(icon_highs)
+            all_weights.extend([w] * len(icon_highs))
             sources_used.append("icon_eps")
             model_family_highs["ICON"] = icon_highs
 
         # Source 4: GEM Ensemble (21 members)
         gem_highs = self._fetch_ensemble(city, target_date, "gem_global_ensemble")
         if gem_highs:
+            w = _weight_for("gem_ensemble")
             all_highs.extend(gem_highs)
+            all_weights.extend([w] * len(gem_highs))
             sources_used.append("gem_ensemble")
             model_family_highs["GEM"] = gem_highs
 
@@ -312,8 +306,8 @@ class WeatherEngine:
             print(f"  [WEATHER] WARN: No ensemble data for {city_code} on {target_date}")
             return None
 
-        # Build the distribution
-        result = self._build_distribution(city_code, target_date, all_highs, sources_used)
+        # Build the distribution with accuracy-based weights
+        result = self._build_distribution(city_code, target_date, all_highs, sources_used, all_weights)
 
         # Add per-model family means for disagreement detection
         model_means = {}
@@ -472,49 +466,59 @@ class WeatherEngine:
     # INTERNAL: Build probability distribution from raw highs
     # ═══════════════════════════════════════════════════════
 
-    def _build_distribution(self, city_code, target_date, all_highs, sources_used):
+    def _build_distribution(self, city_code, target_date, all_highs, sources_used, weights=None):
         """
         Take all ensemble member high temps and build:
-        1. Statistics (mean, median, min, max, spread)
-        2. Bucket probabilities (matching Kalshi's 5°F brackets)
+        1. Statistics (weighted mean, median, min, max, spread)
+        2. Bucket probabilities (matching Kalshi's 5°F brackets, accuracy-weighted)
         3. Confidence score
+
+        weights: Optional parallel list of per-member accuracy weights.
+                 If None, all members weighted equally (backward compatible).
         """
         n = len(all_highs)
-        sorted_highs = sorted(all_highs)
+        if weights is None:
+            weights = [1.0] * n
 
-        mean_temp = sum(all_highs) / n
+        total_weight = sum(weights)
+
+        # Sort highs with their weights for median/min/max
+        sorted_pairs = sorted(zip(all_highs, weights), key=lambda x: x[0])
+        sorted_highs = [t for t, w in sorted_pairs]
+        sorted_weights = [w for t, w in sorted_pairs]
+
+        # Weighted mean
+        mean_temp = sum(t * w for t, w in zip(all_highs, weights)) / total_weight
+        # Median uses unweighted position (robust to outliers)
         median_temp = sorted_highs[n // 2]
         min_temp = sorted_highs[0]
         max_temp = sorted_highs[-1]
         spread = max_temp - min_temp
 
-        # Standard deviation for confidence
-        variance = sum((t - mean_temp) ** 2 for t in all_highs) / n
+        # Weighted standard deviation
+        variance = sum(w * (t - mean_temp) ** 2 for t, w in zip(all_highs, weights)) / total_weight
         std_dev = math.sqrt(variance)
 
-        # Build 5°F bucket probabilities (Kalshi uses ~5°F brackets)
-        # Buckets: ..., 20-24, 25-29, 30-34, 35-39, 40-44, ...
-        bucket_counts = defaultdict(int)
-
-        for temp in all_highs:
+        # Build 5°F bucket probabilities with accuracy-based weighting
+        # More accurate models contribute more to bucket probabilities
+        bucket_counts = defaultdict(float)
+        for i, temp in enumerate(all_highs):
             bucket_floor = int(temp // 5) * 5
             bucket_label = f"{bucket_floor}-{bucket_floor + 4}"
-            bucket_counts[bucket_label] += 1
+            bucket_counts[bucket_label] += weights[i]
 
         # Also build 2°F buckets for finer resolution
-        # (Kalshi sometimes uses 2°F brackets like 36-37, 38-39, etc.)
-        fine_bucket_counts = defaultdict(int)
-        for temp in all_highs:
+        fine_bucket_counts = defaultdict(float)
+        for i, temp in enumerate(all_highs):
             bucket_floor = int(temp // 2) * 2
             fine_bucket_label = f"{bucket_floor}-{bucket_floor + 1}"
-            fine_bucket_counts[fine_bucket_label] += 1
+            fine_bucket_counts[fine_bucket_label] += weights[i]
 
-        # Convert to probabilities
-        bucket_probs = {k: v / n for k, v in sorted(bucket_counts.items())}
-        fine_bucket_probs = {k: v / n for k, v in sorted(fine_bucket_counts.items())}
+        # Convert to weighted probabilities
+        bucket_probs = {k: v / total_weight for k, v in sorted(bucket_counts.items())}
+        fine_bucket_probs = {k: v / total_weight for k, v in sorted(fine_bucket_counts.items())}
 
         # Confidence: tighter spread = higher confidence
-        # If std_dev < 2°F, very confident. If > 5°F, uncertain.
         confidence = max(0.3, min(0.95, 1.0 - (std_dev / 10.0)))
 
         return {
@@ -530,6 +534,7 @@ class WeatherEngine:
             "bucket_probs_5f": bucket_probs,
             "bucket_probs_2f": fine_bucket_probs,
             "raw_highs": sorted_highs,
+            "raw_weights": sorted_weights,
             "sources_used": sources_used,
             "confidence": round(confidence, 3),
         }
@@ -648,17 +653,24 @@ class WeatherEngine:
         Given a distribution and a temperature range, calculate the
         probability that the actual high falls in that range.
 
-        Uses the raw ensemble member highs for precision.
+        Uses accuracy-weighted ensemble members when available.
         """
         if not distribution or not distribution.get("raw_highs"):
             return None
 
         highs = distribution["raw_highs"]
-        n = len(highs)
+        weights = distribution.get("raw_weights")
 
-        # Count members in range
-        in_range = sum(1 for t in highs if temp_low <= t <= temp_high)
-        prob = in_range / n
+        if weights and len(weights) == len(highs):
+            # Weighted probability: more accurate models count more
+            total_weight = sum(weights)
+            in_range_weight = sum(w for t, w in zip(highs, weights) if temp_low <= t <= temp_high)
+            prob = in_range_weight / total_weight
+        else:
+            # Backward compatible: unweighted
+            n = len(highs)
+            in_range = sum(1 for t in highs if temp_low <= t <= temp_high)
+            prob = in_range / n
 
         return prob
 

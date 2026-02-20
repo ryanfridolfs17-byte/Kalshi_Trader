@@ -211,11 +211,16 @@ class Strategy:
         if target_date is None:
             target_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+        # Fetch accuracy-based model weights early — used by both confirmed
+        # outcome detection and the main probability calculation.
+        model_weights = self.quant.get_model_weights(city_code)
+
         # ─── FAST PATH: CONFIRMED OUTCOME DETECTION ───
         # If NWS observations already show the outcome is determined,
         # this is near-risk-free profit. Max position sizing.
         confirmed_signal = self._check_confirmed_outcome(
-            market, city_code, temp_low, temp_high, target_date, ref_price
+            market, city_code, temp_low, temp_high, target_date, ref_price,
+            model_weights=model_weights,
         )
         if confirmed_signal:
             return confirmed_signal
@@ -229,8 +234,8 @@ class Strategy:
         if spread < 99 and spread > 40:
             return None  # Genuinely wide spread with real quotes on both sides
 
-        # Step 2: Fetch ensemble distribution
-        distribution = self.weather.get_temperature_distribution(city_code, target_date)
+        # Step 2: Fetch ensemble distribution with accuracy-based model weighting
+        distribution = self.weather.get_temperature_distribution(city_code, target_date, model_weights=model_weights)
         if not distribution:
             return None
 
@@ -428,6 +433,8 @@ class Strategy:
                     + (f"Bias adj: {bias_applied:+.1f}°F. " if bias_applied else "")
                 ),
                 "strategy": "S1-Weather",
+                "model_means": distribution.get("model_means", {}),
+                "model_weights_used": model_weights or {},
             }
         else:
             # Overpriced YES — buy NO
@@ -499,6 +506,8 @@ class Strategy:
                     + (f"Bias adj: {bias_applied:+.1f}°F. " if bias_applied else "")
                 ),
                 "strategy": "S1-Weather",
+                "model_means": distribution.get("model_means", {}),
+                "model_weights_used": model_weights or {},
             }
 
         return signal
@@ -676,7 +685,7 @@ class Strategy:
     # CONFIRMED OUTCOME DETECTION
     # ═══════════════════════════════════════════════════════
 
-    def _check_confirmed_outcome(self, market, city_code, temp_low, temp_high, target_date, ref_price):
+    def _check_confirmed_outcome(self, market, city_code, temp_low, temp_high, target_date, ref_price, model_weights=None):
         """
         Check if NWS observations already confirm the outcome is determined.
 
@@ -784,7 +793,8 @@ class Strategy:
             # the temperature is likely to rise out of the bucket
             case2_vetoed = False
             try:
-                dist = self.weather.get_temperature_distribution(city_code, target_date)
+                dist = self.weather.get_temperature_distribution(
+                    city_code, target_date, model_weights=model_weights)
                 if dist:
                     forecast_mean = dist.get("forecasted_high_mean", 0)
                     forecast_max = dist.get("forecasted_high_max", 0)
@@ -841,22 +851,14 @@ class Strategy:
 
         # CASE 3: High already BELOW the bucket's lower bound — graduated time thresholds
         # Earlier detection = cheaper NO contracts = more profit.
-        # 1 PM: need 6°F gap (very confident temps won't spike that much)
-        # 3 PM: need 3°F gap (peak temps usually hit by now)
-        # 4 PM+: need 2°F gap (original threshold, temps are falling)
+        # Thresholds tightened after DC 54.5 loss (3°F gap at 3PM was too aggressive).
         # NWS rounding buffer: displayed high could be 1°F+ below actual raw reading
         temp_gap = temp_low - todays_high - config.ROUNDING_BUFFER_HARD_F
         case3_triggered = False
-        if local_hour >= 16 and temp_gap > 2:
-            case3_triggered = True
-        elif local_hour >= 15 and temp_gap > 3:
-            case3_triggered = True
-        elif local_hour >= 13 and temp_gap > 5:
-            case3_triggered = True                  # Was 6°F — tightened
-        elif local_hour >= 12 and temp_gap > 7:
-            case3_triggered = True                  # Noon with large gap
-        elif local_hour >= 11 and temp_gap > 10:
-            case3_triggered = True                  # 11 AM — need 10°F gap (very conservative)
+        for min_hour, min_gap in sorted(config.CASE3_GAP_THRESHOLDS.items(), reverse=True):
+            if local_hour >= min_hour and temp_gap > min_gap:
+                case3_triggered = True
+                break
 
         # ENSEMBLE SANITY CHECK: The gap thresholds above are static and don't
         # account for warm/cold fronts. Cross-reference the ensemble forecast —
@@ -864,14 +866,15 @@ class Strategy:
         # The ensemble captures weather patterns the observation gap cannot.
         if case3_triggered:
             try:
-                dist = self.weather.get_temperature_distribution(city_code, target_date)
+                dist = self.weather.get_temperature_distribution(city_code, target_date, model_weights=model_weights)
                 if dist:
                     forecast_mean = dist.get("forecasted_high_mean", 0)
                     forecast_max = dist.get("forecasted_high_max", 0)
-                    # Veto if ensemble mean is within 5°F of the bucket floor,
-                    # or if ANY ensemble member reaches the bucket
-                    if forecast_mean >= temp_low - 5:
-                        print(f"    [CASE3 VETO] Ensemble mean {forecast_mean:.1f}°F is within 5°F "
+                    # Veto if ensemble mean is within N°F of the bucket floor.
+                    # Tighter for 3PM+ (less time for temp to defy ensemble).
+                    veto_gap = config.CASE3_ENSEMBLE_VETO_GAP_LATE if local_hour >= 15 else config.CASE3_ENSEMBLE_VETO_GAP_DEFAULT
+                    if forecast_mean >= temp_low - veto_gap:
+                        print(f"    [CASE3 VETO] Ensemble mean {forecast_mean:.1f}°F is within {veto_gap}°F "
                               f"of bucket floor {temp_low}°F — warm front possible, NOT confirmed")
                         case3_triggered = False
                     elif forecast_max >= temp_low:
