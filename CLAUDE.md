@@ -85,7 +85,8 @@ All state is persisted as JSON in `STATE_DIR` (defaults to `.`, set to `/data` o
 - **Market type isolation** — Each market type is gated behind a toggle. New market code paths only execute when explicitly enabled. SP500 uses `city_code="SP500"` in the risk manager for per-market exposure tracking.
 - **Duplicate order detection** — Before executing any trade, checks `risk.state["positions"]` and `trade_log` resting orders for the same ticker. Prevents multi-cycle order stacking (e.g., 3 identical orders across 3 cycles).
 - **Contract count cap** — Hard cap of 25 contracts per ticker (`MAX_CONTRACTS_PER_TICKER`), applied in Kelly sizing, confirmed outcome sizing, and risk manager. Prevents cheap contract explosion (e.g., 68 contracts at 22c each).
-- **Medium urgency exits never auto-execute** — Only `high` urgency exits (confirmed losses from observations) auto-sell. Medium urgency (edge decay, confirmer disagreement on profitable positions) logs recommendation for manual review.
+- **Medium urgency exits never auto-execute** — Only `high` urgency exits (confirmed losses from observations) auto-sell. Medium urgency (thesis uncertain + profitable) logs recommendation for manual review.
+- **Thesis-based exit logic** — Exits are driven by whether the model/observations still predict the position wins at settlement, NOT by edge erosion. Edge going to zero on a winning position means the market caught up (thesis confirmed) — hold for settlement. Exits only fire when: (1) observations confirm a loss, (2) NWS disagrees, (3) ensemble strongly contradicts position (<15% YES floor, >85% NO floor), or (4) thesis is broken (model flipped against us).
 
 ## NWS Station Mappings (20 Cities)
 
@@ -206,11 +207,25 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 | `KILL_SWITCH_MIN_SHARPE_7D` | 0.0 | 7-day Sharpe below this = observation mode |
 
 ### Portfolio Review (Intraday Exit Logic)
+
+**Thesis-first design:** Exit decisions are based on whether the model/observations still predict the position wins at settlement. Edge erosion on winning positions = market caught up = hold for settlement.
+
+| Priority | Check | Action | Urgency |
+|----------|-------|--------|---------|
+| 1 | Observation confirms loss (obs_high in bucket for NO, temp gap for YES) | EXIT | High |
+| 2 | Rounding buffer (obs_high within 1°F of bucket, after 2 PM) | EXIT | High |
+| 3 | NWS confirmer REJECT on re-check | EXIT if losing, WARN if profitable | High/Medium |
+| 4 | Ensemble probability floor (<15% YES, >85% NO) | EXIT | High |
+| 5 | **Thesis valid** (model says >50% chance of winning) | **HOLD** | Low |
+| 6 | Thesis weakening (edge decayed but still positive) | PARE | Medium |
+| 7 | Thesis uncertain (edge near zero) + profitable | Take profit | Medium |
+| 8 | Thesis broken (edge reversed hard, model flipped) | EXIT | High |
+
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `EDGE_DECAY_PARE_THRESHOLD` | 50% | Pare when edge drops below 50% of entry |
-| `EDGE_REVERSAL_THRESHOLD` | -5% | Full exit when edge flips negative |
-| `TAKE_PROFIT_PCT` | 30% | Take profit on 30%+ unrealized gain |
+| `EDGE_DECAY_PARE_THRESHOLD` | 50% | Pare when edge drops below 50% of entry (only if thesis weak) |
+| `EDGE_REVERSAL_THRESHOLD` | -5% | Thesis broken threshold |
+| `TAKE_PROFIT_PCT` | 30% | Only triggers when thesis is uncertain (model ~50/50) |
 | Rounding buffer exit | After 2 PM | NO positions exit if obs_high within 1°F of bucket floor |
 
 ### Resting Order Management (in `kalshi_bot.py`)

@@ -329,23 +329,8 @@ class TradeIntelligence:
             if age_minutes is not None and age_minutes < config.MIN_REVIEW_AGE_MINUTES:
                 continue
 
-            # ─── WEATHER-SPECIFIC PROFIT CHECKS ───
-            if is_weather:
-                # Take profit check (both YES and NO positions)
-                # SKIP take-profit when position is deep in the money (>90c) —
-                # selling a 94c or 99c contract to "take profit" loses the remaining
-                # 1-6c upside plus incurs sell-side fees. Let it settle at 100c.
-                if current_price > 0 and entry_price > 0 and current_price <= 90:
-                    profit_pct = (current_price - entry_price) / max(entry_price, 1)
-                    if profit_pct >= config.TAKE_PROFIT_PCT:
-                        actions.append({
-                            "ticker": ticker, "action": "full_exit", "urgency": "medium",
-                            "reason": f"Take profit: up {profit_pct:.0%} (entry {entry_price:.0f}c, now {current_price}c)",
-                            "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
-                            "city_code": city_code, "side": side, "contracts": contracts,
-                            "cost_cents": cost_cents,
-                        })
-                        continue
+            # Take-profit moved below probability re-evaluation — we need to know
+            # if the thesis still holds before recommending any profit-taking.
 
             # ─── FRESH PROBABILITY RE-EVALUATION ───
             new_prob = None
@@ -490,6 +475,17 @@ class TradeIntelligence:
             if entry_edge <= 0:
                 entry_edge = config.MIN_EDGE
 
+            # ─── THESIS VALIDATION ───
+            # The key question is: "Does the model/observations still say this position
+            # wins at settlement?" If yes, hold — edge erosion just means the market
+            # caught up to our forecast. That's confirmation, not a reason to exit.
+            # Exits should only happen when the thesis is BROKEN (observations show loss,
+            # NWS disagrees, ensemble contradicts), all of which are handled above.
+            thesis_supports_position = (
+                (side == "yes" and new_prob >= 0.50) or
+                (side == "no" and new_prob <= 0.50)
+            )
+
             # ─── GRADUATED RESPONSE ───
             edge_decay_pct = max(0, min(1.0, (entry_edge - new_edge) / entry_edge)) if entry_edge > 0 else 1.0
 
@@ -507,35 +503,54 @@ class TradeIntelligence:
                 "review_detail": review_detail,
             }
 
-            if new_edge >= entry_edge * config.EDGE_DECAY_PARE_THRESHOLD:
+            if thesis_supports_position:
+                # Model/observations still say this position settles in our favor.
+                # "Edge gone" just means the market agrees with us — hold for settlement.
+                our_win_prob = new_prob if side == "yes" else (1.0 - new_prob)
+                actions.append({**base, "action": "hold", "urgency": "low",
+                    "reason": f"Thesis confirmed: model says {our_win_prob:.0%} chance of winning "
+                              f"(prob={new_prob:.0%}, edge={new_edge:.1%})"})
+
+            elif new_edge >= entry_edge * config.EDGE_DECAY_PARE_THRESHOLD:
                 # Edge still healthy — hold
                 actions.append({**base, "action": "hold", "urgency": "low",
                     "reason": f"Edge healthy: {new_edge:.1%} (was {entry_edge:.1%})"})
 
             elif new_edge > 0:
-                # Edge decayed significantly but still positive — pare down
+                # Thesis weakening but still slight positive edge — pare down
                 sell_count = self._calculate_pare_contracts(pos, edge_decay_pct)
                 actions.append({**base, "action": "pare", "urgency": "medium",
-                    "reason": f"Edge decayed: {new_edge:.1%} (was {entry_edge:.1%}, {edge_decay_pct:.0%} decay)",
+                    "reason": f"Thesis weakening: {new_edge:.1%} edge (was {entry_edge:.1%}, {edge_decay_pct:.0%} decay)",
                     "sell_contracts": sell_count})
 
             elif new_edge > config.EDGE_REVERSAL_THRESHOLD:
-                # Edge gone (near zero) — full exit
-                actions.append({**base, "action": "full_exit", "urgency": "medium",
-                    "reason": f"Edge gone: {new_edge:.1%} (was {entry_edge:.1%})"})
+                # Thesis uncertain — edge near zero, model is 50/50
+                # Take profit if profitable, otherwise hold and monitor
+                if current_price > 0 and entry_price > 0:
+                    profit_pct = (current_price - entry_price) / max(entry_price, 1)
+                    if profit_pct >= config.TAKE_PROFIT_PCT:
+                        actions.append({**base, "action": "full_exit", "urgency": "medium",
+                            "reason": f"Thesis uncertain + profitable: up {profit_pct:.0%} "
+                                      f"(edge={new_edge:.1%}, prob={new_prob:.0%})"})
+                    else:
+                        actions.append({**base, "action": "hold", "urgency": "medium",
+                            "reason": f"Thesis uncertain: edge {new_edge:.1%} (was {entry_edge:.1%}), monitoring"})
+                else:
+                    actions.append({**base, "action": "hold", "urgency": "medium",
+                        "reason": f"Thesis uncertain: edge {new_edge:.1%} (was {entry_edge:.1%}), monitoring"})
 
             else:
-                # Edge reversed hard — choose best exit path
+                # Thesis broken — model now says we lose. Exit.
                 hedge_info = self._evaluate_hedge(ticker, pos, current_price)
                 if hedge_info["use_hedge"]:
                     actions.append({**base, "action": "hedge", "urgency": "high",
-                        "reason": f"Edge reversed to {new_edge:.1%} — exiting via opposite side",
+                        "reason": f"Thesis broken: edge {new_edge:.1%}, model says {new_prob:.0%} — exiting via opposite side",
                         "hedge_side": hedge_info["hedge_side"],
                         "hedge_price": hedge_info["hedge_price"],
                         "hedge_contracts": min(hedge_info["hedge_contracts"], contracts)})
                 else:
                     actions.append({**base, "action": "full_exit", "urgency": "high",
-                        "reason": f"Edge reversed to {new_edge:.1%} (was {entry_edge:.1%})"})
+                        "reason": f"Thesis broken: edge {new_edge:.1%} (was {entry_edge:.1%}), model says {new_prob:.0%}"})
 
         return actions
 
