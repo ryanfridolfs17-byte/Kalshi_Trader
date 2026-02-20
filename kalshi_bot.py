@@ -875,6 +875,7 @@ def main():
 
             risk.print_status()
             _print_performance(trade_log)
+            _print_daily_volume_monitor(risk, trade_log, skip_reasons)
 
             # Write bot status for dashboard
             _write_bot_status(cycle, skip_reasons, trade_count_this_cycle, strategy, client,
@@ -1298,6 +1299,34 @@ def _print_performance(trade_log):
     for s, info in by_strategy.items():
         print(f"  │  {s}: {info['count']} trades, ${info['cost']/100:.2f}")
     print(f"  └──────────────────────────────────────────────\n")
+
+
+def _print_daily_volume_monitor(risk, trade_log, skip_reasons):
+    """Print daily volume metrics to track impact of payout/cap changes."""
+    daily_trades = risk.state.get("daily_trade_count", 0)
+    daily_cap = config.MAX_DAILY_FORECAST_TRADES
+    forecast_trades = risk.state.get("daily_forecast_trades", 0)
+    daily_loss = risk.state.get("daily_loss_cents", 0)
+
+    # Count today's confirmed outcome trades from trade_log
+    today_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    confirmed_today = 0
+    for t in trade_log:
+        ts = t.get("timestamp", "")
+        if today_str in ts and t.get("confirmation_verdict") == "CONFIRMED_OUTCOME":
+            confirmed_today += 1
+
+    payout_blocked = skip_reasons.get("payout_too_small", 0)
+    cap_blocked = skip_reasons.get("daily_forecast_cap", 0)
+
+    print(f"\n  ┌─ Volume Monitor ───────────────────────────")
+    print(f"  │  Forecast trades: {forecast_trades}/{daily_cap}  |  Confirmed: {confirmed_today}  |  Total: {daily_trades}")
+    print(f"  │  Daily loss: ${daily_loss/100:.2f}/${config.DAILY_LOSS_LIMIT_CENTS/100:.2f}")
+    if payout_blocked > 0:
+        print(f"  │  ⚠ Payout filter: {payout_blocked} blocked this cycle")
+    if cap_blocked > 0:
+        print(f"  │  ⚠ Trade cap: {cap_blocked} blocked this cycle")
+    print(f"  └─────────────────────────────────────────────")
 
 
 def _should_require_approval(signal, risk):
