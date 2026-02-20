@@ -497,7 +497,7 @@ class RiskManager:
             pause = datetime.fromisoformat(self.state["loss_pause_until"])
             if datetime.now() < pause:
                 remaining = (pause - datetime.now()).total_seconds() / 60
-                print(f"  │  ⚠ PAUSED:      {remaining:.0f} min remaining")
+                print(f"  |  ! PAUSED:      {remaining:.0f} min remaining")
 
         print(f"  └────────────────────────────────────────────────\n")
 

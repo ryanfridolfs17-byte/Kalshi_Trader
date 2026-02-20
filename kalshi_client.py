@@ -36,7 +36,7 @@ class KalshiClient:
     def _load_private_key(self):
         """Load RSA private key from file."""
         if config.API_KEY_ID == "YOUR_API_KEY_ID_HERE":
-            print("  [API] ⚠️  API key not configured - will use public endpoints only")
+            print("  [API] WARNING: API key not configured - will use public endpoints only")
             return
 
         try:
@@ -62,17 +62,17 @@ class KalshiClient:
             # Immediate auth test
             test = self._request("GET", "/portfolio/balance", authenticated=True)
             if test:
-                print(f"  [API] ✓ Auth test PASSED — balance: ${test.get('balance', 0)/100:.2f}")
+                print(f"  [API] OK Auth test PASSED -- balance: ${test.get('balance', 0)/100:.2f}")
             else:
-                print(f"  [API] ✗ Auth test FAILED — check API key + private key pairing")
+                print(f"  [API] FAIL Auth test FAILED -- check API key + private key pairing")
         except FileNotFoundError:
-            print(f"  [API] ⚠️  Private key file not found: {config.PRIVATE_KEY_PATH}")
+            print(f"  [API] WARNING: Private key file not found: {config.PRIVATE_KEY_PATH}")
             print("  [API] Bot will scan markets but cannot trade")
         except ImportError:
-            print("  [API] ⚠️  'cryptography' package not installed")
+            print("  [API] WARNING: 'cryptography' package not installed")
             print("  [API] Run: pip install cryptography")
         except Exception as e:
-            print(f"  [API] ⚠️  Error loading private key: {e}")
+            print(f"  [API] WARNING: Error loading private key: {e}")
 
     def _sign_request(self, method, path):
         """Create RSA-PSS signature for an authenticated request."""
