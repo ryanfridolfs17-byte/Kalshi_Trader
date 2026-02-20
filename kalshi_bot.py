@@ -360,18 +360,25 @@ def main():
 
             print("  [STEP 0c] Portfolio review...")
             if config.PORTFOLIO_REVIEW_ENABLED:
-                reviews = intel.review_portfolio(
-                    risk.state.get("positions", []),
-                    weather_engine=strategy.weather,
-                    volatility_engine=strategy.vol_engine,
-                    signal_confirmer=strategy.confirmer,
-                    spx_confirmer=strategy.spx_confirmer,
-                )
-                for review in reviews:
-                    _process_portfolio_action(client, risk, trade_log, review, intel=intel)
-                # Batch save after all reviews (persists last_review* fields)
-                if reviews:
-                    risk._save_state()
+                try:
+                    reviews = intel.review_portfolio(
+                        risk.state.get("positions", []),
+                        weather_engine=strategy.weather,
+                        volatility_engine=strategy.vol_engine,
+                        signal_confirmer=strategy.confirmer,
+                        spx_confirmer=strategy.spx_confirmer,
+                    )
+                    for review in reviews:
+                        try:
+                            _process_portfolio_action(client, risk, trade_log, review, intel=intel)
+                        except Exception as e:
+                            print(f"    [REVIEW] Error processing {review.get('ticker', '?')}: {e}")
+                    # Batch save after all reviews (persists last_review* fields)
+                    if reviews:
+                        risk._save_state()
+                except Exception as e:
+                    print(f"    [REVIEW] Portfolio review failed: {e}")
+                    import traceback; traceback.print_exc()
             else:
                 exits = intel.check_exits(risk.state.get("positions", []), strategy.weather)
                 for exit_rec in exits:
@@ -1041,20 +1048,18 @@ def _check_resting_orders(client, risk, trade_log, intel=None):
                 except Exception:
                     pass
         else:
-            # No longer resting → verify actual status via API
-            # _reconcile_positions() already has the correct position state
+            # No longer resting → check if filled or cancelled
+            # _reconcile_positions() already has the correct position state.
+            # Check cancelled orders list to distinguish filled vs cancelled.
             actual_status = "filled"  # Default assumption
             try:
-                order_resp = client._request("GET", f"/portfolio/orders/{order_id}", authenticated=True)
-                if order_resp:
-                    order_data = order_resp.get("order", order_resp)
-                    api_status = order_data.get("status", "")
-                    if api_status in ("canceled", "cancelled"):
-                        actual_status = "cancelled"
-                    elif api_status == "executed":
-                        actual_status = "filled"
-                    else:
-                        actual_status = api_status or "filled"
+                cancelled_resp = client.get_orders(ticker=trade.get("ticker"), status="canceled")
+                if cancelled_resp:
+                    cancelled_orders = cancelled_resp.get("orders", [])
+                    for co in cancelled_orders:
+                        if co.get("order_id") == order_id:
+                            actual_status = "cancelled"
+                            break
             except Exception:
                 pass  # API error — fall back to "filled" assumption
 
