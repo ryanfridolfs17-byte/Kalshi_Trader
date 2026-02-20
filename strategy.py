@@ -837,6 +837,29 @@ class Strategy:
         elif local_hour >= 11 and temp_gap > 10:
             case3_triggered = True                  # 11 AM — need 10°F gap (very conservative)
 
+        # ENSEMBLE SANITY CHECK: The gap thresholds above are static and don't
+        # account for warm/cold fronts. Cross-reference the ensemble forecast —
+        # if models predict the high could reach the bucket, DON'T confirm.
+        # The ensemble captures weather patterns the observation gap cannot.
+        if case3_triggered:
+            try:
+                dist = self.weather.get_temperature_distribution(city_code, target_date)
+                if dist:
+                    forecast_mean = dist.get("forecasted_high_mean", 0)
+                    forecast_max = dist.get("forecasted_high_max", 0)
+                    # Veto if ensemble mean is within 5°F of the bucket floor,
+                    # or if ANY ensemble member reaches the bucket
+                    if forecast_mean >= temp_low - 5:
+                        print(f"    [CASE3 VETO] Ensemble mean {forecast_mean:.1f}°F is within 5°F "
+                              f"of bucket floor {temp_low}°F — warm front possible, NOT confirmed")
+                        case3_triggered = False
+                    elif forecast_max >= temp_low:
+                        print(f"    [CASE3 VETO] Ensemble max {forecast_max:.1f}°F reaches bucket "
+                              f"floor {temp_low}°F — NOT confirmed")
+                        case3_triggered = False
+            except Exception:
+                pass  # If ensemble unavailable, rely on gap thresholds alone
+
         if case3_triggered:
             no_price = market.get("no_ask", 0) or (100 - ref_price)
             if no_price <= 0 or no_price >= 95:
