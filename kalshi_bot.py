@@ -497,7 +497,13 @@ def main():
                 if actionable_signals:
                     print(f"\n  [PRIORITY] {len(actionable_signals)} signals sorted by edge (highest first)")
 
-                for signal, market, parsed in actionable_signals:
+                for sig_idx, (signal, market, parsed) in enumerate(actionable_signals):
+                    # Tag signals after the first in this cycle so cooldown
+                    # is skipped — these are from the same scan pass, just
+                    # different cities. All other risk checks still apply.
+                    if sig_idx > 0:
+                        signal["same_scan_cycle"] = True
+
                     ticker = signal["ticker"]
                     title = market.get("title", "")
 

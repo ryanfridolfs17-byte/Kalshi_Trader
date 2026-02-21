@@ -220,9 +220,9 @@ class SignalConfirmer:
             summary = (f"NWS DISAGREE — settlement source contradicts signal "
                        f"({agree_count} model(s) agree but NWS overrides)")
         elif total_voted == 0:
-            verdict = "WEAK"
-            multiplier = 0.5
-            summary = "No sources could confirm (all abstained)"
+            verdict = "REJECT"
+            multiplier = 0.0
+            summary = "No sources could confirm (all abstained) — REJECT (0% win rate on WEAK)"
         elif disagree_count > agree_count:
             verdict = "REJECT"
             multiplier = 0.0
@@ -241,9 +241,9 @@ class SignalConfirmer:
             multiplier = 1.0
             summary = f"{agree_count}/{total_voted} sources agree — confirmed"
         else:
-            verdict = "WEAK"
-            multiplier = 0.5
-            summary = f"Only {agree_count}/{total_voted} agree — weak signal"
+            verdict = "REJECT"
+            multiplier = 0.0
+            summary = f"Only {agree_count}/{total_voted} agree — REJECT (0% win rate on WEAK)"
 
         return {
             "verdict": verdict,

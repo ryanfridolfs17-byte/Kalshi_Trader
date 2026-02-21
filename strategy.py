@@ -146,10 +146,12 @@ class Strategy:
         # Set ticker before correlation check (needed for same-ticker detection)
         best["ticker"] = ticker
 
-        # Size the position
+        # Size the position (set side for NO-side sizing reduction)
+        self._current_side = best.get("side", "yes")
         contracts = self._kelly_size(
             best["edge"], best["confidence"], best["price_cents"]
         )
+        self._current_side = None
 
         # Apply confirmation multiplier (weather trades only)
         if best.get("confirmation_multiplier", 1.0) != 1.0:
@@ -968,9 +970,9 @@ class Strategy:
 
         h = self._get_et_hour()
         if h < 6:
-            return 0.10   # Overnight: 10%
+            return 0.09   # Overnight: 9% — fresh 00Z data, thin liquidity
         elif h < 12:
-            return 0.12   # Morning: 12% — be selective
+            return 0.10   # Morning: 10% — fresh data + thin markets (was 12%)
         else:
             return config.MIN_EDGE  # Afternoon/evening: base 8%
 
@@ -1013,6 +1015,13 @@ class Strategy:
 
         contracts = max(1, int(bet_cents / price_cents))
         contracts = min(contracts, config.MAX_CONTRACTS_PER_TICKER)
+
+        # NO-side sizing reduction: buying NO at high prices (≥50c) risks
+        # outsized losses — 83% WR but net negative P&L in production data.
+        # Reduce to 70% of normal sizing for expensive NO positions.
+        if getattr(self, '_current_side', None) == 'no' and price_cents >= 50:
+            contracts = max(1, int(contracts * 0.70))
+
         return contracts
 
     # ═══════════════════════════════════════════════════════
