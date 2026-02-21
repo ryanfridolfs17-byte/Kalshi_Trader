@@ -122,6 +122,7 @@ class RiskManager:
                                f"> ${config.MAX_DAILY_CITY_SPEND_CENTS/100:.2f} cumulative")
 
         # 4b. Correlated positions cap (same city + same date)
+        # Confirmed outcomes get a higher cap (4) since they're near-guaranteed
         if city:
             ticker = signal.get("ticker", "")
             signal_date = self._extract_date_from_ticker(ticker)
@@ -131,8 +132,10 @@ class RiskManager:
                     if p.get("city_code") == city
                     and self._extract_date_from_ticker(p.get("ticker", "")) == signal_date
                 )
-                if corr_count >= config.MAX_CORRELATED_POSITIONS:
-                    return False, f"Max {config.MAX_CORRELATED_POSITIONS} correlated positions for {city} on {signal_date}"
+                is_confirmed = signal.get("confirmation_verdict") == "CONFIRMED_OUTCOME"
+                corr_cap = config.MAX_CORRELATED_POSITIONS_CONFIRMED if is_confirmed else config.MAX_CORRELATED_POSITIONS
+                if corr_count >= corr_cap:
+                    return False, f"Max {corr_cap} correlated positions for {city} on {signal_date}"
 
         # 4c. Per-ticker cost cap (prevents runaway scaling into one contract)
         ticker = signal.get("ticker", "")
@@ -169,8 +172,9 @@ class RiskManager:
             self._save_state()
             return False, f"{config.CONSECUTIVE_LOSS_PAUSE} losses in a row — pausing {config.CONSECUTIVE_LOSS_PAUSE_MINUTES} min"
 
-        # 6. Cooldown
-        if self.state["last_trade_time"]:
+        # 6. Cooldown (exempt for signals from same scan cycle — different cities
+        #    evaluated in one pass shouldn't block each other)
+        if self.state["last_trade_time"] and not signal.get("same_scan_cycle"):
             elapsed = (datetime.now() - datetime.fromisoformat(self.state["last_trade_time"])).total_seconds()
             if elapsed < config.TRADE_COOLDOWN:
                 remaining = config.TRADE_COOLDOWN - elapsed

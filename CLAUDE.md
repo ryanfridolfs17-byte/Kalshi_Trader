@@ -60,7 +60,7 @@ Weather uses `signal_confirmer.py` (5-source voting: 4 deterministic models + NW
 - **`strategy.py`** — Three strategies: **S1 (Weather Edge)** ensemble vs market prices; **S2 (Spread Arbitrage)** YES+NO < $0.98; **S3 (SP500 Brackets)** VIX-implied distributions vs bracket prices. S3 components only initialized when sp500 is enabled.
 - **`weather_engine.py`** — Aggregates 143 ensemble members from 4 sources (GFS 31, ECMWF 51, ICON-EPS 40, GEM 21) via Open-Meteo. Builds weighted probability distributions across temperature buckets. Accepts `model_weights` dict from `quant_analytics.get_model_weights()` — each ensemble member is weighted by its source model's inverse-RMSE accuracy score. With no weights (or insufficient accuracy data), falls back to equal weighting.
 - **`volatility_engine.py`** — VIX-based price distributions for S&P 500. Uses yfinance for SPY/VIX data, scipy.stats.norm CDF for bracket probability calculations. Includes intraday vol adjustment.
-- **`signal_confirmer.py`** — Weather voting system from 5 independent sources: 4 deterministic models (GFS/HRRR, ECMWF, ICON, GEM) via Open-Meteo + NWS station point forecast (api.weather.gov). Outputs: STRONG (3+ agree AND NWS agrees, 1.5x), CONFIRM (2+, NWS abstains, 1.0x), WEAK (0.5x), REJECT. NWS source uses 2°F abstain zone on both underpriced and overpriced paths. **NWS DISAGREE = hard REJECT** — NWS is the settlement source, so if it explicitly contradicts the signal, the trade is blocked regardless of how many models agree. **NWS ABSTAIN = cap at CONFIRM** (never STRONG). **STRONG requires explicit NWS AGREE.**
+- **`signal_confirmer.py`** — Weather voting system from 5 independent sources: 4 deterministic models (GFS/HRRR, ECMWF, ICON, GEM) via Open-Meteo + NWS station point forecast (api.weather.gov). Outputs: STRONG (3+ agree AND NWS agrees, 1.5x), CONFIRM (2+, NWS abstains, 1.0x), REJECT. **WEAK signals are now hard-rejected** (0% historical win rate). NWS source uses 2°F abstain zone on both underpriced and overpriced paths. **NWS DISAGREE = hard REJECT** — NWS is the settlement source, so if it explicitly contradicts the signal, the trade is blocked regardless of how many models agree. **NWS ABSTAIN = cap at CONFIRM** (never STRONG). **STRONG requires explicit NWS AGREE.**
 - **`spx_confirmer.py`** — S&P 500 signal confirmation: intraday momentum, realized vs implied vol ratio, historical bracket hit rate. Same verdict/multiplier interface as weather confirmer.
 - **`risk_manager.py`** — Safety layers (see Risk Parameters section below). Key checks: daily loss limit, dynamic exposure cap (60% bankroll), per-city cap (20% bankroll), per-ticker cap ($15), daily forecast trade cap (8/day, confirmed outcomes exempt), correlated position cap, loss streak pause, cooldown, settlement proximity, liquidity reserve, kill switch (Sharpe + consecutive loss). State persisted in `risk_state.json`.
 - **`trade_intelligence.py`** — Position exit logic (including rounding-buffer exits for NO positions), forecast bias learning per NWS station (with 3-day streak detection), time-of-day sizing adjustments, intraday observation tracking, settlement P&L recording with `settled_at` timestamps.
@@ -129,7 +129,7 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | `MAX_POSITION_PCT` | 20% of bankroll | Max single position (caps contracts down instead of rejecting) |
-| `CONFIRMED_OUTCOME_POSITION_PCT` | 25% of bankroll | CASE 1 confirmed (NO on exceeded buckets) |
+| `CONFIRMED_OUTCOME_POSITION_PCT` | 30% of bankroll | CASE 1 confirmed (NO on exceeded buckets, was 25%) |
 | `CASE2_POSITION_PCT` | 10% of bankroll | CASE 2 confirmed (YES on current bucket, riskier) |
 | Quarter-Kelly | Kelly/4 | Base sizing formula, multiplied by confirmation level |
 
@@ -144,7 +144,7 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 | `MAX_PER_TICKER_CENTS` | $15.00 | Per-ticker concentration limit |
 | `MAX_CONTRACTS_PER_TICKER` | 25 | Hard cap on contract count (prevents cheap contract explosion) |
 | `MAX_OPEN_POSITIONS` | 20 | Total open positions |
-| `MAX_CORRELATED_POSITIONS` | 3 | Same city + same date |
+| `MAX_CORRELATED_POSITIONS` | 3 | Same city + same date (4 for confirmed outcomes) |
 
 ### NWS Rounding Buffer
 | Parameter | Value | Notes |
@@ -173,20 +173,20 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 | `DAILY_LOSS_LIMIT_CENTS` | $20.00 | Stop trading if daily losses hit this |
 | `CONSECUTIVE_LOSS_PAUSE` | 5 losses | Pause trading after 5 consecutive losses |
 | `CONSECUTIVE_LOSS_PAUSE_MINUTES` | 30 min | Duration of loss pause |
-| `TRADE_COOLDOWN` | 120 sec | Was 180 — matches scan interval for max throughput |
+| `TRADE_COOLDOWN` | 120 sec | Was 180 — matches scan interval. Same-cycle signals exempt (different cities in one scan pass) |
 | `RESTING_ORDER_TIMEOUT` | 25 min | Auto-cancel unfilled buy orders (was 15 min) |
 | `RESTING_EXIT_TIMEOUT` | 30 min | Auto-cancel unfilled exit/hedge orders |
 
 ### Confirmed Outcome Rules (CASE 1, 2 & 3)
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `CASE1_MIN_LOCAL_HOUR` | 11 AM local | CASE 1 & 3 earliest detection — high can only go up (was 1 PM) |
+| `CASE1_MIN_LOCAL_HOUR` | 10 AM local | CASE 1 & 3 earliest detection — observation-based, rounding buffer guards (was 11 AM) |
 | `CASE2_MIN_LOCAL_HOUR` | 4 PM local | CASE 2 time gate (YES on current bucket) |
 | `CASE2_NARROW_MIN_LOCAL_HOUR` | 5 PM local | Stricter for narrow buckets (≤5°F) |
 | `CASE2_NARROW_BUCKET_WIDTH` | 5°F | Definition of "narrow" bucket |
 | CASE 1 rounding buffer | +1°F | `todays_high > temp_high + 1°F` before confirming |
 | CASE 3 rounding buffer | -1°F | Gap reduced by 1°F (real temp could be higher) |
-| CASE 3 graduated gaps | 11AM:10°F, 12PM:8°F, 1PM:7°F, 2PM:6°F, 3PM:5°F, 4PM+:3°F | Config-driven (`CASE3_GAP_THRESHOLDS`). Tightened after DC loss |
+| CASE 3 graduated gaps | 11AM:10°F, 12PM:8°F, 1PM:7°F, 2PM:6°F, 3PM:4°F, 4PM+:2°F | Config-driven (`CASE3_GAP_THRESHOLDS`). Tightened 3/4PM for more CASE 3 trades |
 | CASE 3 ensemble veto | 3PM+:3°F, earlier:5°F | Ensemble mean within N°F of bucket floor = veto CASE 3 |
 
 ### Settlement & Timing
@@ -244,8 +244,11 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 - **Model divergence**: Ensemble spread >4°F = skip. Spread <2°F = 1.2x boost.
 - **Longshot floor**: No contracts below 5¢ (market_quality.py) — was 12¢, lowered to capture confirmed outcomes
 - **Near-certainty cap**: No contracts above 88¢
-- **Minimum payout**: $1.50 total payout floor (was $5 — scaled for $40 bankroll)
+- **Minimum payout**: $2.00 total payout floor (was $1.50 — filter dust trades)
 - **Narrow bucket guard**: Extra caution on ≤5°F buckets
+- **NO-side sizing reduction**: NO contracts priced ≥50c get 70% of normal sizing (high cost = outsized loss risk, 83% WR but net negative P&L historically)
+- **Time-of-day edge thresholds**: Morning 10% (was 12%), overnight 9% (was 10%), afternoon/evening 8% base. Confirmed outcomes and arbitrage bypass.
+- **Same-cycle cooldown exemption**: Signals from the same scan pass (different cities) skip the 120s cooldown. All other risk checks still apply.
 - **Bias streak detection**: 3+ consecutive days of same-direction bias (≥0.5°F each) triggers immediate adjustment without waiting for 5-datapoint minimum
 
 ### Trade Scorecard (v4.0, in `trade_scorecard.py`)
@@ -256,10 +259,10 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 | Criterion | Threshold | Fixable | Description |
 |-----------|-----------|---------|-------------|
 | `data_integrity` | pass/fail | No | NWS station correct for settlement? |
-| `forecast_convergence` | 60% | No | Ensemble members agree within 2°F? |
+| `forecast_convergence` | 50% | No | Ensemble members agree within 2°F? (was 60%, redundant with 4°F model divergence gate) |
 | `edge_magnitude` | 4% net | Yes | Edge survives fees + uncertainty? (was 5%) |
 | `timing_window` | 0.5x mult | Yes | Favorable entry timing (hours to settlement)? |
-| `liquidity` | 1 (weather) / 3 (other) | Yes | Enough depth at target price? Weather relaxed — maker orders + market_quality pre-filter |
+| `liquidity` | Bypassed (weather maker) / 3 (other) | Yes | Weather maker orders bypass liquidity check (empty book = ideal for limit orders). Non-weather requires 3+ contracts. |
 | `portfolio_correlation` | 40% | Yes | Not over-concentrated in correlated markets? |
 | `position_sizing` | 20% bankroll | Yes | Within per-position and total exposure caps? |
 | `adversarial_check` | <2 warnings | Yes | Passes devil's advocate stress test? |

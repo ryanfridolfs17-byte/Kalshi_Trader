@@ -25,28 +25,30 @@ import config
 # and meteorological reasoning. Index 0 = January, 11 = December.
 
 SEASONAL_MATRIX = {
-    # Original 4 cities
-    "NYC": [1.10, 1.05, 0.75, 0.80, 0.90, 0.95, 1.05, 1.00, 0.85, 0.85, 1.00, 1.10],
-    "CHI": [1.10, 1.00, 0.70, 0.75, 0.85, 0.90, 1.05, 1.00, 0.85, 0.80, 0.90, 1.10],
-    "MIA": [1.10, 1.10, 1.05, 1.00, 0.85, 0.80, 0.85, 0.85, 0.75, 0.90, 1.05, 1.10],
-    "AUS": [0.85, 0.80, 0.75, 0.80, 0.85, 1.00, 1.15, 1.15, 0.90, 0.80, 0.85, 0.85],
+    # Original 4 cities — spring months (Mar/Apr/May) boosted ~8-10% to reduce
+    # double-penalty with regime multipliers. Model accuracy weighting already
+    # penalizes bad spring forecasts automatically.
+    "NYC": [1.10, 1.05, 0.83, 0.88, 0.95, 0.95, 1.05, 1.00, 0.85, 0.85, 1.00, 1.10],
+    "CHI": [1.10, 1.00, 0.78, 0.82, 0.90, 0.90, 1.05, 1.00, 0.85, 0.80, 0.90, 1.10],
+    "MIA": [1.10, 1.10, 1.05, 1.00, 0.90, 0.80, 0.85, 0.85, 0.75, 0.90, 1.05, 1.10],
+    "AUS": [0.85, 0.80, 0.82, 0.88, 0.90, 1.00, 1.15, 1.15, 0.90, 0.80, 0.85, 0.85],
     # Expanded cities (16 new)
-    "LAX": [0.95, 0.90, 0.80, 0.80, 0.75, 0.85, 1.10, 1.10, 1.05, 0.90, 0.95, 0.95],  # Marine layer kills spring predictability
-    "DEN": [0.80, 0.75, 0.70, 0.70, 0.75, 0.90, 1.00, 1.00, 0.85, 0.75, 0.75, 0.80],  # Chinook winds = high variability
-    "PHI": [1.05, 1.00, 0.75, 0.80, 0.90, 0.95, 1.05, 1.00, 0.85, 0.85, 0.95, 1.05],  # Similar to NYC
-    "ATL": [0.95, 0.90, 0.75, 0.80, 0.85, 0.90, 0.95, 0.95, 0.85, 0.90, 0.95, 0.95],  # Spring storms, summer convection
-    "BOS": [1.05, 1.00, 0.75, 0.80, 0.85, 0.95, 1.05, 1.00, 0.85, 0.85, 0.95, 1.05],  # Maritime NE, similar to NYC
-    "DAL": [0.85, 0.80, 0.75, 0.80, 0.85, 1.00, 1.10, 1.10, 0.90, 0.80, 0.85, 0.85],  # Like AUS, more frontal activity
-    "DC":  [1.00, 0.95, 0.75, 0.80, 0.90, 0.95, 1.05, 1.00, 0.85, 0.85, 0.95, 1.00],  # Mid-Atlantic transitional
-    "HOU": [0.90, 0.85, 0.80, 0.80, 0.85, 0.90, 0.95, 0.95, 0.80, 0.85, 0.90, 0.90],  # Gulf coast, tropical influence
-    "LV":  [0.90, 0.85, 0.80, 0.90, 0.95, 1.15, 1.20, 1.15, 1.10, 0.95, 0.90, 0.90],  # Desert = very predictable summer
-    "MIN": [1.10, 1.05, 0.70, 0.75, 0.80, 0.90, 1.00, 1.00, 0.85, 0.80, 0.85, 1.05],  # Arctic air predictable, spring chaos
-    "NOLA":[0.90, 0.85, 0.80, 0.85, 0.85, 0.85, 0.90, 0.90, 0.80, 0.90, 0.90, 0.90],  # Gulf coast like HOU
-    "OKC": [0.90, 0.85, 0.75, 0.75, 0.80, 0.90, 1.05, 1.05, 0.85, 0.80, 0.85, 0.90],  # Great Plains severe weather in spring
-    "PHX": [0.95, 0.95, 0.95, 1.05, 1.10, 1.15, 0.90, 0.90, 1.00, 1.05, 1.00, 0.95],  # Desert stable except monsoon Jul-Aug
-    "SATX":[0.85, 0.80, 0.75, 0.80, 0.85, 1.00, 1.10, 1.10, 0.90, 0.80, 0.85, 0.85],  # Similar to AUS
-    "SEA": [0.85, 0.85, 0.80, 0.80, 0.85, 0.95, 1.05, 1.10, 1.00, 0.85, 0.80, 0.85],  # PNW marine, summer predictable
-    "SFO": [0.80, 0.80, 0.80, 0.80, 0.75, 0.80, 0.85, 0.85, 0.90, 0.90, 0.85, 0.80],  # Microclimates + fog = tough
+    "LAX": [0.95, 0.90, 0.87, 0.87, 0.82, 0.85, 1.10, 1.10, 1.05, 0.90, 0.95, 0.95],  # Marine layer kills spring predictability
+    "DEN": [0.80, 0.75, 0.78, 0.78, 0.82, 0.90, 1.00, 1.00, 0.85, 0.75, 0.75, 0.80],  # Chinook winds = high variability
+    "PHI": [1.05, 1.00, 0.83, 0.88, 0.95, 0.95, 1.05, 1.00, 0.85, 0.85, 0.95, 1.05],  # Similar to NYC
+    "ATL": [0.95, 0.90, 0.83, 0.88, 0.90, 0.90, 0.95, 0.95, 0.85, 0.90, 0.95, 0.95],  # Spring storms, summer convection
+    "BOS": [1.05, 1.00, 0.83, 0.88, 0.90, 0.95, 1.05, 1.00, 0.85, 0.85, 0.95, 1.05],  # Maritime NE, similar to NYC
+    "DAL": [0.85, 0.80, 0.82, 0.88, 0.90, 1.00, 1.10, 1.10, 0.90, 0.80, 0.85, 0.85],  # Like AUS, more frontal activity
+    "DC":  [1.00, 0.95, 0.83, 0.88, 0.95, 0.95, 1.05, 1.00, 0.85, 0.85, 0.95, 1.00],  # Mid-Atlantic transitional
+    "HOU": [0.90, 0.85, 0.87, 0.87, 0.90, 0.90, 0.95, 0.95, 0.80, 0.85, 0.90, 0.90],  # Gulf coast, tropical influence
+    "LV":  [0.90, 0.85, 0.87, 0.95, 1.00, 1.15, 1.20, 1.15, 1.10, 0.95, 0.90, 0.90],  # Desert = very predictable summer
+    "MIN": [1.10, 1.05, 0.78, 0.82, 0.87, 0.90, 1.00, 1.00, 0.85, 0.80, 0.85, 1.05],  # Arctic air predictable, spring chaos
+    "NOLA":[0.90, 0.85, 0.87, 0.90, 0.90, 0.85, 0.90, 0.90, 0.80, 0.90, 0.90, 0.90],  # Gulf coast like HOU
+    "OKC": [0.90, 0.85, 0.82, 0.82, 0.87, 0.90, 1.05, 1.05, 0.85, 0.80, 0.85, 0.90],  # Great Plains severe weather in spring
+    "PHX": [0.95, 0.95, 1.00, 1.05, 1.10, 1.15, 0.90, 0.90, 1.00, 1.05, 1.00, 0.95],  # Desert stable except monsoon Jul-Aug
+    "SATX":[0.85, 0.80, 0.82, 0.88, 0.90, 1.00, 1.10, 1.10, 0.90, 0.80, 0.85, 0.85],  # Similar to AUS
+    "SEA": [0.85, 0.85, 0.87, 0.87, 0.90, 0.95, 1.05, 1.10, 1.00, 0.85, 0.80, 0.85],  # PNW marine, summer predictable
+    "SFO": [0.80, 0.80, 0.87, 0.87, 0.82, 0.80, 0.85, 0.85, 0.90, 0.90, 0.85, 0.80],  # Microclimates + fog = tough
 }
 
 # ═══════════════════════════════════════════════════════
@@ -58,7 +60,7 @@ REGIME_MULTIPLIERS = {
     "normal": 1.0,
     "anomalous_warm": 0.80,
     "anomalous_cold": 0.85,
-    "frontal_passage": 0.70,
+    "frontal_passage": 0.80,
     "stable_high": 1.15,
     "tropical_influence": 0.65,
 }

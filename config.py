@@ -124,12 +124,12 @@ MAX_AUTO_TRADE_CENTS = 2000         # $20.00
 MAX_POSITION_PCT = 0.20             # 20% of bankroll
 
 # Confirmed outcome trades (near-guaranteed) can size bigger
-CONFIRMED_OUTCOME_POSITION_PCT = 0.25  # 25% of bankroll (CASE 1: NO on exceeded buckets)
+CONFIRMED_OUTCOME_POSITION_PCT = 0.30  # 30% of bankroll (CASE 1: NO on exceeded buckets, was 25%)
 
 # CASE 2: YES on current bucket — riskier, temp can still rise
 # Smaller sizing + later time gate + buffer from bucket ceiling
 CASE2_POSITION_PCT = 0.10              # 10% of bankroll (vs 25% for CASE 1)
-CASE1_MIN_LOCAL_HOUR = 11              # 11 AM local — high can only go up, safe to confirm early
+CASE1_MIN_LOCAL_HOUR = 10              # 10 AM local — observation-based, rounding buffer is real guard (was 11)
 CASE2_MIN_LOCAL_HOUR = 16              # 4 PM local (vs 11 AM for CASE 1)
 CASE2_NARROW_MIN_LOCAL_HOUR = 17       # 5 PM local for narrow buckets (≤5°F wide)
 CASE2_NARROW_BUCKET_WIDTH = 5          # Buckets ≤5°F wide get stricter rules
@@ -138,12 +138,12 @@ CASE2_NARROW_BUCKET_WIDTH = 5          # Buckets ≤5°F wide get stricter rules
 # Keys = minimum local hour, Values = minimum temp gap (°F) after rounding buffer
 # Earlier detection = larger gap required (more time for temp to rise)
 CASE3_GAP_THRESHOLDS = {
-    16: 3,   # 4PM+: 3°F (was 2°F — too aggressive)
-    15: 5,   # 3PM: 5°F (was 3°F — DC loss)
-    14: 6,   # 2PM: 6°F (new tier)
-    13: 7,   # 1PM: 7°F (was 5°F)
-    12: 8,   # Noon: 8°F (was 7°F)
-    11: 10,  # 11AM: 10°F (unchanged)
+    16: 2,   # 4PM+: 2°F — only 6h left, ensemble veto is real guard (was 3°F)
+    15: 4,   # 3PM: 4°F (was 5°F — slightly loosened, ensemble veto at 3°F)
+    14: 6,   # 2PM: 6°F (unchanged)
+    13: 7,   # 1PM: 7°F (unchanged)
+    12: 8,   # Noon: 8°F (unchanged)
+    11: 10,  # 11AM: 10°F (unchanged, also used as CASE 1 gate now at 10AM)
 }
 CASE3_ENSEMBLE_VETO_GAP_LATE = 3       # 3PM+: ensemble mean within 3°F of bucket = veto
 CASE3_ENSEMBLE_VETO_GAP_DEFAULT = 5    # Before 3PM: ensemble mean within 5°F = veto
@@ -172,6 +172,7 @@ MAX_DAILY_CITY_SPEND_CENTS = 3500   # $35.00 cumulative per city per day
 
 # Max positions per city+date combination
 MAX_CORRELATED_POSITIONS = 3
+MAX_CORRELATED_POSITIONS_CONFIRMED = 4  # Higher cap for confirmed outcomes (near-guaranteed)
 
 # Max total cost per single ticker (prevents over-concentration on one contract)
 # e.g., KXHIGHNY-26FEB16-B41.5 can never exceed $15.00 total invested
@@ -295,7 +296,7 @@ ADAPTIVE_LEARNING_BLEND = 0.3        # Weight given to empirical data vs theoret
 MIN_EDGE = 0.08
 
 # Skip trades where total payout (contracts × payout_per_contract) is below this
-MIN_PAYOUT_DOLLARS = 1.50      # Was $5 — scaled for $40 bankroll (3% of bankroll)
+MIN_PAYOUT_DOLLARS = 2.00      # Was $1.50 — filter dust trades, focus capital on meaningful positions
 
 # Minimum volume on a market to trade it
 # Note: Kalshi weather markets are low-volume. 1+ is realistic.
@@ -368,7 +369,7 @@ LOG_LEVEL = "DEBUG"  # "DEBUG" for verbose output
 # Confirmed outcomes and arbitrage bypass the scorecard.
 SCORECARD_ENABLED = True
 SCORECARD_MAX_ITERATIONS = 3              # Max diagnose-fix-retry loops
-MIN_FORECAST_CONVERGENCE = 0.60           # 60% of ensemble must agree within 2°F
+MIN_FORECAST_CONVERGENCE = 0.50           # 50% of ensemble must agree within 2°F (was 60% — redundant with 4°F model divergence gate)
 MIN_EDGE_AFTER_FEES = 0.04               # 4% minimum edge (same as FEE_ADJUSTED_MIN_EDGE)
 MIN_TIMING_MULTIPLIER = 0.50             # Don't trade in bad timing windows
 MIN_LIQUIDITY_CONTRACTS = 3              # Need 3+ contracts at target price

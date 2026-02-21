@@ -39,7 +39,7 @@ class TradeScorecard:
             "fixable": False,
         },
         "forecast_convergence": {
-            "threshold": 0.60,
+            "threshold": 0.50,
             "description": "Do multiple forecast models agree within 2°F?",
             "fixable": False,
         },
@@ -345,6 +345,11 @@ class TradeScorecard:
         activity.  Threshold is relaxed to 1 contract for weather.
         """
         is_weather = signal.get("strategy", "") in ("S1-Weather", "S2-Arbitrage")
+        # Weather maker orders post into the book — empty book is ideal,
+        # not a problem. Bypass liquidity check entirely for weather.
+        if is_weather and config.MAKER_STRATEGY_ENABLED:
+            return {"passed": True, "value": "maker", "threshold": 0,
+                    "detail": "Weather maker strategy — liquidity check bypassed (we post limits)"}
         threshold = 1 if is_weather else self.CRITERIA["liquidity"]["threshold"]
 
         ticker = signal.get("ticker", "")
@@ -519,7 +524,7 @@ class TradeScorecard:
         # 2. Model disagreement as uncertainty proxy
         if weather_data:
             model_spread = weather_data.get("model_spread", 0)
-            if model_spread > 3.0:  # Below MAX_MODEL_DIVERGENCE_F but still concerning
+            if model_spread > 4.0:  # Match MAX_MODEL_DIVERGENCE_F in strategy.py (was 3.0)
                 warnings.append(f"Model spread {model_spread:.1f}°F indicates uncertainty")
 
         # 3. Anomalous temperature departure
