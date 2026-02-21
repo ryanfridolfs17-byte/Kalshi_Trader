@@ -1048,26 +1048,31 @@ def _check_resting_orders(client, risk, trade_log, intel=None):
                 except Exception:
                     pass
         else:
-            # No longer resting → check if filled or cancelled
+            # No longer resting → check if filled or cancelled.
             # _reconcile_positions() already has the correct position state.
             # Check cancelled orders list to distinguish filled vs cancelled.
-            actual_status = "filled"  # Default assumption
+            actual_status = None
             try:
                 cancelled_resp = client.get_orders(ticker=trade.get("ticker"), status="canceled")
                 if cancelled_resp:
                     cancelled_orders = cancelled_resp.get("orders", [])
-                    for co in cancelled_orders:
-                        if co.get("order_id") == order_id:
-                            actual_status = "cancelled"
-                            break
-            except Exception:
-                pass  # API error — fall back to "filled" assumption
+                    is_cancelled = any(co.get("order_id") == order_id for co in cancelled_orders)
+                    actual_status = "cancelled" if is_cancelled else "filled"
+                else:
+                    actual_status = "filled"  # Empty response = not in cancelled list
+            except Exception as e:
+                # API error — do NOT assume filled. Leave as resting until
+                # next cycle when we can properly verify. Assuming filled on
+                # API failure could corrupt position tracking.
+                print(f"  [RESTING] API error checking buy order {order_id}: {e} "
+                      f"— skipping update (will retry next cycle)")
 
-            trade["order_status"] = actual_status
-            old_status = trade.get("status", "")
-            trade["status"] = old_status.replace("resting", actual_status)
-            print(f"  [RESTING] Buy order {actual_status}: {order_id} ({trade['ticker']})")
-            updated = True
+            if actual_status:
+                trade["order_status"] = actual_status
+                old_status = trade.get("status", "")
+                trade["status"] = old_status.replace("resting", actual_status)
+                print(f"  [RESTING] Buy order {actual_status}: {order_id} ({trade['ticker']})")
+                updated = True
 
     # --- Check resting EXIT orders ---
     for trade in trade_log:
@@ -1096,12 +1101,18 @@ def _check_resting_orders(client, risk, trade_log, intel=None):
                 except Exception:
                     pass
         else:
-            # Exit filled — estimate P&L and mark settled
+            # Exit filled — estimate P&L and mark settled.
+            # Use pending_exit_contracts (the actual exit size) instead of
+            # the original trade's contracts, and compute per-contract cost
+            # to avoid using the full position cost for partial exits.
             exit_price = trade.get("pending_exit_price", 50)
-            contracts = trade.get("contracts", 1)
+            exit_contracts = trade.get("pending_exit_contracts", trade.get("contracts", 1))
+            original_contracts = trade.get("contracts", 1)
             cost_cents = trade.get("cost_cents", 0)
-            sell_value = exit_price * contracts
-            profit_cents = sell_value - cost_cents
+            cost_per_contract = cost_cents / max(original_contracts, 1)
+            exit_cost = int(cost_per_contract * exit_contracts)
+            sell_value = exit_price * exit_contracts
+            profit_cents = sell_value - exit_cost
 
             trade["settled"] = True
             trade["settled_at"] = datetime.now(timezone.utc).isoformat()
@@ -1109,12 +1120,14 @@ def _check_resting_orders(client, risk, trade_log, intel=None):
             trade["profit_cents"] = profit_cents
             trade["exit_price_cents"] = exit_price
             trade["exit_order_id"] = exit_order_id
+            trade["exit_contracts"] = exit_contracts
             trade.pop("pending_exit_order_id", None)
             trade.pop("pending_exit_time", None)
             trade.pop("pending_exit_price", None)
+            trade.pop("pending_exit_contracts", None)
 
             print(f"  [RESTING] Exit filled: {exit_order_id} ({trade['ticker']}) "
-                  f"P&L: ${profit_cents/100:+.2f}")
+                  f"{exit_contracts}x @ {exit_price}c, P&L: ${profit_cents/100:+.2f}")
             updated = True
 
     # --- Check resting HEDGE orders ---
@@ -1883,6 +1896,7 @@ def _execute_exit(client, risk, trade_log, exit_rec, intel=None):
                         trade["pending_exit_order_id"] = order_id
                         trade["pending_exit_time"] = datetime.now().isoformat()
                         trade["pending_exit_price"] = current_price
+                        trade["pending_exit_contracts"] = remaining
                         break
                 _save_trade_log(trade_log)
 
@@ -1898,6 +1912,7 @@ def _execute_exit(client, risk, trade_log, exit_rec, intel=None):
                         trade["pending_exit_order_id"] = order_id
                         trade["pending_exit_time"] = datetime.now().isoformat()
                         trade["pending_exit_price"] = current_price
+                        trade["pending_exit_contracts"] = contracts
                         break
                 _save_trade_log(trade_log)
         else:
@@ -2550,15 +2565,35 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
                     t_pnl = sell_revenue + s_revenue - buy_cost
 
                     # Apportion P&L to this trade entry proportionally by cost.
-                    # Old formula assumed all contracts won at $1 and assigned
-                    # total ticker P&L to each entry — caused inflation when
-                    # multiple entries existed or partial exits occurred.
+                    # IMPORTANT: Partial exits (EXIT_PARTIAL, PARE) are already
+                    # settled with their own profit_cents. Their sell revenue is
+                    # already in ticker_flows["sell_revenue"]. So we must subtract
+                    # the already-settled P&L from t_pnl before assigning to this
+                    # entry, to avoid double-counting.
+                    already_settled_pnl = sum(
+                        t2.get("profit_cents", 0)
+                        for t2 in trade_log
+                        if t2.get("ticker") == t_ticker
+                        and t2.get("settled")
+                        and t2.get("strategy") in ("EXIT_PARTIAL", "PARE", "HEDGE")
+                    )
+                    remaining_pnl = t_pnl - already_settled_pnl
                     trade_cost = trade.get("cost_cents", 0)
-                    if buy_cost > 0 and trade_cost > 0:
-                        trade["profit_cents"] = round(t_pnl * (trade_cost / buy_cost))
+
+                    # Count unsettled cost for this ticker to apportion correctly
+                    # when multiple unsettled buy entries exist for the same ticker.
+                    unsettled_cost = sum(
+                        t2.get("cost_cents", 0)
+                        for t2 in trade_log
+                        if t2.get("ticker") == t_ticker
+                        and not t2.get("settled")
+                        and not any(x in t2.get("status", "") for x in ("resting", "cancelled", "error", "submitted"))
+                    )
+                    if unsettled_cost > 0 and trade_cost > 0:
+                        trade["profit_cents"] = round(remaining_pnl * (trade_cost / unsettled_cost))
                     else:
                         trade["profit_cents"] = 0
-                    trade["result"] = "win" if t_pnl >= 0 else "loss"
+                    trade["result"] = "win" if trade["profit_cents"] >= 0 else "loss"
 
                     trade["settled"] = True
                     trade["settled_at"] = datetime.now(timezone.utc).isoformat()
