@@ -205,7 +205,7 @@ class QuantAnalytics:
             weights = {}
             errors = {}
             for model, stats in data.items():
-                if stats.get("count", 0) >= 10:
+                if stats.get("count", 0) >= getattr(config, 'MODEL_BIAS_MIN_DATAPOINTS', 5):
                     rmse = math.sqrt(stats.get("mse_sum", 0) / stats["count"])
                     errors[model] = max(rmse, 0.5)
 
@@ -224,6 +224,40 @@ class QuantAnalytics:
             "gem_ensemble": 1.0,
         }
 
+    def get_model_bias(self, city_code, month=None):
+        """
+        Return mean signed bias per model for a city/season.
+        Negative = model underpredicts (forecast too cool).
+        Positive = model overpredicts (forecast too warm).
+
+        Returns: {"gfs_ensemble": -2.5, "ecmwf_ifs": -1.0, ...} or None if insufficient data.
+        """
+        if month is None:
+            month = datetime.now().month
+
+        if month in [12, 1, 2]:
+            season = "winter"
+        elif month in [3, 4, 5]:
+            season = "spring"
+        elif month in [6, 7, 8]:
+            season = "summer"
+        else:
+            season = "fall"
+
+        key = f"{city_code}_{season}"
+        min_dp = getattr(config, 'MODEL_BIAS_MIN_DATAPOINTS', 5)
+
+        if key in self.model_accuracy:
+            data = self.model_accuracy[key]
+            biases = {}
+            for model, stats in data.items():
+                if stats.get("count", 0) >= min_dp and "error_sum" in stats:
+                    biases[model] = round(stats["error_sum"] / stats["count"], 2)
+            if biases:
+                return biases
+
+        return None
+
     def record_model_accuracy(self, city_code, model_name, forecast_high, actual_high):
         """Record a data point for model accuracy tracking."""
         month = datetime.now().month
@@ -240,11 +274,15 @@ class QuantAnalytics:
         if key not in self.model_accuracy:
             self.model_accuracy[key] = {}
         if model_name not in self.model_accuracy[key]:
-            self.model_accuracy[key][model_name] = {"count": 0, "mse_sum": 0}
+            self.model_accuracy[key][model_name] = {"count": 0, "mse_sum": 0, "error_sum": 0}
 
-        error_sq = (forecast_high - actual_high) ** 2
+        error = forecast_high - actual_high  # Positive = overpredicts, negative = underpredicts
+        error_sq = error ** 2
         self.model_accuracy[key][model_name]["count"] += 1
         self.model_accuracy[key][model_name]["mse_sum"] += error_sq
+        self.model_accuracy[key][model_name]["error_sum"] = (
+            self.model_accuracy[key][model_name].get("error_sum", 0) + error
+        )
 
         self._save_json(MODEL_ACCURACY_FILE, self.model_accuracy)
 

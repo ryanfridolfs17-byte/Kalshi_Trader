@@ -157,6 +157,17 @@ class Strategy:
         if best.get("confirmation_multiplier", 1.0) != 1.0:
             contracts = max(1, int(contracts * best["confirmation_multiplier"]))
 
+        # Next-day sizing reduction: evening trades for tomorrow get 50% sizing
+        target_date = best.get("target_date")
+        city_code_sig = best.get("city_code")
+        if target_date and city_code_sig:
+            tz_name = CITIES.get(city_code_sig, {}).get("timezone", "America/New_York")
+            local_date = datetime.now(ZoneInfo(tz_name)).strftime("%Y-%m-%d")
+            if target_date > local_date:
+                next_day_mult = getattr(config, 'NEXT_DAY_SIZING_MULTIPLIER', 0.50)
+                contracts = max(1, int(contracts * next_day_mult))
+                print(f"    [STRATEGY] Next-day sizing: {next_day_mult:.0%} → {contracts} contracts")
+
         # Apply correlation adjustment
         from risk_manager import RiskManager
         try:
@@ -213,9 +224,10 @@ class Strategy:
         if target_date is None:
             target_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        # Fetch accuracy-based model weights early — used by both confirmed
-        # outcome detection and the main probability calculation.
+        # Fetch accuracy-based model weights and biases early — used by both
+        # confirmed outcome detection and the main probability calculation.
         model_weights = self.quant.get_model_weights(city_code)
+        model_biases = self.quant.get_model_bias(city_code)
 
         # ─── FAST PATH: CONFIRMED OUTCOME DETECTION ───
         # If NWS observations already show the outcome is determined,
@@ -236,8 +248,8 @@ class Strategy:
         if spread < 99 and spread > 40:
             return None  # Genuinely wide spread with real quotes on both sides
 
-        # Step 2: Fetch ensemble distribution with accuracy-based model weighting
-        distribution = self.weather.get_temperature_distribution(city_code, target_date, model_weights=model_weights)
+        # Step 2: Fetch ensemble distribution with accuracy-based model weighting + bias correction
+        distribution = self.weather.get_temperature_distribution(city_code, target_date, model_weights=model_weights, model_biases=model_biases)
         if not distribution:
             return None
 
@@ -421,6 +433,8 @@ class Strategy:
                 "predicted_high": distribution["forecasted_high_mean"],
                 "seasonal_regime": seasonal_regime,
                 "seasonal_multiplier": seasonal_mult,
+                "city_code": city_code,
+                "target_date": target_date,
                 "reasoning": (
                     f"[WEATHER] {city_code} {target_date}: "
                     f"Ensemble says {our_prob:.0%} for {temp_low}-{temp_high}°F, "
@@ -437,6 +451,7 @@ class Strategy:
                 "strategy": "S1-Weather",
                 "model_means": distribution.get("model_means", {}),
                 "model_weights_used": model_weights or {},
+                "model_biases_used": model_biases or {},
             }
         else:
             # Overpriced YES — buy NO
@@ -502,6 +517,8 @@ class Strategy:
                 "predicted_high": distribution["forecasted_high_mean"],
                 "seasonal_regime": seasonal_regime,
                 "seasonal_multiplier": seasonal_mult,
+                "city_code": city_code,
+                "target_date": target_date,
                 "reasoning": (
                     f"[WEATHER] {city_code} {target_date}: "
                     f"Ensemble says {our_prob:.0%} for {temp_low}-{temp_high}°F, "
@@ -518,6 +535,7 @@ class Strategy:
                 "strategy": "S1-Weather",
                 "model_means": distribution.get("model_means", {}),
                 "model_weights_used": model_weights or {},
+                "model_biases_used": model_biases or {},
             }
 
         return signal
@@ -813,7 +831,7 @@ class Strategy:
             case2_vetoed = False
             try:
                 dist = self.weather.get_temperature_distribution(
-                    city_code, target_date, model_weights=model_weights)
+                    city_code, target_date, model_weights=model_weights, model_biases=model_biases)
                 if dist:
                     forecast_mean = dist.get("forecasted_high_mean", 0)
                     forecast_max = dist.get("forecasted_high_max", 0)
@@ -885,7 +903,7 @@ class Strategy:
         # The ensemble captures weather patterns the observation gap cannot.
         if case3_triggered:
             try:
-                dist = self.weather.get_temperature_distribution(city_code, target_date, model_weights=model_weights)
+                dist = self.weather.get_temperature_distribution(city_code, target_date, model_weights=model_weights, model_biases=model_biases)
                 if dist:
                     forecast_mean = dist.get("forecasted_high_mean", 0)
                     forecast_max = dist.get("forecasted_high_max", 0)
@@ -987,11 +1005,26 @@ class Strategy:
 
         h = self._get_et_hour()
         if h < 6:
-            return 0.12   # Overnight: 12% — thin liquidity, be selective (was 9%)
+            base_threshold = 0.12   # Overnight: 12% — thin liquidity, be selective (was 9%)
         elif h < 12:
-            return 0.12   # Morning: 12% — save capital for afternoon confirmed outcomes (was 10%)
+            base_threshold = 0.12   # Morning: 12% — save capital for afternoon confirmed outcomes (was 10%)
         else:
-            return config.MIN_EDGE  # Afternoon/evening: base 10%
+            base_threshold = config.MIN_EDGE  # Afternoon/evening: base 10%
+
+        # Next-day guard: evening trades for tomorrow carry 12-18h uncertainty.
+        # Require 1.5x base threshold to compensate for forecast degradation.
+        target_date = signal.get("target_date")
+        city_code = signal.get("city_code")
+        if target_date and city_code:
+            tz_name = CITIES.get(city_code, {}).get("timezone", "America/New_York")
+            local_date = datetime.now(ZoneInfo(tz_name)).strftime("%Y-%m-%d")
+            if target_date > local_date:
+                next_day_threshold = config.MIN_EDGE * getattr(config, 'NEXT_DAY_EDGE_MULTIPLIER', 1.5)
+                base_threshold = max(base_threshold, next_day_threshold)
+                print(f"    [STRATEGY] Next-day market ({target_date} > {local_date}): "
+                      f"edge threshold raised to {base_threshold:.0%}")
+
+        return base_threshold
 
     # ═══════════════════════════════════════════════════════
     # POSITION SIZING (Quarter-Kelly)
