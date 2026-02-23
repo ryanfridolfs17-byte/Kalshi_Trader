@@ -302,9 +302,10 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 - **Near-certainty cap**: No contracts above 88¢
 - **Minimum payout**: $2.00 total payout floor (was $1.50 — filter dust trades)
 - **Narrow bucket guard**: Extra caution on ≤5°F buckets
-- **NO-side price ceiling**: NO positions priced above 70c (`NO_SIDE_MAX_PRICE_CENTS`) are hard-rejected. Prevents catastrophic losses like MIA B79.5 ($22 loss at 68c).
+- **NO-side price ceiling**: NO positions priced above 60c (`NO_SIDE_MAX_PRICE_CENTS`, was 70c) are hard-rejected. DEN B52.5 at 68c lost $5.44 — ceiling lowered to prevent.
 - **NO-side sizing reduction**: NO contracts priced ≥50c get 40% of normal sizing (`NO_SIDE_SIZING_MULTIPLIER`, was 70%). Caps max NO loss to ~$2.80 per position.
-- **Winter warm-city bias**: Ensemble members shifted +2°F (`WINTER_WARM_CITY_BIAS_F`) for warm cities (MIA, ATL, AUS, DAL, HOU, SATX, NOLA, OKC, PHX, LV) in Dec-Feb. Corrects systematic cool bias that generated false NO signals.
+- **Per-city per-model bias correction**: Replaces flat `WINTER_WARM_CITY_BIAS_F`. Each model family (GFS/ECMWF/ICON/GEM) gets its own bias correction per city. Learned bias from `quant_analytics.get_model_bias()` takes priority (requires 5+ datapoints). Falls back to per-city winter defaults: DEN +4°F (chinook), Gulf cities +3°F, desert +2°F. Config: `WINTER_WARM_CITY_BIAS` dict, `MODEL_BIAS_MIN_DATAPOINTS=5`.
+- **Next-day market guard**: Evening trades for tomorrow's markets (12-18h uncertainty) require 1.5x edge threshold (`NEXT_DAY_EDGE_MULTIPLIER`) and get 50% sizing (`NEXT_DAY_SIZING_MULTIPLIER`). Confirmed outcomes and arbitrage exempt.
 - **Time-of-day edge thresholds**: Morning 12% (was 10%), overnight 12% (was 9%), afternoon/evening 10% base. Recovery mode: save capital for afternoon confirmed outcomes. Confirmed outcomes and arbitrage bypass.
 - **Same-cycle cooldown exemption**: Signals from the same scan pass (different cities) skip the 120s cooldown. All other risk checks still apply.
 - **6-hour same-ticker re-entry cooldown**: Prevents re-entering a ticker that was traded within the last 6 hours (`SAME_TICKER_REENTRY_HOURS`). Confirmed outcomes (CASE 1/3) exempt.
@@ -340,10 +341,11 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 - **State file**: `maker_orders.json` in STATE_DIR
 
 ### Model Accuracy Weighting
-- **Flow**: On each settlement, `_update_model_accuracy_from_settlement()` fetches what each deterministic model (GFS, ECMWF, ICON, GEM) predicted and records the error in `model_accuracy.json` via `quant_analytics.record_model_accuracy()`. Prints a summary: `[MODEL ACCURACY] DC: ecmwf_ifs predicted 51°F (err: -3°F), gfs_ensemble predicted 49°F (err: -5°F)`.
-- **Weight calculation**: `quant_analytics.get_model_weights(city_code)` returns inverse-RMSE weights per model per city per season. Requires 10+ datapoints before activating (falls back to all 1.0).
-- **Weight application**: `strategy.py` fetches weights early in `_strategy_weather()` and passes them to `weather_engine.get_temperature_distribution()`. The engine applies weights in `_build_distribution()`: weighted mean, weighted bucket probability, weighted variance.
-- **Trade logging**: Each trade entry in `trade_history.json` records `model_predictions` (per-model means) and `model_weights_used` (accuracy weights applied).
+- **Flow**: On each settlement, `_update_model_accuracy_from_settlement()` fetches what each deterministic model (GFS, ECMWF, ICON, GEM) predicted and records the error in `model_accuracy.json` via `quant_analytics.record_model_accuracy()`. Now tracks both squared error (`mse_sum`) and signed error (`error_sum`). Prints a summary: `[MODEL ACCURACY] DC: ecmwf_ifs predicted 51°F (err: -3°F), gfs_ensemble predicted 49°F (err: -5°F)`.
+- **Weight calculation**: `quant_analytics.get_model_weights(city_code)` returns inverse-RMSE weights per model per city per season. Requires 5+ datapoints before activating (was 10, `MODEL_BIAS_MIN_DATAPOINTS`). Falls back to all 1.0.
+- **Bias calculation**: `quant_analytics.get_model_bias(city_code)` returns mean signed error per model. Negative = underpredicts. Used by `weather_engine` to apply per-model correction (shift = -bias). Requires 5+ datapoints. Falls back to per-city winter defaults from `WINTER_WARM_CITY_BIAS` dict.
+- **Weight application**: `strategy.py` fetches weights and biases early in `_strategy_weather()` and passes them to `weather_engine.get_temperature_distribution()`. The engine applies per-model bias correction first, then accuracy weights in `_build_distribution()`: weighted mean, weighted bucket probability, weighted variance.
+- **Trade logging**: Each trade entry in `trade_history.json` records `model_predictions` (per-model means), `model_weights_used` (accuracy weights applied), and `model_biases_used` (bias corrections applied).
 
 ## Deferred Features (NOT YET IMPLEMENTED)
 - **wethr.net API**: Needs Pro API key. Would be 6th confirmation source.

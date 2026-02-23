@@ -313,17 +313,29 @@ MIN_EDGE = 0.10
 # At 70c+, downside is 70c per contract but upside is only 30c. The loss/win ratio
 # makes these structurally unprofitable. AUS B84.5 (-$22.75) and MIA B79.5 (-$22.42)
 # were both NO at 68-77c.
-NO_SIDE_MAX_PRICE_CENTS = 70   # Reject NO positions priced above 70c
+NO_SIDE_MAX_PRICE_CENTS = 60   # Reject NO positions priced above 60c (was 70c)
 
 # NO-side sizing multiplier — reduce position size for expensive NO trades.
 # Was 0.70 (70%), which still allowed $10-15 losses. Now 0.40 (40%).
 NO_SIDE_SIZING_MULTIPLIER = 0.40  # Was 0.70
 
-# Winter warm-city ensemble bias (°F) — added to ensemble mean for warm cities
-# in Dec-Feb to correct systematic cool bias. All 4 models (GFS/ECMWF/ICON/GEM)
-# underpredict warm-city highs in winter.
-WINTER_WARM_CITY_BIAS_F = 2.0
-WARM_CITIES = {"MIA", "ATL", "AUS", "DAL", "HOU", "SATX", "NOLA", "OKC", "PHX", "LV"}
+# Next-day market guard — evening trades for tomorrow carry 12-18h uncertainty.
+# Require higher edge and reduce sizing to avoid low-conviction overnights.
+NEXT_DAY_EDGE_MULTIPLIER = 1.5     # 1.5x base threshold for next-day markets (10% → 15%)
+NEXT_DAY_SIZING_MULTIPLIER = 0.50  # 50% sizing for next-day evening trades
+
+# Per-city winter bias defaults (°F) — applied per-model when learned bias
+# data is insufficient (<5 datapoints). Replaces flat WINTER_WARM_CITY_BIAS_F.
+# Learned per-model bias (from quant_analytics.get_model_bias()) takes priority.
+WINTER_WARM_CITY_BIAS = {
+    "DEN": 4.0,   # Chinook wind risk — models badly miss warm events
+    "HOU": 3.0, "NOLA": 3.0, "MIA": 3.0,   # Gulf moisture
+    "ATL": 3.0, "AUS": 3.0, "DAL": 3.0,     # Southern humid/plains
+    "SATX": 3.0, "OKC": 3.0,                 # Southern plains
+    "PHX": 2.0, "LV": 2.0,                   # Desert (more predictable)
+}
+WARM_CITIES = set(WINTER_WARM_CITY_BIAS.keys())  # Derived from dict
+MODEL_BIAS_MIN_DATAPOINTS = 5  # Min datapoints before using learned bias (was implicit 10)
 
 # Skip trades where total payout (contracts × payout_per_contract) is below this
 MIN_PAYOUT_DOLLARS = 2.00      # Was $1.50 — filter dust trades, focus capital on meaningful positions

@@ -227,7 +227,7 @@ class WeatherEngine:
     # MAIN ENTRY: Get probability distribution for a city
     # ═══════════════════════════════════════════════════════
 
-    def get_temperature_distribution(self, city_code, target_date=None, model_weights=None):
+    def get_temperature_distribution(self, city_code, target_date=None, model_weights=None, model_biases=None):
         """
         Fetch all ensemble members and build a probability distribution
         of high temperatures for the given city and date.
@@ -236,6 +236,9 @@ class WeatherEngine:
             model_weights: Optional dict of per-model accuracy weights from
                 quant_analytics.get_model_weights(). E.g. {"gfs_ensemble": 0.8, "ecmwf_ifs": 1.5}.
                 If None, all models weighted equally (backward compatible).
+            model_biases: Optional dict of per-model mean signed error from
+                quant_analytics.get_model_bias(). E.g. {"gfs_ensemble": -2.5}.
+                Negative = underpredicts. Correction = -bias is applied per family.
 
         Returns dict with forecasted_high_mean, bucket_probs, raw_highs, etc.
         """
@@ -256,10 +259,63 @@ class WeatherEngine:
                 return cached["data"]
 
         # Fetch from all ensemble sources
-        all_highs = []
-        all_weights = []  # Parallel weights list for accuracy-based weighting
         sources_used = []
         model_family_highs = {}  # Track per-model family for disagreement detection
+
+        # Map from display name to quant_analytics key
+        _MODEL_QUANT_KEYS = {
+            "GFS": "gfs_ensemble",
+            "ECMWF": "ecmwf_ifs",
+            "ICON": "icon_eps",
+            "GEM": "gem_ensemble",
+        }
+
+        # Source 1: GFS Ensemble (31 members)
+        gfs_highs = self._fetch_ensemble(city, target_date, "gfs_seamless_eps")
+        if gfs_highs:
+            sources_used.append("gfs_ensemble")
+            model_family_highs["GFS"] = gfs_highs
+
+        # Source 2: ECMWF IFS Ensemble (51 members)
+        ecmwf_highs = self._fetch_ensemble(city, target_date, "ecmwf_ifs025_ensemble")
+        if ecmwf_highs:
+            sources_used.append("ecmwf_ifs")
+            model_family_highs["ECMWF"] = ecmwf_highs
+
+        # Source 3: ICON-EPS (40 members)
+        icon_highs = self._fetch_ensemble(city, target_date, "icon_seamless_eps")
+        if icon_highs:
+            sources_used.append("icon_eps")
+            model_family_highs["ICON"] = icon_highs
+
+        # Source 4: GEM Ensemble (21 members)
+        gem_highs = self._fetch_ensemble(city, target_date, "gem_global_ensemble")
+        if gem_highs:
+            sources_used.append("gem_ensemble")
+            model_family_highs["GEM"] = gem_highs
+
+        if not model_family_highs:
+            print(f"  [WEATHER] WARN: No ensemble data for {city_code} on {target_date}")
+            return None
+
+        # ─── PER-MODEL BIAS CORRECTION ───
+        # Apply learned per-model bias (from settlement accuracy) or per-city
+        # winter defaults. Replaces the old flat WINTER_WARM_CITY_BIAS_F.
+        # Correction = -bias (negative bias = underpredicts → shift UP)
+        target_month = target_date.month if hasattr(target_date, 'month') else None
+        if target_month is None:
+            try:
+                from datetime import datetime as _dt
+                target_month = _dt.strptime(str(target_date), "%Y-%m-%d").month
+            except Exception:
+                target_month = None
+
+        is_winter = target_month in (12, 1, 2) if target_month else False
+        warm_cities = getattr(config, 'WARM_CITIES', set())
+        per_city_defaults = getattr(config, 'WINTER_WARM_CITY_BIAS', {})
+
+        all_highs = []
+        all_weights = []
 
         def _weight_for(model_key):
             """Look up accuracy weight for a model, default 1.0."""
@@ -267,63 +323,27 @@ class WeatherEngine:
                 return model_weights.get(model_key, 1.0)
             return 1.0
 
-        # Source 1: GFS Ensemble (31 members)
-        gfs_highs = self._fetch_ensemble(city, target_date, "gfs_seamless_eps")
-        if gfs_highs:
-            w = _weight_for("gfs_ensemble")
-            all_highs.extend(gfs_highs)
-            all_weights.extend([w] * len(gfs_highs))
-            sources_used.append("gfs_ensemble")
-            model_family_highs["GFS"] = gfs_highs
+        for family_name, highs in model_family_highs.items():
+            quant_key = _MODEL_QUANT_KEYS.get(family_name, family_name.lower())
+            w = _weight_for(quant_key)
 
-        # Source 2: ECMWF IFS Ensemble (51 members)
-        ecmwf_highs = self._fetch_ensemble(city, target_date, "ecmwf_ifs025_ensemble")
-        if ecmwf_highs:
-            w = _weight_for("ecmwf_ifs")
-            all_highs.extend(ecmwf_highs)
-            all_weights.extend([w] * len(ecmwf_highs))
-            sources_used.append("ecmwf_ifs")
-            model_family_highs["ECMWF"] = ecmwf_highs
+            # Determine bias correction for this model family
+            correction = 0.0
+            if model_biases and quant_key in model_biases:
+                # Learned bias: negative = underpredicts → correction is positive
+                learned_bias = model_biases[quant_key]
+                correction = -learned_bias
+                print(f"  [WEATHER] {family_name}: learned bias {learned_bias:+.1f}°F → correction {correction:+.1f}°F")
+            elif is_winter and city_code in warm_cities:
+                # Fall back to per-city default (no learned data yet)
+                correction = per_city_defaults.get(city_code, 0.0)
+                if correction > 0:
+                    print(f"  [WEATHER] {family_name}: default winter bias +{correction:.1f}°F for {city_code}")
 
-        # Source 3: ICON-EPS (40 members)
-        icon_highs = self._fetch_ensemble(city, target_date, "icon_seamless_eps")
-        if icon_highs:
-            w = _weight_for("icon_eps")
-            all_highs.extend(icon_highs)
-            all_weights.extend([w] * len(icon_highs))
-            sources_used.append("icon_eps")
-            model_family_highs["ICON"] = icon_highs
-
-        # Source 4: GEM Ensemble (21 members)
-        gem_highs = self._fetch_ensemble(city, target_date, "gem_global_ensemble")
-        if gem_highs:
-            w = _weight_for("gem_ensemble")
-            all_highs.extend(gem_highs)
-            all_weights.extend([w] * len(gem_highs))
-            sources_used.append("gem_ensemble")
-            model_family_highs["GEM"] = gem_highs
-
-        if not all_highs:
-            print(f"  [WEATHER] WARN: No ensemble data for {city_code} on {target_date}")
-            return None
-
-        # Winter warm-city bias correction: ensembles systematically underpredict
-        # warm-city highs in Dec-Feb due to cool bias in 2m temperature forecasts.
-        # Shift all members warmer to reduce false NO signals on upper buckets.
-        winter_bias_applied = 0.0
-        if hasattr(config, 'WINTER_WARM_CITY_BIAS_F') and config.WINTER_WARM_CITY_BIAS_F > 0:
-            target_month = target_date.month if hasattr(target_date, 'month') else None
-            if target_month is None:
-                try:
-                    from datetime import datetime as _dt
-                    target_month = _dt.strptime(str(target_date), "%Y-%m-%d").month
-                except Exception:
-                    target_month = None
-            warm_cities = getattr(config, 'WARM_CITIES', set())
-            if target_month in (12, 1, 2) and city_code in warm_cities:
-                winter_bias_applied = config.WINTER_WARM_CITY_BIAS_F
-                all_highs = [t + winter_bias_applied for t in all_highs]
-                print(f"  [WEATHER] Applied +{winter_bias_applied:.1f}°F winter warm-city bias for {city_code} (month {target_month})")
+            # Apply correction and build all_highs/all_weights
+            corrected_highs = [t + correction for t in highs] if correction != 0 else highs
+            all_highs.extend(corrected_highs)
+            all_weights.extend([w] * len(corrected_highs))
 
         # Build the distribution with accuracy-based weights
         result = self._build_distribution(city_code, target_date, all_highs, sources_used, all_weights)
