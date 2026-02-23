@@ -271,9 +271,10 @@ class TradeScorecard:
         edge = signal.get("edge", 0)
         price_cents = signal.get("price_cents", 0)
 
-        # Compute fee-adjusted edge
+        # Compute fee-adjusted edge (expected fee, matching strategy.py formula)
         if config.FEE_ADJUSTMENT_ENABLED and price_cents > 0:
-            fee_drag = config.KALSHI_FEE_PCT * (100 - price_cents) / 100.0
+            win_prob = min(0.95, (price_cents / 100.0) + edge)
+            fee_drag = config.KALSHI_FEE_PCT * (100 - price_cents) / 100.0 * win_prob
             net_edge = edge - fee_drag
         else:
             net_edge = edge
@@ -404,7 +405,7 @@ class TradeScorecard:
     def _check_portfolio_correlation(self, signal, weather_data, portfolio):
         """
         Compute correlation exposure across the portfolio.
-        Same city = 100% correlated, same region ~60%, different region ~20%.
+        Same city = 100% correlated, same region ~60%, different region ~10%.
         Total correlated exposure must stay under threshold.
         """
         threshold = self.CRITERIA["portfolio_correlation"]["threshold"]
