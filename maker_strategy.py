@@ -98,9 +98,10 @@ class MakerStrategy:
         # Buffer improves our entry by buffer cents, so edge increases
         effective_edge = edge + (buffer / 100.0)
 
-        # Verify edge still exceeds minimum after fees
+        # Verify edge still exceeds minimum after fees (expected fee, matching strategy.py)
         if config.FEE_ADJUSTMENT_ENABLED:
-            fee_drag = config.KALSHI_FEE_PCT * (100 - limit_price) / 100.0
+            win_prob = min(0.95, (limit_price / 100.0) + effective_edge)
+            fee_drag = config.KALSHI_FEE_PCT * (100 - limit_price) / 100.0 * win_prob
             net_edge = effective_edge - fee_drag
         else:
             net_edge = effective_edge
