@@ -668,7 +668,7 @@ def main():
                             t for t in trade_log
                             if t.get("ticker") == ticker
                             and t.get("timestamp", "") >= reentry_cutoff
-                            and t.get("settled") or t.get("order_status") in ("filled", "cancelled", "canceled")
+                            and (t.get("settled") or t.get("order_status") in ("filled", "cancelled", "canceled"))
                         ]
                         if recent_same_ticker:
                             print(f"    [COOLDOWN] Skipping {ticker}: traded within last {reentry_hours}h")
