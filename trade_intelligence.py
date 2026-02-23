@@ -448,6 +448,19 @@ class TradeIntelligence:
             # if it says we're wrong, exit regardless of ensemble edge.
             # BUT: if our model still says >50% chance of winning, the confirmer
             # REJECT is informational only — we hold and note the disagreement.
+            #
+            # IMPORTANT: The confirmer derives signal direction from ensemble_prob
+            # vs market_price. For NO positions where the market has moved in our
+            # favor (YES price drops to ~3¢), ensemble_prob > market_prob, which
+            # flips the direction to "underpriced" — the confirmer then thinks
+            # we're saying the bucket SHOULD be hit. Deterministic models forecast
+            # outside the bucket (confirming our NO thesis) but the confirmer
+            # interprets that as DISAGREE → REJECT. This is a false REJECT.
+            #
+            # Fix: Use entry YES price (what we paid) for the direction derivation,
+            # not the current live price. This keeps the signal direction consistent
+            # with our original thesis. Entry price is always higher than current
+            # for winning NO positions, so direction stays "overpriced" (correct).
             if is_weather and signal_confirmer and parsed and current_price > 0:
                 city_info = CITIES.get(city_code)
                 if city_info:
@@ -455,6 +468,14 @@ class TradeIntelligence:
                         # Confirmer expects YES-side values: bucket probability and YES price.
                         # For NO positions, current_price is the NO bid — convert to YES price.
                         yes_price = current_price if side == "yes" else (100 - current_price)
+                        # For re-checks, use the HIGHER of entry YES price and current YES
+                        # price. This ensures direction stays consistent with our trade thesis.
+                        # A NO position entered at 59¢ NO (= 41¢ YES) that's now at 97¢ NO
+                        # (= 3¢ YES) should still ask "is this bucket overpriced at 41¢?"
+                        # not "is this bucket underpriced at 3¢?"
+                        if side == "no":
+                            entry_yes_price = round(100 - (cost_cents / max(contracts, 1)))
+                            yes_price = max(yes_price, entry_yes_price)
                         recheck = signal_confirmer.confirm_signal(
                             city_info=city_info,
                             target_date=parsed.get("target_date"),
