@@ -1155,6 +1155,10 @@ class TradeIntelligence:
             cost_cents = trade.get("cost_cents", 0)
             result = settlement.get("result", "")  # "yes" or "no"
 
+            # Skip if fully exited via partial exits (contracts/cost already zeroed)
+            if contracts <= 0 or cost_cents <= 0:
+                continue
+
             if (side == "yes" and result == "yes") or (side == "no" and result == "no"):
                 # WIN
                 payout = contracts * 100  # $1 per contract

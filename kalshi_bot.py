@@ -1202,12 +1202,25 @@ def _check_resting_orders(client, risk, trade_log, intel=None):
             continue
 
         if pare_order_id not in resting_order_ids:
-            # Filled — _reconcile_positions() already updated contract counts
-            print(f"  [RESTING] Pare filled: {pare_order_id} ({p['ticker']})")
+            # Filled — _reconcile_positions() already updated contract counts.
+            # Update the original trade entry to reflect the reduced position.
+            ticker = p.get("ticker", "")
+            pare_count = p.get("pending_pare_count", 0)
+            # Estimate released cost from position's cost basis before reconciliation
+            pos_contracts = p.get("contracts", 0)
+            pos_cost = p.get("cost_cents", 0)
+            if pos_contracts > 0 and pare_count > 0:
+                cost_per = pos_cost / pos_contracts
+                released_cost = int(cost_per * pare_count)
+            else:
+                released_cost = 0
+            print(f"  [RESTING] Pare filled: {pare_order_id} ({ticker})")
+            _reduce_original_trade(trade_log, ticker, pare_count, released_cost)
             p.pop("pending_pare_order_id", None)
             p.pop("pending_pare_time", None)
             p.pop("pending_pare_count", None)
             risk._save_state()
+            updated = True
         else:
             # Still resting — check timeout
             pare_time = p.get("pending_pare_time", "")
@@ -1861,9 +1874,18 @@ def _execute_exit(client, risk, trade_log, exit_rec, intel=None):
                 # Filled immediately (or market order) — process exit
                 print(f"    ✓ Exit order FILLED: {order_id}")
 
-                # Calculate approximate P&L
-                sell_value = (current_price or 50) * contracts
-                profit_cents = sell_value - cost_cents
+                # Calculate P&L using REMAINING cost/contracts (may have been
+                # reduced by prior PAREs — original trade entry tracks this)
+                remaining_cost = cost_cents
+                remaining_contracts = contracts
+                for trade in trade_log:
+                    if (trade.get("ticker") == ticker and not trade.get("settled")
+                            and trade.get("strategy") not in ("PARE", "EXIT_PARTIAL", "HEDGE")):
+                        remaining_cost = trade.get("cost_cents", cost_cents)
+                        remaining_contracts = trade.get("contracts", contracts)
+                        break
+                sell_value = (current_price or 50) * remaining_contracts
+                profit_cents = sell_value - remaining_cost
 
                 # Update trade log — mark the original trade as exited
                 for trade in trade_log:
@@ -1878,8 +1900,8 @@ def _execute_exit(client, risk, trade_log, exit_rec, intel=None):
                         break
                 _save_trade_log(trade_log)
 
-                # Release exposure in risk manager
-                risk.release_exposure(ticker, cost_cents, city_code)
+                # Release exposure in risk manager (use remaining cost, not original)
+                risk.release_exposure(ticker, remaining_cost, city_code)
                 if profit_cents > 0:
                     risk.record_win(profit_cents)
                 else:
@@ -1904,6 +1926,7 @@ def _execute_exit(client, risk, trade_log, exit_rec, intel=None):
 
                 # Reduce position (not full release) for filled portion
                 risk.reduce_position(ticker, filled, filled_cost)
+                _reduce_original_trade(trade_log, ticker, filled, filled_cost)
 
                 # Log partial exit
                 trade_log.append({
@@ -2062,6 +2085,7 @@ def _execute_partial_sell(client, risk, trade_log, review, intel=None):
                 partial_pnl = sell_value - released_cost
 
                 risk.reduce_position(ticker, sell_count, released_cost)
+                _reduce_original_trade(trade_log, ticker, sell_count, released_cost)
 
                 # Log the partial exit
                 trade_log.append({
@@ -2107,6 +2131,7 @@ def _execute_partial_sell(client, risk, trade_log, review, intel=None):
                 partial_pnl = sell_value - released_cost
 
                 risk.reduce_position(ticker, filled, released_cost)
+                _reduce_original_trade(trade_log, ticker, filled, released_cost)
 
                 trade_log.append({
                     "timestamp": datetime.now().isoformat(),
@@ -2850,6 +2875,27 @@ def _save_trade_log(log):
         config.atomic_json_save(config.TRADE_LOG_FILE, log)
     except Exception:
         pass
+
+
+def _reduce_original_trade(trade_log, ticker, sold_contracts, released_cost):
+    """Reduce the original buy entry's contracts/cost after a partial exit.
+
+    When a PARE or EXIT_PARTIAL fills, the original buy entry must be updated
+    so that check_settlements() computes P&L on the REMAINING position only,
+    not the full original size. If all contracts are sold, mark as settled.
+    """
+    for trade in trade_log:
+        if (trade.get("ticker") == ticker
+                and not trade.get("settled")
+                and trade.get("strategy") not in ("PARE", "EXIT_PARTIAL", "HEDGE")):
+            trade["contracts"] = max(0, trade.get("contracts", 0) - sold_contracts)
+            trade["cost_cents"] = max(0, trade.get("cost_cents", 0) - released_cost)
+            if trade["contracts"] <= 0:
+                trade["settled"] = True
+                trade["settled_at"] = datetime.now(timezone.utc).isoformat()
+                trade["result"] = "fully_exited"
+                trade["profit_cents"] = 0  # Actual P&L is in the PARE/EXIT entries
+            return
 
 
 if __name__ == "__main__":
