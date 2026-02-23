@@ -194,6 +194,7 @@ CONSECUTIVE_LOSS_PAUSE_MINUTES = 60 # Was 30 — longer pause to reset
 
 # Cooldown between trades (seconds)
 TRADE_COOLDOWN = 120                # 2 minutes — matches scan interval (was 180)
+SAME_TICKER_REENTRY_HOURS = 6       # Don't re-enter same ticker within 6 hours (confirmed outcomes exempt)
 
 # ═══════════════════════════════════════════════════════
 # RESTING ORDER MANAGEMENT
@@ -307,6 +308,22 @@ ADAPTIVE_LEARNING_BLEND = 0.3        # Weight given to empirical data vs theoret
 # Minimum edge to consider a trade
 # RECOVERY MODE: 10% min edge (was 8%) — only take clear mispricings
 MIN_EDGE = 0.10
+
+# NO-side price ceiling — hard-reject NO positions above this price.
+# At 70c+, downside is 70c per contract but upside is only 30c. The loss/win ratio
+# makes these structurally unprofitable. AUS B84.5 (-$22.75) and MIA B79.5 (-$22.42)
+# were both NO at 68-77c.
+NO_SIDE_MAX_PRICE_CENTS = 70   # Reject NO positions priced above 70c
+
+# NO-side sizing multiplier — reduce position size for expensive NO trades.
+# Was 0.70 (70%), which still allowed $10-15 losses. Now 0.40 (40%).
+NO_SIDE_SIZING_MULTIPLIER = 0.40  # Was 0.70
+
+# Winter warm-city ensemble bias (°F) — added to ensemble mean for warm cities
+# in Dec-Feb to correct systematic cool bias. All 4 models (GFS/ECMWF/ICON/GEM)
+# underpredict warm-city highs in winter.
+WINTER_WARM_CITY_BIAS_F = 2.0
+WARM_CITIES = {"MIA", "ATL", "AUS", "DAL", "HOU", "SATX", "NOLA", "OKC", "PHX", "LV"}
 
 # Skip trades where total payout (contracts × payout_per_contract) is below this
 MIN_PAYOUT_DOLLARS = 2.00      # Was $1.50 — filter dust trades, focus capital on meaningful positions

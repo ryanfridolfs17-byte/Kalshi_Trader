@@ -483,6 +483,14 @@ class Strategy:
                     rounding_multiplier = 0.5
 
             no_price = smart_price if smart_price else (market.get("no_ask", 0) or (100 - ref_price))
+
+            # NO-side price ceiling: reject NO positions priced above threshold
+            # High-cost NO = outsized loss risk (MIA B79.5 lost $22 at 68c)
+            if no_price > config.NO_SIDE_MAX_PRICE_CENTS:
+                print(f"    [STRATEGY] Rejected NO on {city_code} {temp_low}-{temp_high}°F: "
+                      f"price {no_price}c exceeds {config.NO_SIDE_MAX_PRICE_CENTS}c ceiling")
+                return None
+
             signal = {
                 "signal": "buy_no",
                 "side": "no",
@@ -1027,9 +1035,9 @@ class Strategy:
 
         # NO-side sizing reduction: buying NO at high prices (≥50c) risks
         # outsized losses — 83% WR but net negative P&L in production data.
-        # Reduce to 70% of normal sizing for expensive NO positions.
+        # Reduced from 0.70 to 0.40: caps max NO loss to ~$2.80 instead of $22.
         if getattr(self, '_current_side', None) == 'no' and price_cents >= 50:
-            contracts = max(1, int(contracts * 0.70))
+            contracts = max(1, int(contracts * config.NO_SIDE_SIZING_MULTIPLIER))
 
         return contracts
 

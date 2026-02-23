@@ -306,6 +306,35 @@ class TradeIntelligence:
                                 })
                                 continue
 
+                        # APPROACHING BUCKET EXIT for NO positions:
+                        # Don't wait until obs_high is inside the bucket — exit when
+                        # temperature is approaching. This was missing and caused AUS B84.5
+                        # (-$22.75) and DAL B77.5 (-$14.04) to bleed without exit signals.
+                        if is_today and side == "no" and obs_high is not None:
+                            gap_to_bucket = temp_low - obs_high
+                            if now_hour >= 14 and 0 < gap_to_bucket <= 2:
+                                # After 2 PM, within 2°F of bucket floor — full exit
+                                actions.append({
+                                    "ticker": ticker, "action": "full_exit", "urgency": "high",
+                                    "reason": (f"Approaching bucket: observed high {obs_high:.0f}F is only "
+                                              f"{gap_to_bucket:.0f}F below bucket floor {temp_low}F after 2 PM"),
+                                    "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
+                                    "city_code": city_code, "side": side, "contracts": contracts,
+                                    "cost_cents": cost_cents,
+                                })
+                                continue
+                            elif now_hour >= 13 and 0 < gap_to_bucket <= 3:
+                                # After 1 PM, within 3°F — full exit (high urgency, not medium)
+                                actions.append({
+                                    "ticker": ticker, "action": "full_exit", "urgency": "high",
+                                    "reason": (f"Approaching bucket: observed high {obs_high:.0f}F is only "
+                                              f"{gap_to_bucket:.0f}F below bucket floor {temp_low}F after 1 PM"),
+                                    "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
+                                    "city_code": city_code, "side": side, "contracts": contracts,
+                                    "cost_cents": cost_cents,
+                                })
+                                continue
+
                         # ROUNDING BUFFER EXIT for NO positions:
                         # NWS 5-min stations have ±1°F conversion error. The real temperature
                         # (from raw 1-min readings used for settlement) can be higher than
@@ -439,38 +468,29 @@ class TradeIntelligence:
                             entry_price = cost_cents / max(contracts, 1)
                             pnl_pct = ((current_price - entry_price) / max(entry_price, 1)) if entry_price > 0 else 0
 
-                            if thesis_supports_position:
-                                # Model still says >50% win — confirmer REJECT is overridden.
-                                # Don't exit; just note the disagreement and proceed to
-                                # thesis validation below for a proper HOLD action.
-                                our_win_prob = new_prob if side == "yes" else (1.0 - new_prob)
-                                print(f"    [REVIEW] {ticker}: Confirmer REJECT overridden — "
+                            # NWS is the SETTLEMENT SOURCE. If it disagrees, we exit.
+                            # Previously, thesis override and "not losing much" could suppress
+                            # the exit to medium urgency (= never auto-executed). This caused
+                            # positions to bleed for hours while NWS was right all along.
+                            #
+                            # After 2 PM local, NWS REJECT always overrides thesis — observations
+                            # are reliable enough to trust over the ensemble at that point.
+                            # Before 2 PM, allow thesis override ONLY if model strongly supports (>65%).
+                            city_info_for_tz = CITIES.get(city_code, {})
+                            tz_name = city_info_for_tz.get("timezone", "America/New_York")
+                            local_hour = datetime.now(ZoneInfo(tz_name)).hour
+
+                            our_win_prob = new_prob if side == "yes" else (1.0 - new_prob)
+                            if local_hour < 14 and thesis_supports_position and our_win_prob > 0.65:
+                                # Before 2 PM + strong thesis — allow override but log warning
+                                print(f"    [REVIEW] {ticker}: Confirmer REJECT overridden (pre-2PM) — "
                                       f"model says {our_win_prob:.0%} win prob. Detail: {nws_detail}")
-                                # Fall through to thesis validation — do NOT continue
-                            elif pnl_pct >= -0.10:
-                                # Thesis doesn't fully support, but not losing much — warn
-                                actions.append({
-                                    "ticker": ticker, "action": "full_exit", "urgency": "medium",
-                                    "reason": f"Confirmer REJECT (position not losing, manual review): {nws_detail}",
-                                    "current_price": current_price, "new_edge": 0,
-                                    "entry_edge": entry_edge,
-                                    "city_code": city_code, "side": side,
-                                    "contracts": contracts, "cost_cents": cost_cents,
-                                    "review_detail": {
-                                        "reviewed_at": datetime.now(timezone.utc).isoformat(),
-                                        "action": "full_exit",
-                                        "confirmer_verdict": recheck.get("verdict"),
-                                        "confirmer_summary": nws_detail,
-                                        "pnl_pct_at_review": round(pnl_pct, 4),
-                                        "urgency_reason": "manual_review",
-                                    },
-                                })
-                                continue
+                                # Fall through to thesis validation
                             else:
-                                # Thesis broken AND losing — auto-exit
+                                # After 2 PM OR thesis doesn't strongly support — always exit
                                 actions.append({
                                     "ticker": ticker, "action": "full_exit", "urgency": "high",
-                                    "reason": f"Confirmer REJECT on re-check: {nws_detail}",
+                                    "reason": f"NWS REJECT auto-exit: {nws_detail} (local hour {local_hour}, win prob {our_win_prob:.0%})",
                                     "current_price": current_price, "new_edge": 0,
                                     "entry_edge": entry_edge,
                                     "city_code": city_code, "side": side,
@@ -481,7 +501,7 @@ class TradeIntelligence:
                                         "confirmer_verdict": recheck.get("verdict"),
                                         "confirmer_summary": nws_detail,
                                         "pnl_pct_at_review": round(pnl_pct, 4),
-                                        "urgency_reason": "auto",
+                                        "urgency_reason": "nws_reject_auto",
                                     },
                                 })
                                 continue
