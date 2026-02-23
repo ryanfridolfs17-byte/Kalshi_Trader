@@ -1122,12 +1122,34 @@ def _check_resting_orders(client, risk, trade_log, intel=None):
                     age_seconds = (now - exit_dt).total_seconds()
                     if age_seconds > config.RESTING_EXIT_TIMEOUT:
                         try:
-                            client.cancel_order(exit_order_id)
+                            exit_contracts = trade.get("pending_exit_contracts", trade.get("contracts", 0))
+                            cancel_result = client.cancel_order(exit_order_id)
+                            # Check if any contracts filled before the cancel
+                            filled_before_cancel = 0
+                            if cancel_result:
+                                co = cancel_result.get("order", {})
+                                total = co.get("count", exit_contracts)
+                                remaining = co.get("remaining_count", total)
+                                filled_before_cancel = max(0, total - remaining)
+                            if filled_before_cancel > 0:
+                                # Partial fill before timeout — reduce trade entry
+                                ticker = trade.get("ticker", "")
+                                orig_contracts = trade.get("contracts", 1)
+                                cost_cents = trade.get("cost_cents", 0)
+                                cost_per = cost_cents / max(orig_contracts, 1)
+                                released_cost = int(cost_per * filled_before_cancel)
+                                exit_price = trade.get("pending_exit_price", 50)
+                                _reduce_original_trade(trade_log, ticker, filled_before_cancel, released_cost)
+                                print(f"  [RESTING] Cancelled stale exit: {exit_order_id} "
+                                      f"({trade['ticker']}, {filled_before_cancel}/{exit_contracts} "
+                                      f"filled before cancel, rested {age_seconds/60:.0f}m)")
+                            else:
+                                print(f"  [RESTING] Cancelled stale exit: {exit_order_id} "
+                                      f"({trade['ticker']}, rested {age_seconds/60:.0f}m)")
                             del trade["pending_exit_order_id"]
                             del trade["pending_exit_time"]
                             trade.pop("pending_exit_price", None)
-                            print(f"  [RESTING] Cancelled stale exit: {exit_order_id} "
-                                  f"({trade['ticker']}, rested {age_seconds/60:.0f}m)")
+                            trade.pop("pending_exit_contracts", None)
                             updated = True
                         except Exception as e:
                             print(f"  [RESTING] Cancel exit failed {exit_order_id}: {e}")
@@ -1206,7 +1228,7 @@ def _check_resting_orders(client, risk, trade_log, intel=None):
             # Update the original trade entry to reflect the reduced position.
             ticker = p.get("ticker", "")
             pare_count = p.get("pending_pare_count", 0)
-            # Estimate released cost from position's cost basis before reconciliation
+            # Estimate released cost from position's cost basis (post-reconciliation)
             pos_contracts = p.get("contracts", 0)
             pos_cost = p.get("cost_cents", 0)
             if pos_contracts > 0 and pare_count > 0:
@@ -1230,13 +1252,37 @@ def _check_resting_orders(client, risk, trade_log, intel=None):
                     age_seconds = (now - pare_dt).total_seconds()
                     if age_seconds > config.RESTING_EXIT_TIMEOUT:
                         try:
-                            client.cancel_order(pare_order_id)
+                            pare_count = p.get("pending_pare_count", 0)
+                            cancel_result = client.cancel_order(pare_order_id)
+                            # Check if any contracts filled before the cancel
+                            filled_before_cancel = 0
+                            if cancel_result:
+                                co = cancel_result.get("order", {})
+                                total = co.get("count", pare_count)
+                                remaining = co.get("remaining_count", total)
+                                filled_before_cancel = max(0, total - remaining)
+                            if filled_before_cancel > 0:
+                                # Partial fill before timeout — update trade log
+                                ticker = p.get("ticker", "")
+                                pos_contracts = p.get("contracts", 0)
+                                pos_cost = p.get("cost_cents", 0)
+                                if pos_contracts > 0:
+                                    cost_per = pos_cost / pos_contracts
+                                    released_cost = int(cost_per * filled_before_cancel)
+                                else:
+                                    released_cost = 0
+                                _reduce_original_trade(trade_log, ticker, filled_before_cancel, released_cost)
+                                updated = True
+                                print(f"  [RESTING] Cancelled stale pare: {pare_order_id} "
+                                      f"({p['ticker']}, {filled_before_cancel}/{pare_count} "
+                                      f"filled before cancel, rested {age_seconds/60:.0f}m)")
+                            else:
+                                print(f"  [RESTING] Cancelled stale pare: {pare_order_id} "
+                                      f"({p['ticker']}, rested {age_seconds/60:.0f}m)")
                             p.pop("pending_pare_order_id", None)
                             p.pop("pending_pare_time", None)
                             p.pop("pending_pare_count", None)
                             risk._save_state()
-                            print(f"  [RESTING] Cancelled stale pare: {pare_order_id} "
-                                  f"({p['ticker']}, rested {age_seconds/60:.0f}m)")
                         except Exception as e:
                             print(f"  [RESTING] Cancel pare failed {pare_order_id}: {e}")
                 except Exception:
