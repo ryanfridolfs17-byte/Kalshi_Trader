@@ -23,7 +23,7 @@ import os
 # API CREDENTIALS
 # ═══════════════════════════════════════════════════════
 # Reads from env var first (for Railway), falls back to hardcoded (for local)
-API_KEY_ID = os.environ.get("KALSHI_API_KEY_ID", "YOUR_API_KEY_ID_HERE")
+API_KEY_ID = os.environ.get("KALSHI_API_KEY_ID", "7bac3bd2-e6b5-4859-93ff-26ee15f2c249")
 PRIVATE_KEY_PATH = "kalshi_private_key.pem"
 
 # If the full PEM key is in an env var (Railway), write it to a file at startup.
@@ -124,14 +124,17 @@ MAX_AUTO_TRADE_CENTS = 2000         # $20.00
 MAX_POSITION_PCT = 0.20             # 20% of bankroll
 
 # Confirmed outcome trades (near-guaranteed) can size bigger
-CONFIRMED_OUTCOME_POSITION_PCT = 0.30  # 30% of bankroll (CASE 1: NO on exceeded buckets, was 25%)
+# RECOVERY MODE: 25% (was 30%) — still our bread and butter, but smaller bites
+CONFIRMED_OUTCOME_POSITION_PCT = 0.25  # 25% of bankroll (was 30%)
 
-# CASE 2: YES on current bucket — riskier, temp can still rise
-# Smaller sizing + later time gate + buffer from bucket ceiling
-CASE2_POSITION_PCT = 0.10              # 10% of bankroll (vs 25% for CASE 1)
+# CASE 2: YES on current bucket — DISABLED in recovery mode.
+# Has structural vulnerability: NWS observation staleness + temp can rise
+# out of bucket. Re-enable once bankroll exceeds $80.
+CASE2_ENABLED = False                  # DISABLED — lost money on stale observations
+CASE2_POSITION_PCT = 0.08             # 8% of bankroll when re-enabled (was 10%)
 CASE1_MIN_LOCAL_HOUR = 10              # 10 AM local — observation-based, rounding buffer is real guard (was 11)
-CASE2_MIN_LOCAL_HOUR = 16              # 4 PM local (vs 11 AM for CASE 1)
-CASE2_NARROW_MIN_LOCAL_HOUR = 17       # 5 PM local for narrow buckets (≤5°F wide)
+CASE2_MIN_LOCAL_HOUR = 18              # 6 PM local when re-enabled (was 4 PM — too early)
+CASE2_NARROW_MIN_LOCAL_HOUR = 19       # 7 PM local for narrow buckets (was 5 PM)
 CASE2_NARROW_BUCKET_WIDTH = 5          # Buckets ≤5°F wide get stricter rules
 
 # CASE 3: Graduated gap thresholds for "bucket unreachable" detection
@@ -152,36 +155,42 @@ CASE3_ENSEMBLE_VETO_GAP_DEFAULT = 5    # Before 3PM: ensemble mean within 5°F =
 APPROVAL_THRESHOLD_CENTS = 2500     # $25.00
 
 # Stop trading if daily losses hit this
-DAILY_LOSS_LIMIT_CENTS = 2000       # $20.00
+# RECOVERY MODE: $6 daily loss limit on $40 bankroll (15%)
+# Was $20 — that's 50% of remaining capital in one day.
+DAILY_LOSS_LIMIT_CENTS = 600        # $6.00 (was $20.00)
 
 # Max total money at risk across all active positions
-MAX_TOTAL_EXPOSURE_PCT = 0.60       # 60% of bankroll (dynamic, percentage-based)
-MAX_TOTAL_EXPOSURE_CENTS = 6000     # $60.00 fallback if balance unknown
+# RECOVERY MODE: 40% of bankroll (was 60%)
+MAX_TOTAL_EXPOSURE_PCT = 0.40       # 40% of bankroll (was 60%)
+MAX_TOTAL_EXPOSURE_CENTS = 1600     # $16.00 fallback (was $60.00)
 
 # Max open positions at once
-MAX_OPEN_POSITIONS = 20
+# RECOVERY MODE: 6 positions (was 20) — forces selectivity
+MAX_OPEN_POSITIONS = 6              # Was 20
 
 # Max exposure per city (weather) — percentage-based with fallback
-MAX_PER_CITY_PCT = 0.20             # 20% of bankroll per city
-MAX_PER_CITY_CENTS = 1000           # $10.00 fallback if balance unknown
+# RECOVERY MODE: 15% per city (was 20%)
+MAX_PER_CITY_PCT = 0.15             # 15% of bankroll per city (was 20%)
+MAX_PER_CITY_CENTS = 600            # $6.00 fallback (was $10.00)
 
 # Cumulative daily spending cap per city — prevents sell-and-rebuy chasing
 # Unlike MAX_PER_CITY_CENTS (tracks open exposure), this tracks TOTAL dollars
 # spent on a city in one day, even if positions were closed/sold.
-MAX_DAILY_CITY_SPEND_CENTS = 3500   # $35.00 cumulative per city per day
+MAX_DAILY_CITY_SPEND_CENTS = 1200   # $12.00 cumulative per city per day (was $35.00)
 
 # Max positions per city+date combination
-MAX_CORRELATED_POSITIONS = 3
-MAX_CORRELATED_POSITIONS_CONFIRMED = 4  # Higher cap for confirmed outcomes (near-guaranteed)
+MAX_CORRELATED_POSITIONS = 2        # Was 3 — tighter for recovery
+MAX_CORRELATED_POSITIONS_CONFIRMED = 3  # Was 4
 
 # Max total cost per single ticker (prevents over-concentration on one contract)
-# e.g., KXHIGHNY-26FEB16-B41.5 can never exceed $15.00 total invested
-MAX_PER_TICKER_CENTS = 1500          # $15.00 per ticker
-MAX_CONTRACTS_PER_TICKER = 25        # Hard cap on contract count (prevents cheap contract explosion)
+# RECOVERY MODE: $8 per ticker (was $15) — limits single-bet blowup
+MAX_PER_TICKER_CENTS = 800           # $8.00 per ticker (was $15.00)
+MAX_CONTRACTS_PER_TICKER = 15        # Was 25 — limits cheap contract explosion
 
 # Pause after this many consecutive losses
-CONSECUTIVE_LOSS_PAUSE = 5
-CONSECUTIVE_LOSS_PAUSE_MINUTES = 30
+# RECOVERY MODE: pause sooner, longer
+CONSECUTIVE_LOSS_PAUSE = 3          # Was 5 — stop sooner
+CONSECUTIVE_LOSS_PAUSE_MINUTES = 60 # Was 30 — longer pause to reset
 
 # Cooldown between trades (seconds)
 TRADE_COOLDOWN = 120                # 2 minutes — matches scan interval (was 180)
@@ -228,7 +237,8 @@ MODEL_CONVERGENCE_BOOST_F = 2           # <2°F model spread = 1.2x confidence
 # (our maker strategy) pay lower/zero fees, but we model
 # worst-case taker rate as conservative safety margin.
 KALSHI_FEE_PCT = 0.07                   # 7% of expected profit per contract
-FEE_ADJUSTED_MIN_EDGE = 0.04            # 4% minimum net edge after fees (was 5%)
+# RECOVERY MODE: 5% min net edge (was 4%) — need bigger margin for safety
+FEE_ADJUSTED_MIN_EDGE = 0.05            # 5% minimum net edge after fees (was 4%)
 FEE_ADJUSTMENT_ENABLED = True
 
 # ═══════════════════════════════════════════════════════
@@ -236,7 +246,8 @@ FEE_ADJUSTMENT_ENABLED = True
 # ═══════════════════════════════════════════════════════
 # Fewer, higher-conviction trades. Confirmed outcomes and
 # arbitrage are exempt (near risk-free).
-MAX_DAILY_FORECAST_TRADES = 8   # Was 4 — allow more volume with smaller positions
+# RECOVERY MODE: 5 trades/day (was 8) — fewer, higher-conviction only
+MAX_DAILY_FORECAST_TRADES = 5   # Was 8 — force selectivity during recovery
 
 # ═══════════════════════════════════════════════════════
 # SETTLEMENT-AWARE CAPITAL MANAGEMENT
@@ -250,7 +261,8 @@ MAX_DAILY_FORECAST_TRADES = 8   # Was 4 — allow more volume with smaller posit
 #   06Z pulse:   6:00 AM - 9:00 AM   (supplementary GFS/ECMWF runs)
 #   12Z cascade: 2:30 PM - 6:30 PM   (second full refresh, new listings from 10 AM)
 SETTLEMENT_HOUR_ET = 10             # Hour (ET) when settlements process
-LIQUIDITY_RESERVE_PCT = 0.30        # 30% of bankroll — reserve cash for confirmed outcomes (was 50%)
+# RECOVERY MODE: 40% reserve (was 30%) — keep more dry powder for confirmed outcomes
+LIQUIDITY_RESERVE_PCT = 0.40        # 40% of bankroll reserved for confirmed outcomes
 PRE_SETTLEMENT_SIZING_MULT = 0.75   # 75% sizing before settlements clear (was 60%)
 
 # ═══════════════════════════════════════════════════════
@@ -292,8 +304,9 @@ ADAPTIVE_LEARNING_BLEND = 0.3        # Weight given to empirical data vs theoret
 # ═══════════════════════════════════════════════════════
 # STRATEGY SETTINGS
 # ═══════════════════════════════════════════════════════
-# Minimum edge to consider a trade (8% for weather)
-MIN_EDGE = 0.08
+# Minimum edge to consider a trade
+# RECOVERY MODE: 10% min edge (was 8%) — only take clear mispricings
+MIN_EDGE = 0.10
 
 # Skip trades where total payout (contracts × payout_per_contract) is below this
 MIN_PAYOUT_DOLLARS = 2.00      # Was $1.50 — filter dust trades, focus capital on meaningful positions
@@ -315,8 +328,9 @@ HIGH_EDGE_APPROVAL_THRESHOLD = 0.28
 # ═══════════════════════════════════════════════════════
 # KILL SWITCH / OBSERVATION MODE
 # ═══════════════════════════════════════════════════════
+# RECOVERY MODE: tighter kill switch — can't afford losing streaks
 OBSERVATION_MODE = False  # Manual override; also auto-set by kill switch
-KILL_SWITCH_CONSECUTIVE_LOSSES = 3
+KILL_SWITCH_CONSECUTIVE_LOSSES = 2   # Was 3 — stop sooner at $40 bankroll
 KILL_SWITCH_MIN_SHARPE_7D = 0.0
 
 # ═══════════════════════════════════════════════════════
@@ -370,7 +384,7 @@ LOG_LEVEL = "DEBUG"  # "DEBUG" for verbose output
 SCORECARD_ENABLED = True
 SCORECARD_MAX_ITERATIONS = 3              # Max diagnose-fix-retry loops
 MIN_FORECAST_CONVERGENCE = 0.50           # 50% of ensemble must agree within 2°F (was 60% — redundant with 4°F model divergence gate)
-MIN_EDGE_AFTER_FEES = 0.04               # 4% minimum edge (same as FEE_ADJUSTED_MIN_EDGE)
+MIN_EDGE_AFTER_FEES = 0.05               # 5% minimum edge (same as FEE_ADJUSTED_MIN_EDGE)
 MIN_TIMING_MULTIPLIER = 0.50             # Don't trade in bad timing windows
 MIN_LIQUIDITY_CONTRACTS = 3              # Need 3+ contracts at target price
 MAX_CORRELATION_EXPOSURE = 0.40          # 40% max in correlated positions

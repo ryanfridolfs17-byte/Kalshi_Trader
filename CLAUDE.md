@@ -82,11 +82,12 @@ All state is persisted as JSON in `STATE_DIR` (defaults to `.`, set to `/data` o
 - **Maker strategy** — Prefers limit orders (not market orders) for better fills.
 - **NWS settlement** — Weather markets settle on NWS Daily Climate Reports from specific stations, not model forecasts. See NWS Station Mappings below.
 - **NWS rounding awareness** — NWS 5-minute stations have ±1°F+ error from DOS-era °F→°C→°F conversion. Settlement uses raw 1-minute readings (can be higher than displayed time series). Bot applies rounding buffer: ±1°F of strike = no trade, ±2°F = 50% size reduction.
-- **Fee-adjusted edge** — Raw edge is reduced by estimated Kalshi fee drag (7% of profit) before checking minimum edge threshold. Net edge must survive at 4%+ after fees. Fee formula is side-aware: YES uses `7% × (100 - yes_price)`, NO uses `7% × yes_price`.
+- **Fee-adjusted edge** — Raw edge is reduced by estimated Kalshi fee drag (7% of profit) before checking minimum edge threshold. Net edge must survive at 5%+ after fees (was 4%). Fee formula is side-aware: YES uses `7% × (100 - yes_price)`, NO uses `7% × yes_price`.
 - **Longshot avoidance** — Never buys contracts priced below 5¢ (was 12¢, lowered to capture confirmed outcomes at 5-11¢).
 - **Market type isolation** — Each market type is gated behind a toggle. New market code paths only execute when explicitly enabled. SP500 uses `city_code="SP500"` in the risk manager for per-market exposure tracking.
 - **Duplicate order detection** — Before executing any trade, checks `risk.state["positions"]` and `trade_log` resting orders for the same ticker. Prevents multi-cycle order stacking (e.g., 3 identical orders across 3 cycles).
-- **Contract count cap** — Hard cap of 25 contracts per ticker (`MAX_CONTRACTS_PER_TICKER`), applied in Kelly sizing, confirmed outcome sizing, and risk manager. Prevents cheap contract explosion (e.g., 68 contracts at 22c each).
+- **Contract count cap** — Hard cap of 15 contracts per ticker (`MAX_CONTRACTS_PER_TICKER`, was 25), applied in Kelly sizing, confirmed outcome sizing, and risk manager. Prevents cheap contract explosion (e.g., 68 contracts at 22c each).
+- **CASE 2 disabled (recovery mode)** — YES-side confirmed outcomes (`CASE2_ENABLED=False`) are disabled due to NWS observation staleness vulnerability. CASE 1 (NO on exceeded) and CASE 3 (NO on unreachable) remain active. Re-enable when bankroll exceeds $80.
 - **Medium urgency exits never auto-execute** — Only `high` urgency exits (confirmed losses from observations) auto-sell. Medium urgency (thesis uncertain + profitable) logs recommendation for manual review.
 - **Thesis-based exit logic** — Exits are driven by whether the model/observations still predict the position wins at settlement, NOT by edge erosion. Edge going to zero on a winning position means the market caught up (thesis confirmed) — hold for settlement. Exits only fire when: (1) observations confirm a loss, (2) NWS disagrees, (3) ensemble strongly contradicts position (<15% YES floor, >85% NO floor), or (4) thesis is broken (model flipped against us).
 
@@ -119,9 +120,11 @@ Weather markets settle on NWS Daily Climate Reports from these specific stations
 
 **Critical note:** Houston uses KHOU (Hobby Airport), NOT KIAH (Intercontinental). These are 24 miles apart with different microclimates. Station mappings live in `weather_engine.py` CITIES dict.
 
-## Risk Parameters (Current Values)
+## Risk Parameters (Current Values) — RECOVERY MODE
 
 **IMPORTANT: Any changes to risk parameters or strategy rules MUST be reflected here. This is the source of truth for risk documentation.**
+
+**RECOVERY MODE ACTIVE (Feb 2026):** Bankroll is $40 (down from $100). All parameters tightened to protect remaining capital while generating consistent small profits. Strategy: focus on CASE 1/3 confirmed outcomes (near-guaranteed NO trades), disable risky CASE 2 (YES on current bucket), fewer speculative trades, tighter loss limits. Exit recovery mode when bankroll exceeds $80 — then gradually loosen parameters back toward normal.
 
 All values are set in `config.py`. Values in cents (100 cents = $1.00).
 
@@ -129,22 +132,23 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | `MAX_POSITION_PCT` | 20% of bankroll | Max single position (caps contracts down instead of rejecting) |
-| `CONFIRMED_OUTCOME_POSITION_PCT` | 30% of bankroll | CASE 1 confirmed (NO on exceeded buckets, was 25%) |
-| `CASE2_POSITION_PCT` | 10% of bankroll | CASE 2 confirmed (YES on current bucket, riskier) |
+| `CONFIRMED_OUTCOME_POSITION_PCT` | 25% of bankroll | CASE 1 confirmed (NO on exceeded buckets, was 30%) |
+| `CASE2_ENABLED` | **False** | CASE 2 DISABLED in recovery mode — observation staleness bug |
+| `CASE2_POSITION_PCT` | 8% of bankroll | When re-enabled (was 10%) |
 | Quarter-Kelly | Kelly/4 | Base sizing formula, multiplied by confirmation level |
 
-### Exposure Caps (Dynamic, Percentage-Based)
+### Exposure Caps (Dynamic, Percentage-Based) — RECOVERY MODE
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `MAX_TOTAL_EXPOSURE_PCT` | 60% of bankroll | Was 80%, tightened |
-| `MAX_TOTAL_EXPOSURE_CENTS` | $60.00 | Fallback if balance unknown |
-| `MAX_PER_CITY_PCT` | 20% of bankroll | Per-city exposure limit |
-| `MAX_PER_CITY_CENTS` | $10.00 | Fallback if balance unknown |
-| `MAX_DAILY_CITY_SPEND_CENTS` | $35.00 | Cumulative daily per city (prevents sell-and-rebuy) |
-| `MAX_PER_TICKER_CENTS` | $15.00 | Per-ticker concentration limit |
-| `MAX_CONTRACTS_PER_TICKER` | 25 | Hard cap on contract count (prevents cheap contract explosion) |
-| `MAX_OPEN_POSITIONS` | 20 | Total open positions |
-| `MAX_CORRELATED_POSITIONS` | 3 | Same city + same date (4 for confirmed outcomes) |
+| `MAX_TOTAL_EXPOSURE_PCT` | 40% of bankroll | Was 60%, tightened for recovery |
+| `MAX_TOTAL_EXPOSURE_CENTS` | $16.00 | Fallback (was $60.00) |
+| `MAX_PER_CITY_PCT` | 15% of bankroll | Was 20% |
+| `MAX_PER_CITY_CENTS` | $6.00 | Fallback (was $10.00) |
+| `MAX_DAILY_CITY_SPEND_CENTS` | $12.00 | Was $35.00 |
+| `MAX_PER_TICKER_CENTS` | $8.00 | Was $15.00 |
+| `MAX_CONTRACTS_PER_TICKER` | 15 | Was 25 |
+| `MAX_OPEN_POSITIONS` | 6 | Was 20 — forces selectivity |
+| `MAX_CORRELATED_POSITIONS` | 2 | Was 3 (3 for confirmed outcomes, was 4) |
 
 ### NWS Rounding Buffer
 | Parameter | Value | Notes |
@@ -163,16 +167,16 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | `KALSHI_FEE_PCT` | 7% | Worst-case taker fee (maker is lower/zero) |
-| `FEE_ADJUSTED_MIN_EDGE` | 4% | Min net edge after fee drag (was 5%) |
-| `MIN_EDGE` | 8% | Raw minimum edge before fee adjustment |
+| `FEE_ADJUSTED_MIN_EDGE` | 5% | Min net edge after fee drag (was 4%) |
+| `MIN_EDGE` | 10% | Raw minimum edge (was 8%) — recovery mode |
 
-### Trade Limits
+### Trade Limits — RECOVERY MODE
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `MAX_DAILY_FORECAST_TRADES` | 8/day | Was 4 — volume scaled for $40 bankroll. Confirmed outcomes + arbitrage exempt |
-| `DAILY_LOSS_LIMIT_CENTS` | $20.00 | Stop trading if daily losses hit this |
-| `CONSECUTIVE_LOSS_PAUSE` | 5 losses | Pause trading after 5 consecutive losses |
-| `CONSECUTIVE_LOSS_PAUSE_MINUTES` | 30 min | Duration of loss pause |
+| `MAX_DAILY_FORECAST_TRADES` | 5/day | Was 8 — fewer, higher-conviction trades |
+| `DAILY_LOSS_LIMIT_CENTS` | $6.00 | Was $20 — 15% of $40 bankroll, not 50% |
+| `CONSECUTIVE_LOSS_PAUSE` | 3 losses | Was 5 — stop sooner |
+| `CONSECUTIVE_LOSS_PAUSE_MINUTES` | 60 min | Was 30 — longer pause |
 | `TRADE_COOLDOWN` | 120 sec | Was 180 — matches scan interval. Same-cycle signals exempt (different cities in one scan pass) |
 | `RESTING_ORDER_TIMEOUT` | 25 min | Auto-cancel unfilled buy orders (was 15 min) |
 | `RESTING_EXIT_TIMEOUT` | 30 min | Auto-cancel unfilled exit/hedge orders |
@@ -181,7 +185,8 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | `CASE1_MIN_LOCAL_HOUR` | 10 AM local | CASE 1 & 3 earliest detection — observation-based, rounding buffer guards (was 11 AM) |
-| `CASE2_MIN_LOCAL_HOUR` | 4 PM local | CASE 2 time gate (YES on current bucket) |
+| `CASE2_ENABLED` | **False** | CASE 2 disabled in recovery mode |
+| `CASE2_MIN_LOCAL_HOUR` | 6 PM local | When re-enabled (was 4 PM — too early for reliable observations) |
 | `CASE2_NARROW_MIN_LOCAL_HOUR` | 5 PM local | Stricter for narrow buckets (≤5°F) |
 | `CASE2_NARROW_BUCKET_WIDTH` | 5°F | Definition of "narrow" bucket |
 | CASE 1 rounding buffer | +1°F | `todays_high > temp_high + 1°F` before confirming |
@@ -195,7 +200,7 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 | `SETTLEMENT_HOUR_ET` | 10 AM ET | When Kalshi processes settlements |
 | `SETTLEMENT_PROXIMITY_HOURS` | 2 hrs | No new positions within 2hrs of close |
 | `SETTLEMENT_PROXIMITY_EDGE_OVERRIDE` | 20% | Exceptional edge overrides proximity block |
-| `LIQUIDITY_RESERVE_PCT` | 30% | Reserve cash for confirmed outcomes (was 50%) |
+| `LIQUIDITY_RESERVE_PCT` | 40% | Reserve cash for confirmed outcomes (was 30%) |
 | `PRE_SETTLEMENT_SIZING_MULT` | 0.75x | 75% sizing before settlements clear (was 60%) |
 
 ### Account Tracking
@@ -206,7 +211,7 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 ### Kill Switch / Circuit Breakers
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `KILL_SWITCH_CONSECUTIVE_LOSSES` | 3 | Enters observation mode |
+| `KILL_SWITCH_CONSECUTIVE_LOSSES` | 2 | Enters observation mode (was 3) |
 | `KILL_SWITCH_MIN_SHARPE_7D` | 0.0 | 7-day Sharpe below this = observation mode |
 
 ### Portfolio Review (Intraday Exit Logic)
@@ -247,7 +252,7 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 - **Minimum payout**: $2.00 total payout floor (was $1.50 — filter dust trades)
 - **Narrow bucket guard**: Extra caution on ≤5°F buckets
 - **NO-side sizing reduction**: NO contracts priced ≥50c get 70% of normal sizing (high cost = outsized loss risk, 83% WR but net negative P&L historically)
-- **Time-of-day edge thresholds**: Morning 10% (was 12%), overnight 9% (was 10%), afternoon/evening 8% base. Confirmed outcomes and arbitrage bypass.
+- **Time-of-day edge thresholds**: Morning 12% (was 10%), overnight 12% (was 9%), afternoon/evening 10% base. Recovery mode: save capital for afternoon confirmed outcomes. Confirmed outcomes and arbitrage bypass.
 - **Same-cycle cooldown exemption**: Signals from the same scan pass (different cities) skip the 120s cooldown. All other risk checks still apply.
 - **Bias streak detection**: 3+ consecutive days of same-direction bias (≥0.5°F each) triggers immediate adjustment without waiting for 5-datapoint minimum
 

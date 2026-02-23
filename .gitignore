@@ -15,3 +15,4 @@ daily_reports.json
 backtest_results.json
 model_accuracy.json
 bias_history.json
+diagnostic_output.json

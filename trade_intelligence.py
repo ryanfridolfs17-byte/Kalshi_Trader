@@ -995,11 +995,13 @@ class TradeIntelligence:
         except Exception as e:
             return None
 
-    def get_todays_high_so_far(self, city_code):
+    def get_todays_high_so_far(self, city_code, fresh=False):
         """
         Fetch recent observations and find today's high so far.
         More reliable than a single latest reading.
-        Cached for 5 minutes — high can only go up, so stale data is safe.
+        Cached for 5 minutes — high can only go up, so stale data is safe
+        for CASE 1/3 (NO trades). CASE 2 callers should pass fresh=True
+        to bypass cache entirely.
         """
         city = CITIES.get(city_code)
         if not city:
@@ -1008,8 +1010,10 @@ class TradeIntelligence:
         station = city["nws_station"]
 
         # Cache for 5 minutes (high temp can only increase, so stale = conservative)
+        # CASE 2 (YES on current bucket) MUST bypass cache — temp rising out of
+        # the bucket makes the stale reading dangerous for YES-side bets.
         cache_key = f"high_{station}"
-        if cache_key in self._obs_cache:
+        if not fresh and cache_key in self._obs_cache:
             cached = self._obs_cache[cache_key]
             age = (datetime.now() - cached["fetched_at"]).total_seconds()
             if age < 300:  # 5 min

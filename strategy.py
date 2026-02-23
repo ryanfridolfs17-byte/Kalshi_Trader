@@ -730,6 +730,14 @@ class Strategy:
 
         ticker = market.get("ticker", "")
 
+        # ─── CASE 2 DISABLED (recovery mode) ───
+        # CASE 2 (YES on current bucket) has a structural vulnerability:
+        # NWS observations can be stale/rounded, and temp can still rise
+        # OUT of the bucket after detection. Disable until we have enough
+        # capital to absorb occasional CASE 2 failures.
+        # When re-enabling, use fresh=True observation and 6 PM+ time gate.
+        _CASE2_ENABLED = getattr(config, 'CASE2_ENABLED', False)
+
         # CASE 1: High already ABOVE the bucket's upper bound
         # If observed high is 86°F and bucket is 83-84°F,
         # the daily high will be >= 86 (it can only go up), so NO on 83-84 wins.
@@ -781,6 +789,7 @@ class Strategy:
         # CASE 2: High is currently INSIDE the bucket → YES likely
         # Riskier than CASE 1 because temp can still rise out of the bucket.
         # Guards: later time gate, midpoint buffer for narrow buckets, reduced sizing.
+        # RECOVERY MODE: CASE 2 is disabled by default (CASE2_ENABLED=False in config).
         bucket_width = temp_high - temp_low
         is_narrow = bucket_width <= config.CASE2_NARROW_BUCKET_WIDTH
         min_hour = config.CASE2_NARROW_MIN_LOCAL_HOUR if is_narrow else config.CASE2_MIN_LOCAL_HOUR
@@ -790,7 +799,7 @@ class Strategy:
         bucket_midpoint = (temp_low + temp_high) / 2.0
         has_buffer = (not is_narrow) or (todays_high < bucket_midpoint)
 
-        if local_hour >= min_hour and temp_low <= todays_high <= temp_high and has_buffer:
+        if _CASE2_ENABLED and local_hour >= min_hour and temp_low <= todays_high <= temp_high and has_buffer:
             # Ensemble sanity check: if models predict mean above bucket ceiling,
             # the temperature is likely to rise out of the bucket
             case2_vetoed = False
@@ -970,11 +979,11 @@ class Strategy:
 
         h = self._get_et_hour()
         if h < 6:
-            return 0.09   # Overnight: 9% — fresh 00Z data, thin liquidity
+            return 0.12   # Overnight: 12% — thin liquidity, be selective (was 9%)
         elif h < 12:
-            return 0.10   # Morning: 10% — fresh data + thin markets (was 12%)
+            return 0.12   # Morning: 12% — save capital for afternoon confirmed outcomes (was 10%)
         else:
-            return config.MIN_EDGE  # Afternoon/evening: base 8%
+            return config.MIN_EDGE  # Afternoon/evening: base 10%
 
     # ═══════════════════════════════════════════════════════
     # POSITION SIZING (Quarter-Kelly)
