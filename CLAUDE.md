@@ -120,6 +120,56 @@ Weather markets settle on NWS Daily Climate Reports from these specific stations
 
 **Critical note:** Houston uses KHOU (Hobby Airport), NOT KIAH (Intercontinental). These are 24 miles apart with different microclimates. Station mappings live in `weather_engine.py` CITIES dict.
 
+## Actual P&L Reconciliation (Feb 15–23, 2026)
+
+**Reconciled against Kalshi API fills + settlements. Matches account balance to the penny.**
+
+| Metric | Value |
+|--------|-------|
+| Deposited | $100.00 |
+| Current Balance | $39.83 |
+| **Account P&L** | **-$60.17** |
+| Total Trades | 62 |
+| Wins / Losses | 35W / 27L |
+| **Win Rate** | **56.5%** |
+| Avg Win | $1.68 |
+| Avg Loss | $4.41 (2.6x avg win) |
+| Total Won | $58.80 |
+| Total Lost | $118.97 |
+| Total Fees | $12.63 |
+| Biggest Win | $8.87 (DAL T77 Feb 18) |
+| Biggest Loss | -$22.75 (AUS B84.5 Feb 17) |
+
+### Top 5 Losses (account for $70.07 — more than total drawdown)
+
+| Trade | Side | Cost | P&L | Root Cause |
+|-------|------|------|-----|------------|
+| AUS B84.5 Feb 17 | NO @ 68c | $22.19 | **-$22.75** | Resting orders bypassed per-ticker cap; ensemble underestimated warm day |
+| MIA B79.5 Feb 17 | NO @ 68c | $58.65 | **-$22.42** | $58 position on $100 bankroll — resting order accumulation bug |
+| DAL B77.5 Feb 19 | NO @ 33c | $13.88 | **-$14.04** | Warm front missed by ensemble; no approaching-bucket exit |
+| OKC B72.5 Feb 18 | YES @ 22c | $55.77 | **-$5.68** | Massive position, thin exit; ensemble overconfident on warm day |
+| DEN B52.5 Feb 22 | NO @ 68c | $5.44 | **-$5.44** | Chinook wind event; DEN Feb seasonal multiplier too high |
+
+### Root Cause Summary
+
+1. **Resting orders bypassed risk caps** — Maker 1-at-a-time orders were invisible to per-ticker/per-city caps, allowing positions like MIA B79.5 to reach $58.65 (59% of bankroll)
+2. **NO exit detection too late** — Exit only fires when obs_high is already inside bucket, not when approaching
+3. **NWS REJECT didn't auto-exit** — Medium urgency on profitable positions = no action taken
+4. **Ensemble cool bias in winter** — All 4 models systematically underpredict warm-city highs in Feb
+5. **Seasonal confidence inflated** — MIA at 1.10x in Feb while losing $22 on MIA
+
+### Daily P&L
+
+| Date | W/L | Day P&L | Running |
+|------|-----|---------|---------|
+| Feb 17 | 2W/1L | +$4.63 | +$4.63 |
+| Feb 18 | 6W/3L | -$36.01 | -$31.38 |
+| Feb 19 | 3W/4L | +$0.05 | -$31.33 |
+| Feb 20 | 1W/2L | -$12.11 | -$43.44 |
+| Feb 21 | 12W/5L | -$8.60 | -$52.04 |
+| Feb 22 | 3W/2L | -$1.21 | -$53.25 |
+| Feb 23 | 8W/10L | -$6.92 | -$60.17 |
+
 ## Risk Parameters (Current Values) — RECOVERY MODE
 
 **IMPORTANT: Any changes to risk parameters or strategy rules MUST be reflected here. This is the source of truth for risk documentation.**
@@ -222,7 +272,8 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 |----------|-------|--------|---------|
 | 1 | Observation confirms loss (obs_high in bucket for NO, temp gap for YES) | EXIT | High |
 | 2 | Rounding buffer (obs_high within 1°F of bucket, after 2 PM) | EXIT | High |
-| 3 | NWS confirmer REJECT on re-check | If thesis supports (>50% win): OVERRIDE, hold. If not losing much: WARN. If losing + thesis broken: EXIT | Low/Medium/High |
+| 1b | Approaching bucket (NO): obs_high within 3°F of floor after 1 PM, 2°F after 2 PM | EXIT | High |
+| 3 | NWS confirmer REJECT on re-check | After 2 PM: always EXIT. Before 2 PM: thesis override if >65% win prob, else EXIT | High (after 2 PM) / Medium (before) |
 | 4 | Ensemble probability floor (<15% YES, >85% NO) | EXIT | High |
 | 5 | **Thesis valid** (model says >50% chance of winning) | **HOLD** | Low |
 | 6 | Thesis weakening (edge decayed but still positive) | PARE | Medium |
@@ -238,7 +289,7 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 
 ### Resting Order Management (in `kalshi_bot.py`)
 - **Order fill verification**: Kalshi API response `order.status` is checked — only `"executed"` or `remaining_count == 0` counts as filled. All other orders are tracked as "resting".
-- **Resting buy orders**: NOT recorded as positions in risk manager. `_reconcile_positions()` picks them up when they fill on Kalshi's side.
+- **Pending order tracking in risk manager**: On placement, resting orders register cost/contracts/city via `risk.add_pending_order()`. On fill or cancel, `risk.clear_pending_order()` releases the reservation. All exposure cap checks (total, per-city, per-ticker, correlated) include pending order cost.
 - **Resting exit/hedge/pare orders**: Do NOT release exposure or record P&L. Tagged with `pending_exit_order_id` etc. for tracking.
 - **Auto-cancel**: Buy orders cancelled after 25 min (was 15 min). Exit/hedge/pare orders cancelled after 30 min.
 - **`_check_resting_orders()`**: Runs each cycle (after reconciliation). Compares tracked order_ids against `client.get_orders(status="resting")`. Updates trade log when orders fill or are cancelled.
@@ -251,9 +302,12 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 - **Near-certainty cap**: No contracts above 88¢
 - **Minimum payout**: $2.00 total payout floor (was $1.50 — filter dust trades)
 - **Narrow bucket guard**: Extra caution on ≤5°F buckets
-- **NO-side sizing reduction**: NO contracts priced ≥50c get 70% of normal sizing (high cost = outsized loss risk, 83% WR but net negative P&L historically)
+- **NO-side price ceiling**: NO positions priced above 70c (`NO_SIDE_MAX_PRICE_CENTS`) are hard-rejected. Prevents catastrophic losses like MIA B79.5 ($22 loss at 68c).
+- **NO-side sizing reduction**: NO contracts priced ≥50c get 40% of normal sizing (`NO_SIDE_SIZING_MULTIPLIER`, was 70%). Caps max NO loss to ~$2.80 per position.
+- **Winter warm-city bias**: Ensemble members shifted +2°F (`WINTER_WARM_CITY_BIAS_F`) for warm cities (MIA, ATL, AUS, DAL, HOU, SATX, NOLA, OKC, PHX, LV) in Dec-Feb. Corrects systematic cool bias that generated false NO signals.
 - **Time-of-day edge thresholds**: Morning 12% (was 10%), overnight 12% (was 9%), afternoon/evening 10% base. Recovery mode: save capital for afternoon confirmed outcomes. Confirmed outcomes and arbitrage bypass.
 - **Same-cycle cooldown exemption**: Signals from the same scan pass (different cities) skip the 120s cooldown. All other risk checks still apply.
+- **6-hour same-ticker re-entry cooldown**: Prevents re-entering a ticker that was traded within the last 6 hours (`SAME_TICKER_REENTRY_HOURS`). Confirmed outcomes (CASE 1/3) exempt.
 - **Bias streak detection**: 3+ consecutive days of same-direction bias (≥0.5°F each) triggers immediate adjustment without waiting for 5-datapoint minimum
 
 ### Trade Scorecard (v4.0, in `trade_scorecard.py`)

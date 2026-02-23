@@ -659,6 +659,30 @@ def main():
                         })
                         continue
 
+                    # 6-hour same-ticker re-entry cooldown — prevents re-entering a thesis
+                    # that already lost/exited. Confirmed outcomes (CASE 1/3) are exempt.
+                    reentry_hours = getattr(config, 'SAME_TICKER_REENTRY_HOURS', 6)
+                    if reentry_hours > 0 and signal.get("confirmation_verdict") != "CONFIRMED_OUTCOME":
+                        reentry_cutoff = (datetime.now() - timedelta(hours=reentry_hours)).isoformat()
+                        recent_same_ticker = [
+                            t for t in trade_log
+                            if t.get("ticker") == ticker
+                            and t.get("timestamp", "") >= reentry_cutoff
+                            and t.get("settled") or t.get("order_status") in ("filled", "cancelled", "canceled")
+                        ]
+                        if recent_same_ticker:
+                            print(f"    [COOLDOWN] Skipping {ticker}: traded within last {reentry_hours}h")
+                            scan_entries.append({
+                                "ticker": ticker, "city": signal.get("city_code", ""),
+                                "market_date": parsed.get("target_date", "") if parsed else "",
+                                "category": "reentry_cooldown",
+                                "reason": f"Traded within last {reentry_hours}h",
+                                "edge": round(signal["edge"], 4),
+                                "price_cents": signal["price_cents"],
+                                "side": signal["side"],
+                            })
+                            continue
+
                     # Pre-settlement sizing reduction
                     if risk.is_pre_settlement_window():
                         orig = signal["suggested_contracts"]
@@ -1046,6 +1070,7 @@ def _check_resting_orders(client, risk, trade_log, intel=None):
                             client.cancel_order(order_id)
                             trade["order_status"] = "cancelled"
                             trade["status"] = trade["status"].replace("resting", "cancelled")
+                            risk.clear_pending_order(trade.get("ticker", ""))
                             print(f"  [RESTING] Cancelled stale buy: {order_id} "
                                   f"({trade['ticker']}, rested {age_seconds/60:.0f}m)")
                             updated = True
@@ -1078,6 +1103,8 @@ def _check_resting_orders(client, risk, trade_log, intel=None):
                 old_status = trade.get("status", "")
                 trade["status"] = old_status.replace("resting", actual_status)
                 print(f"  [RESTING] Buy order {actual_status}: {order_id} ({trade['ticker']})")
+                # Clear pending order tracking — filled or cancelled, it's no longer resting
+                risk.clear_pending_order(trade.get("ticker", ""))
                 updated = True
 
     # --- Check resting EXIT orders ---
@@ -1331,11 +1358,12 @@ def _execute_trade(client, risk, signal, trade_log, market, maker=None):
     trade_log.append(trade_entry)
     _save_trade_log(trade_log)
 
-    # Only record with risk manager if order was actually filled.
-    # Resting orders will be picked up by _reconcile_positions() when they fill.
+    # Record with risk manager based on fill status.
     is_filled = status in ("demo_filled", "live_filled", "dry_run")
+    city_code = signal.get("city_code", "")
     if is_filled:
-        city_code = signal.get("city_code", "")
+        # Filled immediately — record as position and clear any pending
+        risk.clear_pending_order(ticker)
         risk.record_trade(ticker, side, cost, contracts, city_code,
                           title=market.get("title", ""),
                           edge=signal.get("edge", 0),
@@ -1343,6 +1371,11 @@ def _execute_trade(client, risk, signal, trade_log, market, maker=None):
                           market_description=market_description,
                           confirmation_verdict=signal.get("confirmation_verdict", ""),
                           strategy=signal.get("strategy", ""))
+    else:
+        # Resting order — track as pending so risk caps include this cost.
+        # Without this, resting orders are invisible and the bot can pile up
+        # unlimited orders on one ticker (caused MIA B79.5 $58 blowup).
+        risk.add_pending_order(ticker, cost, contracts, city_code)
 
     return is_filled
 

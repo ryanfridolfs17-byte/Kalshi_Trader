@@ -306,6 +306,24 @@ class WeatherEngine:
             print(f"  [WEATHER] WARN: No ensemble data for {city_code} on {target_date}")
             return None
 
+        # Winter warm-city bias correction: ensembles systematically underpredict
+        # warm-city highs in Dec-Feb due to cool bias in 2m temperature forecasts.
+        # Shift all members warmer to reduce false NO signals on upper buckets.
+        winter_bias_applied = 0.0
+        if hasattr(config, 'WINTER_WARM_CITY_BIAS_F') and config.WINTER_WARM_CITY_BIAS_F > 0:
+            target_month = target_date.month if hasattr(target_date, 'month') else None
+            if target_month is None:
+                try:
+                    from datetime import datetime as _dt
+                    target_month = _dt.strptime(str(target_date), "%Y-%m-%d").month
+                except Exception:
+                    target_month = None
+            warm_cities = getattr(config, 'WARM_CITIES', set())
+            if target_month in (12, 1, 2) and city_code in warm_cities:
+                winter_bias_applied = config.WINTER_WARM_CITY_BIAS_F
+                all_highs = [t + winter_bias_applied for t in all_highs]
+                print(f"  [WEATHER] Applied +{winter_bias_applied:.1f}°F winter warm-city bias for {city_code} (month {target_month})")
+
         # Build the distribution with accuracy-based weights
         result = self._build_distribution(city_code, target_date, all_highs, sources_used, all_weights)
 

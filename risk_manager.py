@@ -34,6 +34,7 @@ class RiskManager:
             "loss_pause_until": None,
             "city_exposure": {},  # {"NYC": 300, "CHI": 150, ...}
             "daily_city_spend": {},  # Cumulative daily spending per city (not reduced by sells)
+            "pending_orders": {},  # Resting orders not yet filled: {"ticker": {"cost": X, "contracts": N, "city_code": "..."}}
         }
         self._load_state()
 
@@ -62,10 +63,12 @@ class RiskManager:
         active_exposure = classified["active_exposure_cents"]
         pending_exposure = classified["pending_exposure_cents"]
 
-        # 2a. Active exposure cap: dynamic percentage-based (60% of bankroll)
+        # 2a. Active exposure cap: dynamic percentage-based (40% of bankroll)
+        # Include pending (resting) order cost — these are committed capital
         balance = self.state.get("balance_cents", config.MAX_TOTAL_EXPOSURE_CENTS)
+        total_pending = self.get_total_pending_cost()
         exposure_cap = max(int(balance * config.MAX_TOTAL_EXPOSURE_PCT), config.MAX_TOTAL_EXPOSURE_CENTS)
-        if active_exposure + cost > exposure_cap:
+        if active_exposure + total_pending + cost > exposure_cap:
             return False, (f"Active exposure cap: ${active_exposure/100:.2f} + ${cost/100:.2f} "
                            f"> ${exposure_cap/100:.2f} ({config.MAX_TOTAL_EXPOSURE_PCT:.0%} of ${balance/100:.2f})"
                            f" (+${pending_exposure/100:.2f} pending settlement)")
@@ -105,13 +108,15 @@ class RiskManager:
         if len(classified["active"]) >= config.MAX_OPEN_POSITIONS:
             return False, f"Max {config.MAX_OPEN_POSITIONS} active positions reached"
 
-        # 4. Per-city exposure (weather strategy) — dynamic percentage-based (30% of bankroll)
+        # 4. Per-city exposure (weather strategy) — dynamic percentage-based
+        # Includes pending (resting) order cost for this city
         city = signal.get("city_code", "")
         if city:
             city_cap = max(int(balance * config.MAX_PER_CITY_PCT), config.MAX_PER_CITY_CENTS)
             city_exp = self.state["city_exposure"].get(city, 0)
-            if city_exp + cost > city_cap:
-                return False, (f"{city} exposure: ${city_exp/100:.2f} + ${cost/100:.2f} "
+            city_pending = self.get_pending_cost_for_city(city)
+            if city_exp + city_pending + cost > city_cap:
+                return False, (f"{city} exposure: ${city_exp/100:.2f} + ${city_pending/100:.2f} pending + ${cost/100:.2f} "
                                f"> ${city_cap/100:.2f} ({config.MAX_PER_CITY_PCT:.0%} of bankroll)")
 
         # 4a2. Cumulative daily city spending cap (prevents sell-and-rebuy chasing)
@@ -138,14 +143,19 @@ class RiskManager:
                     return False, f"Max {corr_cap} correlated positions for {city} on {signal_date}"
 
         # 4c. Per-ticker cost cap (prevents runaway scaling into one contract)
+        # Includes pending (resting) order cost — this was the root cause of the
+        # MIA B79.5 $58.65 position: resting orders were invisible to this check.
         ticker = signal.get("ticker", "")
         if ticker:
             existing_ticker_cost = sum(
                 p.get("cost_cents", 0) for p in self.state["positions"]
                 if p.get("ticker") == ticker
             )
-            if existing_ticker_cost + cost > config.MAX_PER_TICKER_CENTS:
-                return False, (f"Ticker {ticker} capped: ${existing_ticker_cost/100:.2f} + ${cost/100:.2f} "
+            pending_ticker_cost = self.get_pending_cost_for_ticker(ticker)
+            total_ticker_cost = existing_ticker_cost + pending_ticker_cost
+            if total_ticker_cost + cost > config.MAX_PER_TICKER_CENTS:
+                return False, (f"Ticker {ticker} capped: ${existing_ticker_cost/100:.2f} filled + "
+                               f"${pending_ticker_cost/100:.2f} pending + ${cost/100:.2f} "
                                f"> ${config.MAX_PER_TICKER_CENTS/100:.2f}")
 
             # 4d. Per-ticker contract count cap (prevents cheap contract explosion)
@@ -153,10 +163,12 @@ class RiskManager:
                 p.get("contracts", 0) for p in self.state["positions"]
                 if p.get("ticker") == ticker
             )
+            pending_contracts = self.get_pending_contracts_for_ticker(ticker)
+            total_contracts = existing_contracts + pending_contracts
             new_contracts = signal.get("suggested_contracts", 0)
-            if existing_contracts + new_contracts > config.MAX_CONTRACTS_PER_TICKER:
-                return False, (f"Contract cap: {existing_contracts} + {new_contracts} "
-                               f"> {config.MAX_CONTRACTS_PER_TICKER}")
+            if total_contracts + new_contracts > config.MAX_CONTRACTS_PER_TICKER:
+                return False, (f"Contract cap: {existing_contracts} filled + {pending_contracts} pending + "
+                               f"{new_contracts} new > {config.MAX_CONTRACTS_PER_TICKER}")
 
         # 5. Consecutive loss pause
         if self.state["loss_pause_until"]:
@@ -286,6 +298,52 @@ class RiskManager:
             if city:
                 self.state["city_exposure"][city] = self.state["city_exposure"].get(city, 0) + p["cost_cents"]
         self._save_state()
+
+    # ═══════════════════════════════════════════════════════
+    # PENDING (RESTING) ORDER TRACKING
+    # ═══════════════════════════════════════════════════════
+    # Resting orders are invisible to position-based caps. Without tracking,
+    # the bot can pile up unlimited resting orders that all fill later,
+    # creating catastrophically large positions (e.g., MIA B79.5 at $58.65).
+
+    def add_pending_order(self, ticker, cost_cents, contracts, city_code=""):
+        """Track a resting order's cost so risk checks include it."""
+        if "pending_orders" not in self.state:
+            self.state["pending_orders"] = {}
+        existing = self.state["pending_orders"].get(ticker, {"cost": 0, "contracts": 0, "city_code": city_code})
+        existing["cost"] = existing.get("cost", 0) + cost_cents
+        existing["contracts"] = existing.get("contracts", 0) + contracts
+        existing["city_code"] = city_code
+        existing["placed_at"] = datetime.now().isoformat()
+        self.state["pending_orders"][ticker] = existing
+        self._save_state()
+
+    def clear_pending_order(self, ticker):
+        """Remove a pending order after fill or cancel."""
+        if "pending_orders" not in self.state:
+            self.state["pending_orders"] = {}
+        self.state["pending_orders"].pop(ticker, None)
+        self._save_state()
+
+    def get_pending_cost_for_ticker(self, ticker):
+        """Get total cost of resting orders for a ticker."""
+        pending = self.state.get("pending_orders", {})
+        return pending.get(ticker, {}).get("cost", 0)
+
+    def get_pending_contracts_for_ticker(self, ticker):
+        """Get total contract count of resting orders for a ticker."""
+        pending = self.state.get("pending_orders", {})
+        return pending.get(ticker, {}).get("contracts", 0)
+
+    def get_pending_cost_for_city(self, city_code):
+        """Get total cost of resting orders for a city."""
+        pending = self.state.get("pending_orders", {})
+        return sum(v.get("cost", 0) for v in pending.values() if v.get("city_code") == city_code)
+
+    def get_total_pending_cost(self):
+        """Get total cost of all resting orders."""
+        pending = self.state.get("pending_orders", {})
+        return sum(v.get("cost", 0) for v in pending.values())
 
     def reduce_position(self, ticker, sell_contracts, released_cost_cents):
         """Reduce a position's contract count and cost after a partial sell.
