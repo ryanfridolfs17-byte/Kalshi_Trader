@@ -71,12 +71,12 @@ class RiskManager:
         if active_exposure + total_pending + cost > exposure_cap:
             return False, (f"Active exposure cap: ${active_exposure/100:.2f} + ${cost/100:.2f} "
                            f"> ${exposure_cap/100:.2f} ({config.MAX_TOTAL_EXPOSURE_PCT:.0%} of ${balance/100:.2f})"
-                           f" (+${pending_exposure/100:.2f} pending settlement)")
+                           f" (+${total_pending/100:.2f} resting orders, ${pending_exposure/100:.2f} pending settlement)")
 
-        # 2b. Hard ceiling: active + pending can't grow unbounded
+        # 2b. Hard ceiling: active + resting + settling can't grow unbounded
         hard_ceiling = exposure_cap * 2
-        if active_exposure + pending_exposure + cost > hard_ceiling:
-            return False, (f"Total capital guard: ${(active_exposure + pending_exposure)/100:.2f} "
+        if active_exposure + total_pending + pending_exposure + cost > hard_ceiling:
+            return False, (f"Total capital guard: ${(active_exposure + total_pending + pending_exposure)/100:.2f} "
                            f"+ ${cost/100:.2f} > ${hard_ceiling/100:.2f}")
 
         # 2c. Dynamic per-position cap: never more than 20% of capital in one trade
@@ -97,7 +97,7 @@ class RiskManager:
         # 2d. Liquidity reserve: keep % of bankroll liquid for next-day overnight edge window
         # Confirmed outcomes bypass: near-guaranteed wins shouldn't be blocked by reserve
         reserve_cents = int(balance * config.LIQUIDITY_RESERVE_PCT)
-        available = exposure_cap - active_exposure
+        available = exposure_cap - active_exposure - total_pending
         is_confirmed = signal.get("confirmation_verdict") == "CONFIRMED_OUTCOME"
         if available - cost < reserve_cents:
             if not is_confirmed and edge < 0.20:  # Override for exceptional edge or confirmed outcomes
