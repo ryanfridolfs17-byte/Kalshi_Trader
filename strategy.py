@@ -211,6 +211,7 @@ class Strategy:
         4. If edge ≥ 8%, get confirmation from independent sources
         5. Return signal with confirmation multiplier
         """
+        ticker = market.get("ticker", "")
         # Step 1: Parse market
         parsed = self.weather.parse_market_bucket(market)
         if not parsed:
@@ -240,17 +241,23 @@ class Strategy:
             return confirmed_signal
 
         # Need some activity (but Kalshi weather markets are low-volume)
-        if volume == 0 and (market.get("volume_24h", 0) or 0) == 0:
+        volume_24h = market.get("volume_24h", 0) or 0
+        if volume == 0 and volume_24h == 0:
+            if config.LOG_LEVEL == "DEBUG":
+                print(f"    [STRATEGY] {market.get('ticker','')} dead: vol=0, vol24h=0")
             return None  # Zero activity = truly dead
 
         # Spread check: only reject if we can actually calculate a real spread
         # (yes_bid=0 is normal on Kalshi — doesn't mean illiquid)
         if spread < 99 and spread > 40:
+            if config.LOG_LEVEL == "DEBUG":
+                print(f"    [STRATEGY] {market.get('ticker','')} wide spread: {spread}c")
             return None  # Genuinely wide spread with real quotes on both sides
 
         # Step 2: Fetch ensemble distribution with accuracy-based model weighting + bias correction
         distribution = self.weather.get_temperature_distribution(city_code, target_date, model_weights=model_weights, model_biases=model_biases)
         if not distribution:
+            print(f"    [STRATEGY] {market.get('ticker','')} no distribution for {city_code} {target_date}")
             return None
 
         # Step 2b: Apply bias correction (learned from past accuracy)
@@ -265,6 +272,7 @@ class Strategy:
             distribution, temp_low, temp_high
         )
         if our_prob is None:
+            print(f"    [STRATEGY] {ticker} prob=None for bucket {temp_low}-{temp_high}")
             return None
 
         market_prob = ref_price / 100.0
@@ -273,6 +281,8 @@ class Strategy:
         # Need at least 8% raw edge
         min_weather_edge = 0.08
         if abs(edge) < min_weather_edge:
+            if config.LOG_LEVEL == "DEBUG" and ref_price >= 10 and ref_price <= 90:
+                print(f"    [STRATEGY] {ticker} edge={edge:+.1%} < 8% (prob={our_prob:.0%} vs mkt={market_prob:.0%})")
             return None
 
         # Fee-adjusted edge: subtract expected Kalshi fee drag
@@ -321,6 +331,7 @@ class Strategy:
 
         # Reject if sources disagree
         if confirmation["verdict"] == "REJECT":
+            print(f"    [STRATEGY] {ticker} REJECTED by confirmer (edge={edge:+.1%})")
             return None
 
         # Step 4b: Statistical significance check
