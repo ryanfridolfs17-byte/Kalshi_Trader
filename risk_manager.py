@@ -63,15 +63,21 @@ class RiskManager:
         active_exposure = classified["active_exposure_cents"]
         pending_exposure = classified["pending_exposure_cents"]
 
-        # 2a. Active exposure cap: dynamic percentage-based (40% of bankroll)
+        # 2a. Active exposure cap: dynamic percentage-based (60% of bankroll)
         # Include pending (resting) order cost — these are committed capital
+        # Confirmed outcomes bypass: near-guaranteed wins shouldn't be blocked
         balance = self.state.get("balance_cents", config.MAX_TOTAL_EXPOSURE_CENTS)
         total_pending = self.get_total_pending_cost()
         exposure_cap = max(int(balance * config.MAX_TOTAL_EXPOSURE_PCT), config.MAX_TOTAL_EXPOSURE_CENTS)
+        is_confirmed = signal.get("confirmation_verdict") == "CONFIRMED_OUTCOME"
         if active_exposure + total_pending + cost > exposure_cap:
-            return False, (f"Active exposure cap: ${active_exposure/100:.2f} + ${cost/100:.2f} "
-                           f"> ${exposure_cap/100:.2f} ({config.MAX_TOTAL_EXPOSURE_PCT:.0%} of ${balance/100:.2f})"
-                           f" (+${total_pending/100:.2f} resting orders, ${pending_exposure/100:.2f} pending settlement)")
+            if not is_confirmed:
+                return False, (f"Active exposure cap: ${active_exposure/100:.2f} + ${cost/100:.2f} "
+                               f"> ${exposure_cap/100:.2f} ({config.MAX_TOTAL_EXPOSURE_PCT:.0%} of ${balance/100:.2f})"
+                               f" (+${total_pending/100:.2f} resting orders, ${pending_exposure/100:.2f} pending settlement)")
+            else:
+                print(f"    [RISK] Confirmed outcome bypasses exposure cap: "
+                      f"${active_exposure/100:.2f} + ${cost/100:.2f} > ${exposure_cap/100:.2f}")
 
         # 2b. Hard ceiling: active + resting + settling can't grow unbounded
         hard_ceiling = exposure_cap * 2
@@ -105,26 +111,39 @@ class RiskManager:
                                f"trade costs ${cost/100:.2f}, need ${reserve_cents/100:.2f} reserve (25% of bankroll)")
 
         # 3. Max positions (count only active, pending are settling out)
+        # Confirmed outcomes bypass — near-guaranteed wins always allowed
         if len(classified["active"]) >= config.MAX_OPEN_POSITIONS:
-            return False, f"Max {config.MAX_OPEN_POSITIONS} active positions reached"
+            if not is_confirmed:
+                return False, f"Max {config.MAX_OPEN_POSITIONS} active positions reached"
+            else:
+                print(f"    [RISK] Confirmed outcome bypasses max positions cap ({len(classified['active'])} active)")
 
         # 4. Per-city exposure (weather strategy) — dynamic percentage-based
         # Includes pending (resting) order cost for this city
+        # Confirmed outcomes bypass: near-guaranteed wins shouldn't be blocked by city cap
         city = signal.get("city_code", "")
         if city:
             city_cap = max(int(balance * config.MAX_PER_CITY_PCT), config.MAX_PER_CITY_CENTS)
             city_exp = self.state["city_exposure"].get(city, 0)
             city_pending = self.get_pending_cost_for_city(city)
             if city_exp + city_pending + cost > city_cap:
-                return False, (f"{city} exposure: ${city_exp/100:.2f} + ${city_pending/100:.2f} pending + ${cost/100:.2f} "
-                               f"> ${city_cap/100:.2f} ({config.MAX_PER_CITY_PCT:.0%} of bankroll)")
+                if not is_confirmed:
+                    return False, (f"{city} exposure: ${city_exp/100:.2f} + ${city_pending/100:.2f} pending + ${cost/100:.2f} "
+                                   f"> ${city_cap/100:.2f} ({config.MAX_PER_CITY_PCT:.0%} of bankroll)")
+                else:
+                    print(f"    [RISK] Confirmed outcome bypasses {city} city cap: "
+                          f"${(city_exp + city_pending)/100:.2f} + ${cost/100:.2f} > ${city_cap/100:.2f}")
 
         # 4a2. Cumulative daily city spending cap (prevents sell-and-rebuy chasing)
+        # Confirmed outcomes bypass — near-guaranteed wins shouldn't be blocked
         if city:
             daily_spend = self.state.get("daily_city_spend", {}).get(city, 0)
             if daily_spend + cost > config.MAX_DAILY_CITY_SPEND_CENTS:
-                return False, (f"{city} daily spend cap: ${daily_spend/100:.2f} + ${cost/100:.2f} "
-                               f"> ${config.MAX_DAILY_CITY_SPEND_CENTS/100:.2f} cumulative")
+                if not is_confirmed:
+                    return False, (f"{city} daily spend cap: ${daily_spend/100:.2f} + ${cost/100:.2f} "
+                                   f"> ${config.MAX_DAILY_CITY_SPEND_CENTS/100:.2f} cumulative")
+                else:
+                    print(f"    [RISK] Confirmed outcome bypasses {city} daily spend cap")
 
         # 4b. Correlated positions cap (same city + same date)
         # Confirmed outcomes get a higher cap (4) since they're near-guaranteed
