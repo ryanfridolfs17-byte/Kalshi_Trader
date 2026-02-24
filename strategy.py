@@ -882,33 +882,32 @@ class Strategy:
                 if edge < 0.05:
                     return None
 
-                # Reduced sizing: 10% of bankroll (vs 25% for CASE 1)
-                bankroll_cents = getattr(self, 'balance_cents', None) or config.MAX_TOTAL_EXPOSURE_CENTS
-                max_bet_cents = int(bankroll_cents * config.CASE2_POSITION_PCT)
-                contracts = min(max(1, int(max_bet_cents / yes_ask)), config.MAX_CONTRACTS_PER_TICKER)
-
+                # CASE 2 is NOT a confirmed outcome — temp can still rise out of bucket.
+                # Route through normal pipeline as STRONG signal.
                 print(f"    [CASE2] {city_code} high {todays_high}°F is IN bucket {temp_low}-{temp_high}°F (mid={bucket_midpoint})")
-                print(f"    [CASE2] YES @ {yes_ask}¢ → {contracts} contracts (10% sizing, {local_hour}:00 local)")
+                print(f"    [CASE2] YES @ {yes_ask}¢ — routing through normal pipeline (STRONG, {local_hour}:00 local)")
 
                 return {
                     "signal": "buy_yes",
                     "side": "yes",
                     "edge": edge,
-                    "confidence": 0.90,
+                    "confidence": 0.85,
                     "price_cents": yes_ask,
                     "confirmation_multiplier": 1.0,
-                    "confirmation_verdict": "CONFIRMED_OUTCOME",
+                    "confirmation_verdict": "STRONG",
                     "predicted_high": todays_high,
-                    "suggested_contracts": contracts,
                     "ticker": ticker,
                     "order_type": "limit",
                     "quality_score": 1.0,
-                    "seasonal_regime": "confirmed",
+                    "seasonal_regime": "case2_in_bucket",
                     "seasonal_multiplier": 1.0,
+                    "city_code": city_code,
+                    "target_date": target_date,
+                    "model_biases_used": model_biases or {},
                     "reasoning": (
                         f"[CASE2] {city_code}: NWS observed high {todays_high}°F is inside "
                         f"bucket {temp_low}-{temp_high}°F at {local_hour}:00 local. YES @ {yes_ask}¢. "
-                        f"Reduced sizing: {contracts} contracts (10% bankroll)."
+                        f"STRONG signal (not confirmed — temp can still rise out of bucket)."
                     ),
                     "strategy": "S1-Weather",
                 }
@@ -1002,7 +1001,7 @@ class Strategy:
             if no_price <= 0 or no_price >= 95:
                 return None
 
-            # NO-side price ceiling — even confirmed outcomes shouldn't pay 60c+ for NO
+            # NO-side price ceiling
             if no_price > config.NO_SIDE_MAX_PRICE_CENTS:
                 print(f"    [CASE3] NO @ {no_price}¢ exceeds ceiling {config.NO_SIDE_MAX_PRICE_CENTS}¢ — skip")
                 return None
@@ -1011,37 +1010,35 @@ class Strategy:
             if edge < 0.05:
                 return None
 
-            bankroll_cents = getattr(self, 'balance_cents', None) or config.MAX_TOTAL_EXPOSURE_CENTS
-            max_bet_cents = int(bankroll_cents * config.CONFIRMED_OUTCOME_POSITION_PCT)
-            max_bet_cents = min(max_bet_cents, config.DAILY_LOSS_LIMIT_CENTS)
-            contracts = min(max(1, int(max_bet_cents / no_price)), config.MAX_CONTRACTS_PER_TICKER)
-
-            print(f"    [CONFIRMED] {city_code} high only {todays_high}°F at {local_hour}:00, "
-                  f"bucket {temp_low}-{temp_high}°F unreachable (gap: {temp_gap:.0f}°F)")
-            print(f"    [CONFIRMED] NO @ {no_price}¢ → {contracts} contracts (${contracts * no_price / 100:.2f})")
+            # CASE 3 is NOT a confirmed outcome — the temperature can still rise.
+            # It's a high-confidence forecast signal. Return it as STRONG so it
+            # flows through normal sizing (Kelly), scorecard, and risk checks.
+            # No max sizing, no risk cap bypasses.
+            print(f"    [CASE3] {city_code} high only {todays_high}°F at {local_hour}:00, "
+                  f"bucket {temp_low}-{temp_high}°F likely unreachable (gap: {temp_gap:.0f}°F)")
+            print(f"    [CASE3] NO @ {no_price}¢, edge={edge:.0%} — routing through normal pipeline (STRONG)")
 
             return {
                 "signal": "buy_no",
                 "side": "no",
                 "edge": edge,
-                "confidence": 0.95,
+                "confidence": 0.90,
                 "price_cents": no_price,
-                "confirmation_multiplier": 1.0,
-                "confirmation_verdict": "CONFIRMED_OUTCOME",
+                "confirmation_multiplier": 1.5,  # STRONG confirmation boost
+                "confirmation_verdict": "STRONG",
                 "predicted_high": todays_high,
-                "suggested_contracts": contracts,
                 "ticker": ticker,
                 "order_type": "limit",
                 "quality_score": 1.0,
-                "seasonal_regime": "confirmed",
+                "seasonal_regime": "case3_gap",
                 "seasonal_multiplier": 1.0,
                 "city_code": city_code,
                 "target_date": target_date,
-                "model_biases_used": {},
+                "model_biases_used": model_biases or {},
                 "reasoning": (
-                    f"[CONFIRMED] {city_code}: {local_hour}:00 local, high only {todays_high}°F, "
-                    f"bucket {temp_low}-{temp_high}°F unreachable (gap: {temp_gap:.0f}°F). NO @ {no_price}¢. "
-                    f"Max position: {contracts} contracts."
+                    f"[CASE3] {city_code}: {local_hour}:00 local, high only {todays_high}°F, "
+                    f"bucket {temp_low}-{temp_high}°F likely unreachable (gap: {temp_gap:.0f}°F). "
+                    f"NO @ {no_price}¢. STRONG signal (not confirmed — temp can still rise)."
                 ),
                 "strategy": "S1-Weather",
             }
