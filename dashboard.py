@@ -281,6 +281,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path == "/api/reports":
             self._send_json(_read_json(STATE_FILES["reports"], default=[]))
 
+        elif path == "/api/fills":
+            # Fetch recent fills from Kalshi API (buys + sells)
+            if _kalshi_client is None:
+                self._send_json({"error": "KalshiClient not initialized"}, 503)
+            else:
+                result = _kalshi_client.get_fills(limit=200)
+                self._send_json(result or {"error": "API call failed"})
+
+        elif path == "/api/balance":
+            if _kalshi_client is None:
+                self._send_json({"error": "KalshiClient not initialized"}, 503)
+            else:
+                result = _kalshi_client.get_balance()
+                self._send_json(result or {"error": "API call failed"})
+
         else:
             self.send_error(404)
 
