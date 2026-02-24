@@ -1058,7 +1058,7 @@ class TradeIntelligence:
         station = city["nws_station"]
 
         # Cache for 10 minutes
-        cache_key = f"obs_{station}"
+        cache_key = f"latest_{station}"
         if cache_key in self._obs_cache:
             cached = self._obs_cache[cache_key]
             age = (datetime.now() - cached["fetched_at"]).total_seconds()
