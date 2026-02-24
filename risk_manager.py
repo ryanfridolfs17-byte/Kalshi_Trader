@@ -449,10 +449,15 @@ class RiskManager:
             and t.get("result") not in ("expired_dry_run",)
         ]
         now = datetime.now(timezone.utc)
+        def _parse_ts(ts_str):
+            dt = datetime.fromisoformat(ts_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
         recent = [
             t for t in settled
             if t.get("timestamp") and
-            (now - datetime.fromisoformat(t["timestamp"])).days <= 7
+            (now - _parse_ts(t["timestamp"])).days <= 7
         ]
         if len(recent) >= 3:
             pnls = [t["profit_cents"] / 100.0 for t in recent]
