@@ -407,6 +407,7 @@ PNL_HISTORY_FILE = os.path.join(STATE_DIR, "pnl_history.json")
 BACKTEST_RESULTS_FILE = os.path.join(STATE_DIR, "backtest_results.json")
 SCAN_LOG_FILE = os.path.join(STATE_DIR, "scan_log.json")
 MAKER_ORDERS_FILE = os.path.join(STATE_DIR, "maker_orders.json")
+FORECAST_LOG_FILE = os.path.join(STATE_DIR, "forecast_log.json")
 LOG_LEVEL = "DEBUG"  # "DEBUG" for verbose output
 
 # ═══════════════════════════════════════════════════════

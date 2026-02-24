@@ -1746,3 +1746,172 @@ def _update_model_accuracy_from_settlement(quant, city_code, actual_temp):
     if model_results:
         parts = [f"{r['model']} predicted {r['forecast']}°F (err: {r['error']:+d}°F)" for r in model_results]
         print(f"    [MODEL ACCURACY] {city_code}: actual {actual_temp}°F — {', '.join(parts)}")
+
+
+def log_daily_forecasts():
+    """
+    Fetch deterministic model forecasts for ALL 20 cities for today's date.
+    Saves to forecast_log.json, deduped by city+date so it only runs once/day.
+    Called from the main loop — builds accuracy data without waiting for trades.
+    """
+    log_file = config.FORECAST_LOG_FILE
+    try:
+        with open(log_file, "r") as f:
+            forecast_log = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        forecast_log = []
+
+    # Build set of already-logged city+date combos
+    logged = {(e["city"], e["date"]) for e in forecast_log}
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    new_entries = 0
+
+    for city_code, city in CITIES.items():
+        if (city_code, today) in logged:
+            continue
+
+        forecasts = {}
+        for confirmer_key, api_url in _DETERMINISTIC_APIS.items():
+            quant_key = _CONFIRMER_TO_QUANT.get(confirmer_key)
+            if not quant_key:
+                continue
+            try:
+                params = {
+                    "latitude": city["lat"],
+                    "longitude": city["lon"],
+                    "daily": "temperature_2m_max",
+                    "temperature_unit": "fahrenheit",
+                    "timezone": city.get("timezone", "auto"),
+                    "start_date": today,
+                    "end_date": today,
+                }
+                response = requests.get(api_url, params=params, timeout=15)
+                if response.status_code != 200:
+                    continue
+                data = response.json()
+                temps = data.get("daily", {}).get("temperature_2m_max", [])
+                if temps and temps[0] is not None:
+                    forecasts[quant_key] = round(temps[0])
+            except Exception:
+                continue
+
+        if forecasts:
+            forecast_log.append({
+                "city": city_code,
+                "date": today,
+                "forecasts": forecasts,
+                "logged_at": datetime.now(timezone.utc).isoformat(),
+                "reconciled": False,
+            })
+            new_entries += 1
+
+    if new_entries:
+        with open(log_file, "w") as f:
+            json.dump(forecast_log, f, indent=2)
+        print(f"  [FORECAST LOG] Logged {new_entries} city forecasts for {today}")
+    else:
+        print(f"  [FORECAST LOG] Already logged all cities for {today}")
+
+
+def reconcile_forecast_log(quant):
+    """
+    For past dates in forecast_log.json that haven't been reconciled,
+    fetch NWS actual highs and record model accuracy via quant_analytics.
+    Called after settlement time (11 AM ET) so NWS data is available.
+    """
+    log_file = config.FORECAST_LOG_FILE
+    try:
+        with open(log_file, "r") as f:
+            forecast_log = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    reconciled_count = 0
+
+    for entry in forecast_log:
+        if entry.get("reconciled"):
+            continue
+        if entry["date"] >= today:
+            continue  # Don't reconcile today — day isn't over
+
+        city_code = entry["city"]
+        target_date = entry["date"]
+        city = CITIES.get(city_code)
+        if not city:
+            continue
+
+        # Fetch actual high from NWS observations for that date
+        actual_high = _fetch_nws_daily_high(city, target_date)
+        if actual_high is None:
+            continue
+
+        # Record each model's accuracy
+        forecasts = entry.get("forecasts", {})
+        results = []
+        for model_key, forecast_val in forecasts.items():
+            quant.record_model_accuracy(city_code, model_key, forecast_val, actual_high)
+            results.append(f"{model_key}: {forecast_val}°F (err: {forecast_val - actual_high:+d}°F)")
+
+        entry["reconciled"] = True
+        entry["actual_high"] = actual_high
+        entry["reconciled_at"] = datetime.now(timezone.utc).isoformat()
+        reconciled_count += 1
+
+        if results:
+            print(f"    [RECONCILE] {city_code} {target_date}: actual {actual_high}°F — {', '.join(results)}")
+
+    if reconciled_count:
+        with open(log_file, "w") as f:
+            json.dump(forecast_log, f, indent=2)
+        print(f"  [FORECAST LOG] Reconciled {reconciled_count} entries — model accuracy updated")
+
+
+def _fetch_nws_daily_high(city, target_date):
+    """
+    Fetch the actual daily high temperature from NWS for a specific past date.
+    Uses the observations API with start/end times for the target date.
+    Returns the max temperature in °F, or None on failure.
+    """
+    station = city["nws_station"]
+    tz_name = city.get("timezone", "America/New_York")
+    tz = ZoneInfo(tz_name)
+
+    try:
+        # Build time range: midnight to midnight of the target date in local time
+        target_dt = datetime.strptime(target_date, "%Y-%m-%d")
+        start_local = target_dt.replace(tzinfo=tz)
+        end_local = start_local + timedelta(days=1)
+        start_utc = start_local.astimezone(timezone.utc)
+        end_utc = end_local.astimezone(timezone.utc)
+
+        url = f"https://api.weather.gov/stations/{station}/observations"
+        headers = {
+            "User-Agent": "KalshiBot/3.1 (trading-bot@example.com)",
+            "Accept": "application/geo+json",
+        }
+        params = {
+            "start": start_utc.isoformat(),
+            "end": end_utc.isoformat(),
+        }
+        response = requests.get(url, headers=headers, params=params, timeout=15)
+        if response.status_code != 200:
+            return None
+
+        data = response.json()
+        features = data.get("features", [])
+
+        max_temp_f = None
+        for obs in features:
+            props = obs.get("properties", {})
+            temp_c = props.get("temperature", {}).get("value")
+            if temp_c is None:
+                continue
+            temp_f = round(temp_c * 9 / 5 + 32)
+            if max_temp_f is None or temp_f > max_temp_f:
+                max_temp_f = temp_f
+
+        return max_temp_f
+    except Exception:
+        return None
