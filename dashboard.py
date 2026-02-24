@@ -40,6 +40,15 @@ DASHBOARD_PORT = int(os.environ.get("PORT", 8050))
 # Track which alerts have already been sent (avoid spamming)
 _alerts_sent = {}
 
+# Shared KalshiClient instance — set by kalshi_bot.py after initialization
+_kalshi_client = None
+
+
+def set_kalshi_client(client):
+    """Store a reference to the KalshiClient for force-exit endpoint."""
+    global _kalshi_client
+    _kalshi_client = client
+
 
 def _read_json(path, default=None):
     try:
@@ -571,6 +580,99 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "cost_cents": cost_cents,
                 "payout_cents": payout_cents,
                 "realized_pnl_cents": realized_pnl,
+            })
+
+        elif path == "/api/force-exit":
+            # Force-exit positions by placing market sell orders on Kalshi.
+            # Accepts: {"ticker": "KXHIGH..."} for one position, or {"ticker": "all"} for all.
+            # Optional "side" to disambiguate if both YES/NO exist on same ticker.
+            if _kalshi_client is None:
+                self._send_json({"error": "KalshiClient not initialized yet"}, 503)
+                return
+
+            target_ticker = payload.get("ticker")
+            target_side = payload.get("side", "")
+            if not target_ticker:
+                self._send_json({"error": "Missing ticker (use specific ticker or 'all')"}, 400)
+                return
+
+            # Get current positions from Kalshi API (source of truth)
+            positions_resp = _kalshi_client.get_positions()
+            if not positions_resp:
+                self._send_json({"error": "Failed to fetch positions from Kalshi"}, 502)
+                return
+
+            market_positions = positions_resp.get("market_positions", [])
+            # Filter to positions with non-zero count
+            open_positions = []
+            for mp in market_positions:
+                yes_count = mp.get("position", 0)
+                no_count = mp.get("total_traded", 0) - mp.get("position", 0)
+                # Kalshi returns "position" = net contracts (positive = YES, negative can mean NO)
+                # More reliable: check market_exposure or use the position field
+                # position > 0 means YES side, position < 0 means NO side
+                pos = mp.get("position", 0)
+                if pos > 0:
+                    open_positions.append({"ticker": mp["ticker"], "side": "yes", "count": pos})
+                elif pos < 0:
+                    open_positions.append({"ticker": mp["ticker"], "side": "no", "count": abs(pos)})
+
+            if not open_positions:
+                self._send_json({"ok": True, "message": "No open positions found", "results": []})
+                return
+
+            # Filter to target
+            if target_ticker.lower() != "all":
+                if target_side:
+                    open_positions = [p for p in open_positions
+                                      if p["ticker"] == target_ticker and p["side"] == target_side]
+                else:
+                    open_positions = [p for p in open_positions if p["ticker"] == target_ticker]
+
+            results = []
+            for pos in open_positions:
+                ticker = pos["ticker"]
+                side = pos["side"]
+                count = pos["count"]
+                try:
+                    result = _kalshi_client.sell_order(
+                        ticker=ticker,
+                        side=side,
+                        count=count,
+                        type="market",
+                    )
+                    if result:
+                        order = result.get("order", result)
+                        results.append({
+                            "ticker": ticker,
+                            "side": side,
+                            "count": count,
+                            "status": "sold",
+                            "order_id": order.get("order_id", ""),
+                            "avg_price": order.get("avg_price", 0),
+                        })
+                    else:
+                        results.append({
+                            "ticker": ticker,
+                            "side": side,
+                            "count": count,
+                            "status": "error",
+                            "detail": "API returned None",
+                        })
+                except Exception as e:
+                    results.append({
+                        "ticker": ticker,
+                        "side": side,
+                        "count": count,
+                        "status": "error",
+                        "detail": str(e),
+                    })
+
+            self._send_json({
+                "ok": True,
+                "action": "force_exit",
+                "positions_exited": len([r for r in results if r["status"] == "sold"]),
+                "results": results,
             })
 
         elif path == "/api/reset":
