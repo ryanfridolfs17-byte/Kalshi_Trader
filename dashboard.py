@@ -635,14 +635,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 side = pos["side"]
                 count = pos["count"]
                 try:
-                    result = _kalshi_client.sell_order(
-                        ticker=ticker,
-                        side=side,
-                        count=count,
-                        type="market",
-                    )
-                    if result:
-                        order = result.get("order", result)
+                    # Direct API call with error capture (sell_order swallows errors)
+                    import requests as req_lib
+                    order_data = {
+                        "ticker": ticker,
+                        "action": "sell",
+                        "side": side,
+                        "count": count,
+                        "type": "market",
+                    }
+                    headers = _kalshi_client._sign_request("POST", "/portfolio/orders")
+                    url = f"{_kalshi_client.base_url}/portfolio/orders"
+                    resp = req_lib.post(url, headers=headers, json=order_data, timeout=30)
+                    if resp.status_code in (200, 201):
+                        data = resp.json()
+                        order = data.get("order", data)
                         results.append({
                             "ticker": ticker,
                             "side": side,
@@ -657,7 +664,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             "side": side,
                             "count": count,
                             "status": "error",
-                            "detail": "API returned None",
+                            "http_status": resp.status_code,
+                            "detail": resp.text[:300],
                         })
                 except Exception as e:
                     results.append({
