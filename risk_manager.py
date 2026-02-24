@@ -448,7 +448,7 @@ class RiskManager:
             if t.get("settled") and t.get("profit_cents") is not None
             and t.get("result") not in ("expired_dry_run",)
         ]
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         recent = [
             t for t in settled
             if t.get("timestamp") and
