@@ -378,7 +378,7 @@ def main():
                         risk._save_state()
                 except Exception as e:
                     print(f"    [REVIEW] Portfolio review failed: {e}")
-                    import traceback; traceback.print_exc()
+                    import traceback as _tb; _tb.print_exc()
             else:
                 exits = intel.check_exits(risk.state.get("positions", []), strategy.weather)
                 for exit_rec in exits:
