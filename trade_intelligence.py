@@ -384,6 +384,7 @@ class TradeIntelligence:
             new_prob = None
             dist = None
             parsed = None
+            obs_override_used = False
 
             if is_weather and weather_engine:
                 parsed = self._parse_position_bucket(ticker, weather_engine, pos.get("title", ""))
@@ -401,6 +402,7 @@ class TradeIntelligence:
                     # After 2 PM local, the daily high is largely set. If obs_high is available,
                     # use it to correct the probability — the ensemble forecast from 6+ hours
                     # ago doesn't know the actual temperature.
+                    obs_override_used = False
                     target_date = parsed.get("target_date")
                     city_tz_name = CITIES.get(city_code, {}).get("timezone", "America/New_York")
                     city_now = datetime.now(ZoneInfo(city_tz_name))
@@ -414,12 +416,15 @@ class TradeIntelligence:
                             if t_lo <= obs_h <= t_hi:
                                 # High is IN the bucket — near certain YES
                                 new_prob = 0.95
+                                obs_override_used = True
                             elif obs_h > t_hi:
                                 # High exceeded bucket — this bucket lost
                                 new_prob = 0.02
+                                obs_override_used = True
                             elif obs_h >= t_lo - 2:
                                 # High is close to bucket floor — uncertain
                                 new_prob = 0.40
+                                obs_override_used = True
                             # else: obs_h well below bucket, ensemble is reasonable
 
             elif is_sp500 and volatility_engine:
@@ -480,7 +485,7 @@ class TradeIntelligence:
             # not the current live price. This keeps the signal direction consistent
             # with our original thesis. Entry price is always higher than current
             # for winning NO positions, so direction stays "overpriced" (correct).
-            if is_weather and signal_confirmer and parsed and current_price > 0:
+            if is_weather and signal_confirmer and parsed and current_price > 0 and not obs_override_used:
                 city_info = CITIES.get(city_code)
                 if city_info:
                     try:
