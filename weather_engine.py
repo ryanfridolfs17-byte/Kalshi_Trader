@@ -270,26 +270,26 @@ class WeatherEngine:
             "GEM": "gem_ensemble",
         }
 
-        # Source 1: GFS Ensemble (31 members)
-        gfs_highs = self._fetch_ensemble(city, target_date, "gfs_seamless_eps")
+        # Source 1: GFS Ensemble (30 members)
+        gfs_highs = self._fetch_ensemble(city, target_date, "gfs_seamless")
         if gfs_highs:
             sources_used.append("gfs_ensemble")
             model_family_highs["GFS"] = gfs_highs
 
-        # Source 2: ECMWF IFS Ensemble (51 members)
-        ecmwf_highs = self._fetch_ensemble(city, target_date, "ecmwf_ifs025_ensemble")
+        # Source 2: ECMWF IFS Ensemble (50 members)
+        ecmwf_highs = self._fetch_ensemble(city, target_date, "ecmwf_ifs025")
         if ecmwf_highs:
             sources_used.append("ecmwf_ifs")
             model_family_highs["ECMWF"] = ecmwf_highs
 
-        # Source 3: ICON-EPS (40 members)
+        # Source 3: ICON-EPS (39 members)
         icon_highs = self._fetch_ensemble(city, target_date, "icon_seamless_eps")
         if icon_highs:
             sources_used.append("icon_eps")
             model_family_highs["ICON"] = icon_highs
 
-        # Source 4: GEM Ensemble (21 members)
-        gem_highs = self._fetch_ensemble(city, target_date, "gem_global_ensemble")
+        # Source 4: GEM Ensemble (20 members)
+        gem_highs = self._fetch_ensemble(city, target_date, "gem_global")
         if gem_highs:
             sources_used.append("gem_ensemble")
             model_family_highs["GEM"] = gem_highs
