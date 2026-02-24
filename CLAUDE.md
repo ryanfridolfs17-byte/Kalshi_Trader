@@ -53,7 +53,7 @@ Weather uses `signal_confirmer.py` (5-source voting: 4 deterministic models + NW
 
 ### Module Responsibilities
 
-- **`kalshi_bot.py`** — Entry point and main loop. Orchestrates scan→analyze→trade cycle per market type. Two-phase scan: evaluate all markets first, then sort by edge and execute highest-edge trades first. Handles exits and settlement tracking.
+- **`kalshi_bot.py`** — Entry point and main loop. Orchestrates scan→analyze→trade cycle per market type. Two-phase scan: evaluate all markets first, then sort by edge and execute highest-edge trades first. Handles exits and settlement tracking. Dashboard starts before the outer restart loop (not inside `main()`) so port binding only happens once — prevents "Address already in use" crash loops on restart.
 - **`kalshi_client.py`** — Kalshi API wrapper. RSA-PSS signature auth, dual environment support (demo vs production URLs), market fetching, order placement, position queries.
 - **`config.py`** — All tunable parameters: credentials, risk limits, strategy thresholds, scan intervals, market type toggles. Values are in cents (100 cents = $1.00).
 - **`market_scanner.py`** — Queries Kalshi for weather series + S&P 500 brackets. `scan_all_enabled_markets()` respects `MARKET_TYPES` toggles.
@@ -70,7 +70,7 @@ Weather uses `signal_confirmer.py` (5-source voting: 4 deterministic models + NW
 - **`trade_scorecard.py`** — v4.0 recursive evaluation loop. 8 criteria (data integrity, forecast convergence, edge magnitude, timing window, liquidity, portfolio correlation, position sizing, adversarial check). Max 3 iterations of diagnose→fix→retry. Confirmed outcomes and arbitrage bypass. Actions: execute/reject/defer.
 - **`maker_strategy.py`** — v4.0 maker execution engine. Posts limit orders at fair_value - spread_buffer (default 2¢). Manages order lifecycle: placement, fill tracking, stale order cancellation (30min), adverse selection detection. State persisted in `maker_orders.json`.
 - **`trade_analyzer.py`** — End-of-day post-mortem analysis. Analyzes settled trades: entry edge vs outcome, per-model accuracy scorecard, guard effectiveness review, exit timing analysis, Kelly sizing review. Called on day change, writes to `trade_analysis.json`.
-- **`dashboard.py`** — Flask-based web dashboard with health monitoring, email alerts, position/trade display with market type badges.
+- **`dashboard.py`** — BaseHTTPRequestHandler web dashboard (not Flask) with health monitoring, email alerts, position/trade display. Runs in a daemon thread. Key API endpoints: `/api/health`, `/api/state`, `/api/force-exit` (places market sell orders via shared KalshiClient), `/api/close-position` (records manual exits), `/api/resume`, `/api/sync-positions`, `/api/clear-failed`, `/api/reset`. The KalshiClient instance is shared from `kalshi_bot.py` via `set_kalshi_client()` for the force-exit endpoint.
 
 ### Data Files (Runtime State)
 
@@ -121,15 +121,15 @@ Weather markets settle on NWS Daily Climate Reports from these specific stations
 
 **Critical note:** Houston uses KHOU (Hobby Airport), NOT KIAH (Intercontinental). These are 24 miles apart with different microclimates. Station mappings live in `weather_engine.py` CITIES dict.
 
-## Actual P&L Reconciliation (Feb 15–23, 2026)
+## Actual P&L Reconciliation (Feb 15–24, 2026)
 
 **Reconciled against Kalshi API fills + settlements. Matches account balance to the penny.**
 
 | Metric | Value |
 |--------|-------|
 | Deposited | $100.00 |
-| Current Balance | $39.83 |
-| **Account P&L** | **-$60.17** |
+| Current Balance | $47.93 |
+| **Account P&L** | **-$52.07** |
 | Total Trades | 62 |
 | Wins / Losses | 35W / 27L |
 | **Win Rate** | **56.5%** |
@@ -170,12 +170,16 @@ Weather markets settle on NWS Daily Climate Reports from these specific stations
 | Feb 21 | 12W/5L | -$8.60 | -$52.04 |
 | Feb 22 | 3W/2L | -$1.21 | -$53.25 |
 | Feb 23 | 8W/10L | -$6.92 | -$60.17 |
+| Feb 24 | 0W/5L | -$31.81* | -$52.07** |
+
+*Feb 24: 5 NO positions ($31.81 total) placed by false CASE 3 "confirmed outcomes" at 11-12 PM. All were ensemble-predicted to lose. Manually exited. Root cause: CASE 3 was classified as CONFIRMED_OUTCOME with max sizing + risk bypasses, but temp was still rising.
+**Balance recovered to $47.93 after manual exits (partial recovery vs letting positions settle as losses).
 
 ## Risk Parameters (Current Values) — RECOVERY MODE
 
 **IMPORTANT: Any changes to risk parameters or strategy rules MUST be reflected here. This is the source of truth for risk documentation.**
 
-**RECOVERY MODE ACTIVE (Feb 2026):** Bankroll is $40 (down from $100). All parameters tightened to protect remaining capital while generating consistent small profits. Strategy: CASE 1 confirmed outcomes (guaranteed NO on exceeded buckets), CASE 3 strong signals (high-confidence NO on unreachable buckets, normal risk checks), disable CASE 2 (YES on current bucket), fewer speculative trades, tighter loss limits. Exit recovery mode when bankroll exceeds $80.
+**RECOVERY MODE ACTIVE (Feb 2026):** Bankroll is $48 (down from $100). All parameters tightened to protect remaining capital while generating consistent small profits. Strategy: CASE 1 confirmed outcomes only (guaranteed NO on exceeded buckets), CASE 2/3 return STRONG verdict (normal sizing + all risk checks), disable CASE 2 (YES on current bucket), fewer speculative trades, tighter loss limits. Exit recovery mode when bankroll exceeds $80.
 
 All values are set in `config.py`. Values in cents (100 cents = $1.00).
 
@@ -351,6 +355,33 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 - **Bias calculation**: `quant_analytics.get_model_bias(city_code)` returns mean signed error per model. Negative = underpredicts. Used by `weather_engine` to apply per-model correction (shift = -bias). Requires 5+ datapoints. Falls back to per-city winter defaults from `WINTER_WARM_CITY_BIAS` dict.
 - **Weight application**: `strategy.py` fetches weights and biases early in `_strategy_weather()` and passes them to `weather_engine.get_temperature_distribution()`. The engine applies per-model bias correction first, then accuracy weights in `_build_distribution()`: weighted mean, weighted bucket probability, weighted variance.
 - **Trade logging**: Each trade entry in `trade_history.json` records `model_predictions` (per-model means), `model_weights_used` (accuracy weights applied), and `model_biases_used` (bias corrections applied).
+
+## Dashboard Force-Exit Endpoint
+
+`POST /api/force-exit` — Emergency position exit via market sell orders.
+
+- **Payload**: `{"ticker": "KXHIGH..."}` for one position, `{"ticker": "all"}` for all. Optional `"side"` to disambiguate.
+- **Mechanism**: Fetches live positions from Kalshi API (`get_positions()`), places market sell orders with `action: "sell"` and price floor (`yes_price: 1` or `no_price: 1`).
+- **Requires**: KalshiClient instance (shared via `set_kalshi_client()` from `kalshi_bot.py`). Returns 503 if client not yet initialized.
+- **Note**: Kalshi API requires a price field even for market orders. The endpoint uses direct HTTP calls (not `sell_order()`) to capture and return actual API error details.
+
+## Infrastructure Bugs Fixed (Feb 24, 2026)
+
+### Dashboard startup crash loop
+- **Bug**: `start_dashboard_server()` was inside `main()`. When the main loop crashed, the outer restart loop called `main()` again, which tried to bind port 8050 while the old dashboard thread was still alive → `Address already in use` → infinite crash loop with backoff.
+- **Fix**: Moved `start_dashboard_server()` before the restart loop in `if __name__ == "__main__"`. Dashboard binds once; `main()` can crash and restart without port conflict.
+
+### Python 3.12 traceback import shadowing
+- **Bug**: `import traceback` at line 381 inside `main()` created a local variable binding that shadowed the global import (line 26). When `traceback.format_exc()` ran at line 963 (before line 381 executed), Python 3.12 raised "cannot access local variable 'traceback'".
+- **Fix**: Aliased the local import as `import traceback as _tb`.
+
+### Timezone-naive vs aware datetime in kill switch
+- **Bug**: `risk_manager.check_kill_switch()` used `datetime.now()` (naive) but trade_log timestamps have UTC timezone info from `datetime.now(timezone.utc).isoformat()`. Subtraction raised `TypeError`.
+- **Fix**: Changed to `datetime.now(timezone.utc)` and added `_parse_ts()` helper that handles both naive and aware timestamps (assumes UTC for naive).
+
+### Observation cache key collision
+- **Bug**: `get_latest_observation()` and `_fetch_todays_observations()` both used cache key `obs_{station}` but stored different formats: `{"temp", "fetched_at"}` vs `{"data", "fetched_at"}`. When `get_latest_observation` wrote first, `_fetch_todays_observations` hit `KeyError: 'data'`.
+- **Fix**: Renamed `get_latest_observation()`'s cache key to `latest_{station}`.
 
 ## Deferred Features (NOT YET IMPLEMENTED)
 - **wethr.net API**: Needs Pro API key. Would be 6th confirmation source.
