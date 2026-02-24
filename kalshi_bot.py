@@ -2885,16 +2885,18 @@ def _reconcile_positions(client, risk, trade_log=None):
             # Preserve local metadata (title, edge, etc.) if we have it
             local = local_lookup.get((ticker, side), {})
 
-            # Timestamp priority: local state > trade_log entry > now()
-            ts = local.get("timestamp")
-            if not ts and trade_log:
-                # Look up the original trade entry for this ticker
+            # Timestamp priority: trade_log entry (original order time) > local state > now()
+            # Trade log has the real order placement time. Local state may have a
+            # reconciliation timestamp (when the bot discovered the position), which
+            # can be hours later if the bot restarted or state was wiped.
+            ts = None
+            if trade_log:
                 for t in reversed(trade_log):
                     if t.get("ticker") == ticker and t.get("timestamp"):
                         ts = t["timestamp"]
                         break
             if not ts:
-                ts = datetime.now().isoformat()
+                ts = local.get("timestamp") or datetime.now().isoformat()
 
             pos_entry = {
                 "ticker": ticker,
