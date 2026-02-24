@@ -234,7 +234,7 @@ class Strategy:
         # this is near-risk-free profit. Max position sizing.
         confirmed_signal = self._check_confirmed_outcome(
             market, city_code, temp_low, temp_high, target_date, ref_price,
-            model_weights=model_weights,
+            model_weights=model_weights, model_biases=model_biases,
         )
         if confirmed_signal:
             return confirmed_signal
@@ -713,7 +713,7 @@ class Strategy:
     # CONFIRMED OUTCOME DETECTION
     # ═══════════════════════════════════════════════════════
 
-    def _check_confirmed_outcome(self, market, city_code, temp_low, temp_high, target_date, ref_price, model_weights=None):
+    def _check_confirmed_outcome(self, market, city_code, temp_low, temp_high, target_date, ref_price, model_weights=None, model_biases=None):
         """
         Check if NWS observations already confirm the outcome is determined.
 
@@ -775,6 +775,11 @@ class Strategy:
             if no_price <= 0 or no_price >= 95:
                 return None  # No reasonable ask, or already priced in
 
+            # NO-side price ceiling — even confirmed outcomes shouldn't pay 60c+ for NO
+            if no_price > config.NO_SIDE_MAX_PRICE_CENTS:
+                print(f"    [CASE1] NO @ {no_price}¢ exceeds ceiling {config.NO_SIDE_MAX_PRICE_CENTS}¢ — skip")
+                return None
+
             edge = (100 - no_price) / 100.0  # Guaranteed profit per dollar
             if edge < 0.05:
                 return None  # Not enough margin to bother
@@ -802,6 +807,9 @@ class Strategy:
                 "quality_score": 1.0,
                 "seasonal_regime": "confirmed",
                 "seasonal_multiplier": 1.0,
+                "city_code": city_code,
+                "target_date": target_date,
+                "model_biases_used": {},
                 "reasoning": (
                     f"[CONFIRMED] {city_code}: NWS observed high {todays_high}°F already exceeds "
                     f"bucket {temp_low}-{temp_high}°F. NO @ {no_price}¢ is near-guaranteed. "
@@ -926,6 +934,11 @@ class Strategy:
             if no_price <= 0 or no_price >= 95:
                 return None
 
+            # NO-side price ceiling — even confirmed outcomes shouldn't pay 60c+ for NO
+            if no_price > config.NO_SIDE_MAX_PRICE_CENTS:
+                print(f"    [CASE3] NO @ {no_price}¢ exceeds ceiling {config.NO_SIDE_MAX_PRICE_CENTS}¢ — skip")
+                return None
+
             edge = (100 - no_price) / 100.0
             if edge < 0.05:
                 return None
@@ -953,6 +966,9 @@ class Strategy:
                 "quality_score": 1.0,
                 "seasonal_regime": "confirmed",
                 "seasonal_multiplier": 1.0,
+                "city_code": city_code,
+                "target_date": target_date,
+                "model_biases_used": {},
                 "reasoning": (
                     f"[CONFIRMED] {city_code}: {local_hour}:00 local, high only {todays_high}°F, "
                     f"bucket {temp_low}-{temp_high}°F unreachable (gap: {temp_gap:.0f}°F). NO @ {no_price}¢. "

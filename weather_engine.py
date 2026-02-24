@@ -316,6 +316,7 @@ class WeatherEngine:
 
         all_highs = []
         all_weights = []
+        corrected_family_highs = {}  # Track bias-corrected highs for model_means
 
         def _weight_for(model_key):
             """Look up accuracy weight for a model, default 1.0."""
@@ -342,6 +343,7 @@ class WeatherEngine:
 
             # Apply correction and build all_highs/all_weights
             corrected_highs = [t + correction for t in highs] if correction != 0 else highs
+            corrected_family_highs[family_name] = corrected_highs
             all_highs.extend(corrected_highs)
             all_weights.extend([w] * len(corrected_highs))
 
@@ -349,8 +351,9 @@ class WeatherEngine:
         result = self._build_distribution(city_code, target_date, all_highs, sources_used, all_weights)
 
         # Add per-model family means for disagreement detection
+        # Uses bias-corrected highs so model_spread reflects actual predictions
         model_means = {}
-        for model_name, highs in model_family_highs.items():
+        for model_name, highs in corrected_family_highs.items():
             if highs:
                 model_means[model_name] = round(sum(highs) / len(highs), 1)
         result["model_means"] = model_means
@@ -384,6 +387,10 @@ class WeatherEngine:
         if not city:
             return None
 
+        # Default target_date BEFORE building cache key to avoid "None" in key
+        if target_date is None:
+            target_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
         cache_key = f"nws_{city_code}_{target_date}"
         if cache_key in self._nws_cache:
             cached = self._nws_cache[cache_key]
@@ -407,9 +414,6 @@ class WeatherEngine:
             data = response.json()
             dates = data.get("daily", {}).get("time", [])
             temps = data.get("daily", {}).get("temperature_2m_max", [])
-
-            if target_date is None:
-                target_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
             for i, d in enumerate(dates):
                 if d == target_date and i < len(temps) and temps[i] is not None:
@@ -703,11 +707,15 @@ class WeatherEngine:
         if weights and len(weights) == len(highs):
             # Weighted probability: more accurate models count more
             total_weight = sum(weights)
+            if total_weight == 0:
+                return None
             in_range_weight = sum(w for t, w in zip(highs, weights) if temp_low <= t <= temp_high)
             prob = in_range_weight / total_weight
         else:
             # Backward compatible: unweighted
             n = len(highs)
+            if n == 0:
+                return None
             in_range = sum(1 for t in highs if temp_low <= t <= temp_high)
             prob = in_range / n
 

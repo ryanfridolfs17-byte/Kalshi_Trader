@@ -190,11 +190,22 @@ class SignalConfirmer:
                             f"(outside bucket by {dist}°F) → AGREE with overpriced signal"
                         )
                 else:
-                    votes["nws_point"] = "DISAGREE"
-                    vote_details["nws_point"] = (
-                        f"NWS Station Forecast: {nws_point_high}°F "
-                        f"(in bucket) → DISAGREE with overpriced signal"
-                    )
+                    # NWS says temp IS in the bucket, which contradicts overpriced signal.
+                    # But if barely inside (within 2°F of bucket edge), ABSTAIN — NWS
+                    # rounding means the actual settlement temp could be outside.
+                    dist_to_edge = min(abs(nws_point_high - temp_low), abs(nws_point_high - temp_high))
+                    if dist_to_edge <= 2:
+                        votes["nws_point"] = "ABSTAIN"
+                        vote_details["nws_point"] = (
+                            f"NWS Station Forecast: {nws_point_high}°F "
+                            f"(barely in bucket, {dist_to_edge}°F from edge) → ABSTAIN"
+                        )
+                    else:
+                        votes["nws_point"] = "DISAGREE"
+                        vote_details["nws_point"] = (
+                            f"NWS Station Forecast: {nws_point_high}°F "
+                            f"(in bucket) → DISAGREE with overpriced signal"
+                        )
         else:
             votes["nws_point"] = "ABSTAIN"
             vote_details["nws_point"] = "NWS Station Forecast: API failed/no data → ABSTAIN"

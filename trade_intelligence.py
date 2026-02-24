@@ -256,6 +256,19 @@ class TradeIntelligence:
                         is_today = (target_date == today_str) if target_date else True
                         obs_high = todays_high if todays_high is not None else actual_temp
 
+                        def _obs_review_detail(action, reason):
+                            """Minimal review_detail for observation-based exits."""
+                            return {
+                                "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                                "action": action,
+                                "current_edge": 0, "entry_edge": entry_edge or config.MIN_EDGE,
+                                "edge_decay_pct": 1.0,
+                                "current_price": current_price,
+                                "entry_price": round(entry_price, 1),
+                                "pnl_pct": round(((current_price - entry_price) / max(entry_price, 1)) if entry_price > 0 else 0, 4),
+                                "urgency_reason": reason,
+                            }
+
                         # HIGH ALREADY EXCEEDED BUCKET — YES is a guaranteed loss
                         # Daily high can only go up, never down.
                         if is_today and side == "yes" and obs_high is not None and obs_high > temp_high:
@@ -265,6 +278,7 @@ class TradeIntelligence:
                                 "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
                                 "city_code": city_code, "side": side, "contracts": contracts,
                                 "cost_cents": cost_cents,
+                                "review_detail": _obs_review_detail("full_exit", "obs_exceeded_bucket"),
                             })
                             continue
 
@@ -288,6 +302,7 @@ class TradeIntelligence:
                                     "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
                                     "city_code": city_code, "side": side, "contracts": contracts,
                                     "cost_cents": cost_cents,
+                                    "review_detail": _obs_review_detail("full_exit", "temp_far_below_bucket"),
                                 })
                                 continue
 
@@ -303,6 +318,7 @@ class TradeIntelligence:
                                     "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
                                     "city_code": city_code, "side": side, "contracts": contracts,
                                     "cost_cents": cost_cents,
+                                    "review_detail": _obs_review_detail("full_exit", "obs_in_bucket_no_loses"),
                                 })
                                 continue
 
@@ -321,6 +337,7 @@ class TradeIntelligence:
                                     "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
                                     "city_code": city_code, "side": side, "contracts": contracts,
                                     "cost_cents": cost_cents,
+                                    "review_detail": _obs_review_detail("full_exit", "approaching_bucket_2pm"),
                                 })
                                 continue
                             elif now_hour >= 13 and 0 < gap_to_bucket <= 3:
@@ -332,6 +349,7 @@ class TradeIntelligence:
                                     "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
                                     "city_code": city_code, "side": side, "contracts": contracts,
                                     "cost_cents": cost_cents,
+                                    "review_detail": _obs_review_detail("full_exit", "approaching_bucket_1pm"),
                                 })
                                 continue
 
@@ -350,6 +368,7 @@ class TradeIntelligence:
                                     "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
                                     "city_code": city_code, "side": side, "contracts": contracts,
                                     "cost_cents": cost_cents,
+                                    "review_detail": _obs_review_detail("full_exit", "rounding_buffer_exit"),
                                 })
                                 continue
 
@@ -489,26 +508,32 @@ class TradeIntelligence:
                             entry_price = cost_cents / max(contracts, 1)
                             pnl_pct = ((current_price - entry_price) / max(entry_price, 1)) if entry_price > 0 else 0
 
-                            # NWS is the SETTLEMENT SOURCE. If it disagrees, we exit.
-                            # Previously, thesis override and "not losing much" could suppress
-                            # the exit to medium urgency (= never auto-executed). This caused
-                            # positions to bleed for hours while NWS was right all along.
-                            #
-                            # After 2 PM local, NWS REJECT always overrides thesis — observations
-                            # are reliable enough to trust over the ensemble at that point.
-                            # Before 2 PM, allow thesis override ONLY if model strongly supports (>65%).
+                            # NWS is the SETTLEMENT SOURCE. If it disagrees, we should
+                            # take notice. However, for winning NO positions, the confirmer
+                            # can produce false REJECTs: even with the entry_yes_price fix
+                            # (fc21eb0), deterministic models may still disagree with the
+                            # direction derivation. If the ensemble strongly supports the
+                            # position (>65% win prob), the REJECT is informational only —
+                            # we hold and let thesis validation handle it. This prevents
+                            # the dashboard from recommending FULL_EXIT on profitable
+                            # positions where the market agrees with our thesis (99¢ NO).
                             city_info_for_tz = CITIES.get(city_code, {})
                             tz_name = city_info_for_tz.get("timezone", "America/New_York")
                             local_hour = datetime.now(ZoneInfo(tz_name)).hour
 
                             our_win_prob = new_prob if side == "yes" else (1.0 - new_prob)
-                            if local_hour < 14 and thesis_supports_position and our_win_prob > 0.65:
-                                # Before 2 PM + strong thesis — allow override but log warning
-                                print(f"    [REVIEW] {ticker}: Confirmer REJECT overridden (pre-2PM) — "
+                            if thesis_supports_position and our_win_prob > 0.65:
+                                # Model strongly supports our position (>65% win prob).
+                                # NWS REJECT is informational — the confirmer direction
+                                # can still be wrong for winning NO positions even with
+                                # the entry_yes_price fix. Hold for settlement.
+                                time_label = "pre-2PM" if local_hour < 14 else "post-2PM"
+                                print(f"    [REVIEW] {ticker}: Confirmer REJECT overridden ({time_label}) — "
                                       f"model says {our_win_prob:.0%} win prob. Detail: {nws_detail}")
-                                # Fall through to thesis validation
+                                # Fall through to thesis validation at line 587+
                             else:
-                                # After 2 PM OR thesis doesn't strongly support — always exit
+                                # Thesis does NOT support position (model says <50% win)
+                                # OR win probability is weak (<65%). NWS REJECT = exit.
                                 actions.append({
                                     "ticker": ticker, "action": "full_exit", "urgency": "high",
                                     "reason": f"NWS REJECT auto-exit: {nws_detail} (local hour {local_hour}, win prob {our_win_prob:.0%})",
@@ -538,6 +563,14 @@ class TradeIntelligence:
                     "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
                     "city_code": city_code, "side": side, "contracts": contracts,
                     "cost_cents": cost_cents,
+                    "review_detail": {
+                        "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                        "action": "full_exit", "current_edge": 0,
+                        "entry_edge": entry_edge or config.MIN_EDGE,
+                        "edge_decay_pct": 1.0, "current_price": current_price,
+                        "entry_price": round(entry_price, 1),
+                        "urgency_reason": "ensemble_prob_floor_yes",
+                    },
                 })
                 continue
             if side == "no" and new_prob > 0.85:
@@ -547,6 +580,14 @@ class TradeIntelligence:
                     "current_price": current_price, "new_edge": 0, "entry_edge": entry_edge,
                     "city_code": city_code, "side": side, "contracts": contracts,
                     "cost_cents": cost_cents,
+                    "review_detail": {
+                        "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                        "action": "full_exit", "current_edge": 0,
+                        "entry_edge": entry_edge or config.MIN_EDGE,
+                        "edge_decay_pct": 1.0, "current_price": current_price,
+                        "entry_price": round(entry_price, 1),
+                        "urgency_reason": "ensemble_prob_floor_no",
+                    },
                 })
                 continue
 

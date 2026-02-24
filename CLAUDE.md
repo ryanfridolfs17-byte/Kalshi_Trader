@@ -275,7 +275,7 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 | 1 | Observation confirms loss (obs_high in bucket for NO, temp gap for YES) | EXIT | High |
 | 2 | Rounding buffer (obs_high within 1°F of bucket, after 2 PM) | EXIT | High |
 | 1b | Approaching bucket (NO): obs_high within 3°F of floor after 1 PM, 2°F after 2 PM | EXIT | High |
-| 3 | NWS confirmer REJECT on re-check | After 2 PM: always EXIT. Before 2 PM: thesis override if >65% win prob, else EXIT | High (after 2 PM) / Medium (before) |
+| 3 | NWS confirmer REJECT on re-check | Thesis override if model says >65% win prob (any time). Otherwise EXIT. Prevents false REJECT from exiting winning NO positions where confirmer direction flips. | High (no thesis) / Low (thesis override) |
 | 4 | Ensemble probability floor (<15% YES, >85% NO) | EXIT | High |
 | 5 | **Thesis valid** (model says >50% chance of winning) | **HOLD** | Low |
 | 6 | Thesis weakening (edge decayed but still positive) | PARE | Medium |
@@ -304,7 +304,7 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 - **Near-certainty cap**: No contracts above 88¢
 - **Minimum payout**: $2.00 total payout floor (was $1.50 — filter dust trades)
 - **Narrow bucket guard**: Extra caution on ≤5°F buckets
-- **NO-side price ceiling**: NO positions priced above 60c (`NO_SIDE_MAX_PRICE_CENTS`, was 70c) are hard-rejected. DEN B52.5 at 68c lost $5.44 — ceiling lowered to prevent.
+- **NO-side price ceiling**: NO positions priced above 60c (`NO_SIDE_MAX_PRICE_CENTS`, was 70c) are hard-rejected — applies to ALL paths including CASE 1 and CASE 3 confirmed outcomes. DEN B52.5 at 68c lost $5.44 — ceiling lowered to prevent.
 - **NO-side sizing reduction**: NO contracts priced ≥50c get 40% of normal sizing (`NO_SIDE_SIZING_MULTIPLIER`, was 70%). Caps max NO loss to ~$2.80 per position.
 - **Per-city per-model bias correction**: Replaces flat `WINTER_WARM_CITY_BIAS_F`. Each model family (GFS/ECMWF/ICON/GEM) gets its own bias correction per city. Learned bias from `quant_analytics.get_model_bias()` takes priority (requires 5+ datapoints). Falls back to per-city winter defaults: DEN +4°F (chinook), Gulf cities +3°F, desert +2°F. Config: `WINTER_WARM_CITY_BIAS` dict, `MODEL_BIAS_MIN_DATAPOINTS=5`.
 - **Next-day market guard**: Evening trades for tomorrow's markets (12-18h uncertainty) require 1.5x edge threshold (`NEXT_DAY_EDGE_MULTIPLIER`) and get 50% sizing (`NEXT_DAY_SIZING_MULTIPLIER`). Confirmed outcomes and arbitrage exempt.
