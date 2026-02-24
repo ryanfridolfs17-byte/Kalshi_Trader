@@ -1221,10 +1221,29 @@ function toggleAnalysisTrade(idx) {
 }
 
 function updateChart(pnlData) {
-  // Use Kalshi-synced date_pnl — ground truth from fills + settlements
+  // Use Kalshi-synced date_pnl from fills + settlements.
+  // IMPORTANT: Fill prices are GROSS (before Kalshi fees). The sum of
+  // date_pnl won't match account P&L. We scale each day's P&L so that
+  // the cumulative total equals account_pnl (balance - deposits), which
+  // is the only number that can't be wrong.
   const datePnl = pnlData.date_pnl || {};
   const allDates = Object.keys(datePnl).sort();
   if (allDates.length === 0) return;
+
+  // Compute gross total from fills and true total from account
+  let grossTotal = 0;
+  allDates.forEach(d => { grossTotal += (datePnl[d].pnl_cents || 0); });
+
+  const accountPnl = pnlData.account_pnl_cents;
+  const openCost = pnlData.open_position_cost_cents || 0;
+  // True realized = account P&L + open position cost (money still at risk)
+  const trueRealized = accountPnl != null ? accountPnl + openCost : null;
+
+  // Scale factor: distribute fees proportionally across trading days
+  // so cumulative chart matches the real account P&L
+  const scale = (trueRealized != null && grossTotal !== 0)
+    ? trueRealized / grossTotal
+    : 1.0;
 
   // Filter by selected range
   const now = new Date();
@@ -1248,7 +1267,7 @@ function updateChart(pnlData) {
   // Build cumulative P&L — include all P&L before the filtered window
   let priorPnl = 0;
   allDates.forEach(d => {
-    if (d < filteredDates[0]) priorPnl += (datePnl[d].pnl_cents || 0) / 100;
+    if (d < filteredDates[0]) priorPnl += (datePnl[d].pnl_cents || 0) * scale / 100;
   });
 
   let cumPnl = priorPnl;
@@ -1256,12 +1275,12 @@ function updateChart(pnlData) {
   const dataPoints = [];
   const dayPnlValues = [];
   filteredDates.forEach(d => {
-    const dayPnlCents = (datePnl[d].pnl_cents || 0);
-    cumPnl += dayPnlCents / 100;
+    const dayPnlScaled = (datePnl[d].pnl_cents || 0) * scale / 100;
+    cumPnl += dayPnlScaled;
     const dt = new Date(d + 'T12:00:00');
     labels.push(dt.toLocaleDateString([], {month:'short', day:'numeric'}));
     dataPoints.push(parseFloat(cumPnl.toFixed(2)));
-    dayPnlValues.push(dayPnlCents / 100);
+    dayPnlValues.push(parseFloat(dayPnlScaled.toFixed(2)));
   });
 
   const ctx = document.getElementById('perfChart').getContext('2d');
