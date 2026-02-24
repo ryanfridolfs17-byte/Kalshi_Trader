@@ -87,7 +87,8 @@ All state is persisted as JSON in `STATE_DIR` (defaults to `.`, set to `/data` o
 - **Market type isolation** — Each market type is gated behind a toggle. New market code paths only execute when explicitly enabled. SP500 uses `city_code="SP500"` in the risk manager for per-market exposure tracking.
 - **Duplicate order detection** — Before executing any trade, checks `risk.state["positions"]` and `trade_log` resting orders for the same ticker. Prevents multi-cycle order stacking (e.g., 3 identical orders across 3 cycles).
 - **Contract count cap** — Hard cap of 15 contracts per ticker (`MAX_CONTRACTS_PER_TICKER`, was 25), applied in Kelly sizing, confirmed outcome sizing, and risk manager. Prevents cheap contract explosion (e.g., 68 contracts at 22c each).
-- **CASE 2 disabled (recovery mode)** — YES-side confirmed outcomes (`CASE2_ENABLED=False`) are disabled due to NWS observation staleness vulnerability. CASE 1 (NO on exceeded) and CASE 3 (NO on unreachable) remain active. Re-enable when bankroll exceeds $80.
+- **Only CASE 1 is CONFIRMED_OUTCOME** — CASE 1 (high already exceeded bucket) is the ONLY true confirmed outcome — temperature can't un-happen, so NO is physically guaranteed. CASE 2 and CASE 3 are predictions that CAN lose, so they return `STRONG` verdict and flow through normal sizing/risk/scorecard pipeline. This prevents catastrophic sizing on wrong predictions.
+- **CASE 2 disabled (recovery mode)** — YES-side (`CASE2_ENABLED=False`) disabled. When re-enabled, returns `STRONG` (not `CONFIRMED_OUTCOME`) since temp can rise out of bucket.
 - **Medium urgency exits never auto-execute** — Only `high` urgency exits (confirmed losses from observations) auto-sell. Medium urgency (thesis uncertain + profitable) logs recommendation for manual review.
 - **Thesis-based exit logic** — Exits are driven by whether the model/observations still predict the position wins at settlement, NOT by edge erosion. Edge going to zero on a winning position means the market caught up (thesis confirmed) — hold for settlement. Exits only fire when: (1) observations confirm a loss, (2) NWS disagrees, (3) ensemble strongly contradicts position (<15% YES floor, >85% NO floor), or (4) thesis is broken (model flipped against us).
 
@@ -174,7 +175,7 @@ Weather markets settle on NWS Daily Climate Reports from these specific stations
 
 **IMPORTANT: Any changes to risk parameters or strategy rules MUST be reflected here. This is the source of truth for risk documentation.**
 
-**RECOVERY MODE ACTIVE (Feb 2026):** Bankroll is $40 (down from $100). All parameters tightened to protect remaining capital while generating consistent small profits. Strategy: focus on CASE 1/3 confirmed outcomes (near-guaranteed NO trades), disable risky CASE 2 (YES on current bucket), fewer speculative trades, tighter loss limits. Exit recovery mode when bankroll exceeds $80 — then gradually loosen parameters back toward normal.
+**RECOVERY MODE ACTIVE (Feb 2026):** Bankroll is $40 (down from $100). All parameters tightened to protect remaining capital while generating consistent small profits. Strategy: CASE 1 confirmed outcomes (guaranteed NO on exceeded buckets), CASE 3 strong signals (high-confidence NO on unreachable buckets, normal risk checks), disable CASE 2 (YES on current bucket), fewer speculative trades, tighter loss limits. Exit recovery mode when bankroll exceeds $80.
 
 All values are set in `config.py`. Values in cents (100 cents = $1.00).
 
@@ -182,7 +183,7 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | `MAX_POSITION_PCT` | 20% of bankroll | Max single position (caps contracts down instead of rejecting) |
-| `CONFIRMED_OUTCOME_POSITION_PCT` | 25% of bankroll | CASE 1/3 confirmed (NO on exceeded/unreachable buckets, was 30%). Also hard-capped by `DAILY_LOSS_LIMIT_CENTS` — max loss from any single confirmed outcome cannot exceed daily loss limit |
+| `CONFIRMED_OUTCOME_POSITION_PCT` | 25% of bankroll | CASE 1 ONLY (NO on exceeded buckets — temp already happened). Capped by `DAILY_LOSS_LIMIT_CENTS`. CASE 2/3 use normal Kelly sizing. |
 | `CASE2_ENABLED` | **False** | CASE 2 DISABLED in recovery mode — observation staleness bug |
 | `CASE2_POSITION_PCT` | 8% of bankroll | When re-enabled (was 10%) |
 | Quarter-Kelly | Kelly/4 | Base sizing formula, multiplied by confirmation level |
@@ -200,7 +201,7 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 | `MAX_OPEN_POSITIONS` | 6 | Confirmed outcomes bypass |
 | `MAX_CORRELATED_POSITIONS` | 2 | Was 3 (3 for confirmed outcomes, was 4) |
 
-**Confirmed outcome bypass:** CASE 1/3 trades (`CONFIRMED_OUTCOME` verdict) bypass: total exposure cap, per-city cap, daily city spend cap, max positions cap, and liquidity reserve. They still respect: daily loss limit, per-ticker cap, contract cap, correlated positions cap, consecutive loss pause, and cooldown.
+**Confirmed outcome bypass (CASE 1 ONLY):** Only CASE 1 trades (`CONFIRMED_OUTCOME` verdict) bypass: total exposure cap, per-city cap, daily city spend cap, max positions cap, and liquidity reserve. CASE 2/3 use `STRONG` verdict and go through ALL normal risk checks with no bypasses. CASE 1 still respects: daily loss limit, per-ticker cap, contract cap, correlated positions cap, consecutive loss pause, and cooldown.
 
 ### NWS Rounding Buffer
 | Parameter | Value | Notes |
