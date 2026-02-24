@@ -33,6 +33,7 @@ STATE_FILES = {
     "attribution": config.EDGE_ATTRIBUTION_FILE,
     "analysis": config.TRADE_ANALYSIS_FILE,
     "scan_log": config.SCAN_LOG_FILE,
+    "forecast_log": config.FORECAST_LOG_FILE,
 }
 
 DASHBOARD_PORT = int(os.environ.get("PORT", 8050))

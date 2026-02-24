@@ -134,7 +134,7 @@ def main():
     from risk_manager import RiskManager
     from market_scanner import MarketScanner
     from strategy import Strategy
-    from trade_intelligence import TradeIntelligence
+    from trade_intelligence import TradeIntelligence, log_daily_forecasts, reconcile_forecast_log
     from trade_scorecard import TradeScorecard
     from maker_strategy import MakerStrategy
 
@@ -280,6 +280,7 @@ def main():
     # Force daily report regeneration on first cycle by using yesterday's date.
     last_report_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     last_analysis_hour = -1  # Track post-settlement re-analysis
+    last_forecast_log_date = None  # Track daily forecast logging
     while True:
         try:
             cycle += 1
@@ -351,6 +352,22 @@ def main():
                 _generate_daily_report(trade_log, strategy)
                 _run_daily_analysis(trade_log)
                 last_analysis_hour = current_hour_et
+
+            # ── Forecast logging: capture deterministic model predictions for all cities ──
+            # Log once per day, reconcile after settlement time with NWS actuals.
+            if last_forecast_log_date != today_str:
+                try:
+                    log_daily_forecasts()
+                    last_forecast_log_date = today_str
+                except Exception as e:
+                    print(f"  [FORECAST LOG] Error logging forecasts: {e}")
+
+            # Reconcile past forecasts with NWS actuals after settlement hour
+            if current_hour_et >= config.ANALYSIS_HOUR_ET:
+                try:
+                    reconcile_forecast_log(strategy.quant)
+                except Exception as e:
+                    print(f"  [FORECAST LOG] Error reconciling: {e}")
 
             # Check for dashboard-approved pending trades
             _process_approved_trades(client, risk, trade_log)

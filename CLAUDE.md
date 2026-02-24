@@ -74,7 +74,7 @@ Weather uses `signal_confirmer.py` (5-source voting: 4 deterministic models + NW
 
 ### Data Files (Runtime State)
 
-All state is persisted as JSON in `STATE_DIR` (defaults to `.`, set to `/data` on Railway for volume persistence): `trade_history.json`, `risk_state.json`, `pnl_history.json`, `backtest_results.json`, `edge_attribution.json`, `bot_status.json`, `pending_trades.json`, `scan_log.json` (per-market evaluation log, 7-day rolling retention, exposed via `/api/state`), `maker_orders.json` (tracked open maker orders), `model_accuracy.json` (per-model forecast error tracking), `daily_reports.json` (daily P&L summaries), `trade_analysis.json` (post-settlement trade analysis), `bias_history.json` (NWS station forecast bias history), `seasonal_weights.json` (learned seasonal sizing adjustments).
+All state is persisted as JSON in `STATE_DIR` (defaults to `.`, set to `/data` on Railway for volume persistence): `trade_history.json`, `risk_state.json`, `pnl_history.json`, `backtest_results.json`, `edge_attribution.json`, `bot_status.json`, `pending_trades.json`, `scan_log.json` (per-market evaluation log, 7-day rolling retention, exposed via `/api/state`), `maker_orders.json` (tracked open maker orders), `model_accuracy.json` (per-model forecast error tracking), `daily_reports.json` (daily P&L summaries), `trade_analysis.json` (post-settlement trade analysis), `bias_history.json` (NWS station forecast bias history), `seasonal_weights.json` (learned seasonal sizing adjustments), `forecast_log.json` (daily deterministic model predictions for all 20 cities — reconciled nightly against NWS actuals to build model accuracy data without waiting for trades to settle).
 
 ### Key Design Decisions
 
@@ -349,6 +349,7 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 - **Bias calculation**: `quant_analytics.get_model_bias(city_code)` returns mean signed error per model. Negative = underpredicts. Used by `weather_engine` to apply per-model correction (shift = -bias). Requires 5+ datapoints. Falls back to per-city winter defaults from `WINTER_WARM_CITY_BIAS` dict.
 - **Weight application**: `strategy.py` fetches weights and biases early in `_strategy_weather()` and passes them to `weather_engine.get_temperature_distribution()`. The engine applies per-model bias correction first, then accuracy weights in `_build_distribution()`: weighted mean, weighted bucket probability, weighted variance.
 - **Trade logging**: Each trade entry in `trade_history.json` records `model_predictions` (per-model means), `model_weights_used` (accuracy weights applied), and `model_biases_used` (bias corrections applied).
+- **Daily forecast logging**: `log_daily_forecasts()` runs once per day in the main loop. Fetches deterministic forecasts (GFS, ECMWF, ICON, GEM) for ALL 20 cities — not just traded ones — and saves to `forecast_log.json`. After settlement time (11 AM ET), `reconcile_forecast_log()` fetches NWS actual highs for past dates and records accuracy via `quant.record_model_accuracy()`. This builds accuracy data ~10x faster than waiting for trade settlements (20 cities/day vs 1-5 settlements/day).
 
 ## Dashboard Force-Exit Endpoint
 
