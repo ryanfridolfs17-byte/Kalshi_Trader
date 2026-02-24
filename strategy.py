@@ -796,12 +796,14 @@ class Strategy:
                 return None  # Not enough margin to bother
 
             # Confirmed outcome: 25% of bankroll (larger than normal trades)
+            # Also capped by daily loss limit — even a false confirmed can't exceed it
             bankroll_cents = getattr(self, 'balance_cents', None) or config.MAX_TOTAL_EXPOSURE_CENTS
             max_bet_cents = int(bankroll_cents * config.CONFIRMED_OUTCOME_POSITION_PCT)
+            max_bet_cents = min(max_bet_cents, config.DAILY_LOSS_LIMIT_CENTS)
             contracts = min(max(1, int(max_bet_cents / no_price)), config.MAX_CONTRACTS_PER_TICKER)
 
             print(f"    [CONFIRMED] {city_code} high already {todays_high}°F > bucket {temp_low}-{temp_high}°F")
-            print(f"    [CONFIRMED] NO @ {no_price}¢ is near-guaranteed → MAX POSITION {contracts} contracts")
+            print(f"    [CONFIRMED] NO @ {no_price}¢ is near-guaranteed → {contracts} contracts (${contracts * no_price / 100:.2f})")
 
             return {
                 "signal": "buy_no",
@@ -862,8 +864,14 @@ class Strategy:
                         print(f"    [CASE2] Ensemble veto: max member {forecast_max:.1f}°F and mean "
                               f"{forecast_mean:.1f}°F above bucket ceiling {temp_high}°F")
                         case2_vetoed = True
-            except Exception:
-                pass  # On error, proceed with CASE 2
+                else:
+                    # No distribution available — cannot verify, block CASE 2
+                    print(f"    [CASE2 BLOCKED] No ensemble data for {city_code} — cannot verify, skipping")
+                    case2_vetoed = True
+            except Exception as e:
+                # Ensemble unavailable — block CASE 2 rather than firing blind
+                print(f"    [CASE2 BLOCKED] Ensemble fetch failed ({e}) — cannot verify, skipping")
+                case2_vetoed = True
 
             if not case2_vetoed:
                 yes_ask = market.get("yes_ask", 0) or ref_price
@@ -914,12 +922,28 @@ class Strategy:
         for min_hour, min_gap in sorted(config.CASE3_GAP_THRESHOLDS.items(), reverse=True):
             if local_hour >= min_hour and temp_gap > min_gap:
                 case3_triggered = True
+                print(f"    [CASE3] {city_code} gap check: obs_high={todays_high}°F, "
+                      f"bucket_floor={temp_low}°F, gap={temp_gap:.0f}°F > {min_gap}°F @ {local_hour}:00 local → triggered")
                 break
+        if not case3_triggered and temp_gap > 0:
+            # Log near-misses for debugging
+            applicable_gap = None
+            for min_hour, min_gap in sorted(config.CASE3_GAP_THRESHOLDS.items(), reverse=True):
+                if local_hour >= min_hour:
+                    applicable_gap = min_gap
+                    break
+            if applicable_gap is not None:
+                print(f"    [CASE3] {city_code} gap check: obs_high={todays_high}°F, "
+                      f"bucket_floor={temp_low}°F, gap={temp_gap:.0f}°F <= {applicable_gap}°F @ {local_hour}:00 → NOT triggered")
 
         # ENSEMBLE SANITY CHECK: The gap thresholds above are static and don't
         # account for warm/cold fronts. Cross-reference the ensemble forecast —
         # if models predict the high could reach the bucket, DON'T confirm.
         # The ensemble captures weather patterns the observation gap cannot.
+        # MANDATORY: If ensemble data is unavailable, CASE 3 does NOT fire.
+        # On fresh restart or API failure, skipping the veto caused false
+        # confirmed outcomes (ATL B53.5 Feb 24: ensemble predicted 53°F but
+        # veto was silently skipped → lost trade).
         if case3_triggered:
             try:
                 dist = self.weather.get_temperature_distribution(city_code, target_date, model_weights=model_weights, model_biases=model_biases)
@@ -937,8 +961,17 @@ class Strategy:
                         print(f"    [CASE3 VETO] Ensemble max {forecast_max:.1f}°F reaches bucket "
                               f"floor {temp_low}°F — NOT confirmed")
                         case3_triggered = False
-            except Exception:
-                pass  # If ensemble unavailable, rely on gap thresholds alone
+                    else:
+                        print(f"    [CASE3] Ensemble confirms: mean={forecast_mean:.1f}°F, max={forecast_max:.1f}°F "
+                              f"< bucket floor {temp_low}°F (veto_gap={veto_gap}°F)")
+                else:
+                    # No distribution available — cannot verify, block CASE 3
+                    print(f"    [CASE3 BLOCKED] No ensemble data for {city_code} — cannot verify, skipping")
+                    case3_triggered = False
+            except Exception as e:
+                # Ensemble unavailable — block CASE 3 rather than firing blind
+                print(f"    [CASE3 BLOCKED] Ensemble fetch failed ({e}) — cannot verify, skipping")
+                case3_triggered = False
 
         if case3_triggered:
             no_price = market.get("no_ask", 0) or (100 - ref_price)
@@ -956,11 +989,12 @@ class Strategy:
 
             bankroll_cents = getattr(self, 'balance_cents', None) or config.MAX_TOTAL_EXPOSURE_CENTS
             max_bet_cents = int(bankroll_cents * config.CONFIRMED_OUTCOME_POSITION_PCT)
+            max_bet_cents = min(max_bet_cents, config.DAILY_LOSS_LIMIT_CENTS)
             contracts = min(max(1, int(max_bet_cents / no_price)), config.MAX_CONTRACTS_PER_TICKER)
 
             print(f"    [CONFIRMED] {city_code} high only {todays_high}°F at {local_hour}:00, "
                   f"bucket {temp_low}-{temp_high}°F unreachable (gap: {temp_gap:.0f}°F)")
-            print(f"    [CONFIRMED] NO @ {no_price}¢ → MAX POSITION {contracts} contracts")
+            print(f"    [CONFIRMED] NO @ {no_price}¢ → {contracts} contracts (${contracts * no_price / 100:.2f})")
 
             return {
                 "signal": "buy_no",
