@@ -1070,8 +1070,8 @@ function updateDashboard(data) {
   const analysis = data.analysis || [];
   renderAnalysis(analysis);
 
-  // Performance chart
-  updateChart(trades);
+  // Performance chart — use Kalshi-synced date_pnl (ground truth)
+  updateChart(pnl);
 }
 
 let selectedAnalysisDate = null;
@@ -1220,20 +1220,10 @@ function toggleAnalysisTrade(idx) {
   if (body) body.classList.toggle('open');
 }
 
-function updateChart(trades) {
-  const settled = trades.filter(t => t.settled && t.profit_cents !== undefined);
-  if (settled.length === 0) return;
-
-  // Group P&L by settlement date (not placement date)
-  const dailyPnl = {};
-  settled.forEach(t => {
-    const dateStr = (t.settled_at || t.timestamp || '').slice(0, 10); // YYYY-MM-DD
-    if (!dateStr) return;
-    dailyPnl[dateStr] = (dailyPnl[dateStr] || 0) + (t.profit_cents || 0);
-  });
-
-  // Sort dates chronologically
-  const allDates = Object.keys(dailyPnl).sort();
+function updateChart(pnlData) {
+  // Use Kalshi-synced date_pnl — ground truth from fills + settlements
+  const datePnl = pnlData.date_pnl || {};
+  const allDates = Object.keys(datePnl).sort();
   if (allDates.length === 0) return;
 
   // Filter by selected range
@@ -1241,7 +1231,6 @@ function updateChart(trades) {
   const todayStr = now.toISOString().slice(0, 10);
   let filteredDates;
   if (currentRange === 'daily') {
-    // Show today only — if no settlements today, show last 7 days
     filteredDates = allDates.filter(d => d === todayStr);
     if (filteredDates.length === 0) filteredDates = allDates.slice(-7);
   } else if (currentRange === 'weekly') {
@@ -1256,20 +1245,23 @@ function updateChart(trades) {
 
   if (filteredDates.length === 0) filteredDates = allDates.slice(-7);
 
-  // Build cumulative P&L series — start from total P&L before the filtered window
+  // Build cumulative P&L — include all P&L before the filtered window
   let priorPnl = 0;
   allDates.forEach(d => {
-    if (d < filteredDates[0]) priorPnl += dailyPnl[d] / 100;
+    if (d < filteredDates[0]) priorPnl += (datePnl[d].pnl_cents || 0) / 100;
   });
 
   let cumPnl = priorPnl;
   const labels = [];
   const dataPoints = [];
+  const dayPnlValues = [];
   filteredDates.forEach(d => {
-    cumPnl += dailyPnl[d] / 100;
-    const dt = new Date(d + 'T12:00:00'); // noon to avoid timezone shift
+    const dayPnlCents = (datePnl[d].pnl_cents || 0);
+    cumPnl += dayPnlCents / 100;
+    const dt = new Date(d + 'T12:00:00');
     labels.push(dt.toLocaleDateString([], {month:'short', day:'numeric'}));
     dataPoints.push(parseFloat(cumPnl.toFixed(2)));
+    dayPnlValues.push(dayPnlCents / 100);
   });
 
   const ctx = document.getElementById('perfChart').getContext('2d');
@@ -1302,7 +1294,7 @@ function updateChart(trades) {
         tooltip: {
           callbacks: {
             label: ctx => {
-              const dayPnl = dailyPnl[filteredDates[ctx.dataIndex]] / 100;
+              const dayPnl = dayPnlValues[ctx.dataIndex];
               const sign = dayPnl >= 0 ? '+' : '';
               return `Cumulative: $${ctx.parsed.y.toFixed(2)} (day: ${sign}$${dayPnl.toFixed(2)})`;
             }
@@ -1321,7 +1313,7 @@ function setChartRange(range) {
   currentRange = range;
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   event.target.classList.add('active');
-  if (lastData) updateChart(lastData.trades || []);
+  if (lastData) updateChart(lastData.pnl || {});
 }
 
 async function approveTrade(id) {
