@@ -142,6 +142,9 @@ def main():
     from maker_strategy import MakerStrategy
 
     client = KalshiClient()
+    # Share client with dashboard for force-exit endpoint
+    from dashboard import set_kalshi_client
+    set_kalshi_client(client)
     risk = RiskManager()
     scanner = MarketScanner(client)
     strategy = Strategy(kalshi_client=client)
