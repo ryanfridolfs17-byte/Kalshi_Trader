@@ -637,12 +637,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 try:
                     # Direct API call with error capture (sell_order swallows errors)
                     import requests as req_lib
+                    # Kalshi requires a price even for market orders
+                    price_key = "yes_price" if side == "yes" else "no_price"
                     order_data = {
                         "ticker": ticker,
                         "action": "sell",
                         "side": side,
                         "count": count,
                         "type": "market",
+                        price_key: 1,  # Sell at any price (1c floor = accept worst fill)
                     }
                     headers = _kalshi_client._sign_request("POST", "/portfolio/orders")
                     url = f"{_kalshi_client.base_url}/portfolio/orders"
