@@ -243,9 +243,10 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 | `CASE2_NARROW_BUCKET_WIDTH` | 5°F | Definition of "narrow" bucket |
 | CASE 1 rounding buffer | +1°F | `todays_high > temp_high + 1°F` before confirming |
 | CASE 3 rounding buffer | -1°F | Gap reduced by 1°F (real temp could be higher) |
-| CASE 3 graduated gaps | 10AM:15°F, 11AM:12°F, 12PM:8°F, 1PM:7°F, 2PM:6°F, 3PM:4°F, 4PM+:2°F | Config-driven (`CASE3_GAP_THRESHOLDS`). 10/11AM tightened after MIA/ATL false confirmed outcomes (was 10°F at 11AM) |
+| CASE 3 cooling gate | Before 2 PM local | **MANDATORY** — CASE 3 before `CASE3_COOLING_REQUIRED_BEFORE_HOUR` (14) requires evidence of cooling: latest temp must be ≥3°F below today's high (cold front moved through, peak already set). Without cooling evidence, the temperature is still rising and the gap is meaningless. Uses `get_temperature_trend()`. |
+| CASE 3 graduated gaps | 10AM:15°F, 11AM:12°F, 12PM:8°F, 1PM:7°F, 2PM:6°F, 3PM:4°F, 4PM+:2°F | Config-driven (`CASE3_GAP_THRESHOLDS`). Only checked AFTER cooling gate passes (before 2 PM) or unconditionally (2 PM+) |
 | CASE 2 ensemble veto | mean > ceiling+2°F | **MANDATORY** — veto CASE 2 if ensemble predicts temp above bucket. If ensemble unavailable, CASE 2 blocked |
-| CASE 3 ensemble veto | 3PM+:3°F, earlier:5°F | **MANDATORY** — ensemble mean within N°F of bucket floor = veto CASE 3. If ensemble unavailable, CASE 3 blocked (was silently skipped on API failure) |
+| CASE 3 ensemble veto | 3PM+:3°F, earlier:5°F | **MANDATORY** — ensemble mean within N°F of bucket floor = veto CASE 3. If ensemble unavailable, CASE 3 blocked |
 
 ### Settlement & Timing
 | Parameter | Value | Notes |
