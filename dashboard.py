@@ -701,6 +701,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "results": results,
             })
 
+        elif path == "/api/fix-trades":
+            # Direct trade log update for reconciliation.
+            # Accepts: {"trades": [...]} to replace the full trade log.
+            new_trades = payload.get("trades")
+            if not isinstance(new_trades, list):
+                self._send_json({"error": "Missing or invalid 'trades' array"}, 400)
+                return
+            old_count = len(_read_json(STATE_FILES["trades"], default=[]))
+            _write_json(STATE_FILES["trades"], new_trades)
+            self._send_json({
+                "ok": True,
+                "action": "fix_trades",
+                "before": old_count,
+                "after": len(new_trades),
+            })
+
         elif path == "/api/reset":
             # Wipe all runtime state files to start fresh
             from datetime import datetime as _dt
