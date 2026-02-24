@@ -98,12 +98,9 @@ def _check_environment_switch():
 def main():
     """Main entry point."""
 
-    # ─── START DASHBOARD FIRST ───
-    # Must bind to PORT before anything else so Railway health checks pass.
-    # Runs in a daemon thread — the outer restart loop handles crash recovery.
-    from dashboard import start_dashboard_server
-    port = int(os.environ.get("PORT", 8050))
-    start_dashboard_server(port)
+    # Dashboard is started before the restart loop (outside main()) so it
+    # only binds the port once. If main() crashes and restarts, the dashboard
+    # thread stays alive — no "Address already in use" error.
 
     # ─── CHECK FOR ENVIRONMENT SWITCH ───
     _check_environment_switch()
@@ -3015,6 +3012,12 @@ if __name__ == "__main__":
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, _sigterm_handler)
+
+    # Start dashboard BEFORE the restart loop — it must only bind once.
+    # If main() crashes and restarts, the dashboard thread stays alive.
+    from dashboard import start_dashboard_server
+    port = int(os.environ.get("PORT", 8050))
+    start_dashboard_server(port)
 
     # Outer restart loop — if main() crashes, wait and retry.
     # This prevents Railway zombie processes (dashboard alive, bot dead).
