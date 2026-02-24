@@ -777,6 +777,14 @@ class TradeIntelligence:
 
         market_prob = current_price / 100.0
 
+        # Thesis confirmation: edge at 0 or negative on a profitable position
+        # means the market moved to agree with us — that's good, not bad.
+        thesis_supports = (
+            (side == "yes" and new_prob is not None and new_prob >= 0.50) or
+            (side == "no" and new_prob is not None and new_prob <= 0.50)
+        )
+        thesis_confirmed = thesis_supports and pnl_pct > 0 and new_edge <= 0
+
         detail = {
             "reviewed_at": datetime.now(timezone.utc).isoformat(),
             "current_price": current_price,
@@ -788,6 +796,7 @@ class TradeIntelligence:
             "current_prob": round(new_prob, 4) if new_prob is not None else None,
             "market_prob": round(market_prob, 4),
             "is_underwater": pnl_pct < -0.10,
+            "thesis_confirmed": thesis_confirmed,
         }
 
         # Add weather forecast data if available
@@ -831,18 +840,22 @@ class TradeIntelligence:
         else:
             parts.append(f"Position is up {pnl_pct:.0%}.")
 
-        # Edge health
+        # Edge health — interpret relative to thesis
         current_edge = detail.get("current_edge", 0)
         entry_edge = detail.get("entry_edge", 0)
         decay = detail.get("edge_decay_pct", 0)
-        if current_edge > 0 and decay < 0.5:
+        thesis_confirmed = detail.get("thesis_confirmed", False)
+        if thesis_confirmed:
+            # Edge at 0 or negative on a profitable position = market agrees with us
+            parts.append(f"Market has confirmed our thesis (edge absorbed). Hold for settlement.")
+        elif current_edge > 0 and decay < 0.5:
             parts.append(f"Edge is healthy at {current_edge:.1%} (was {entry_edge:.1%}, {decay:.0%} decay).")
         elif current_edge > 0:
             parts.append(f"Edge has decayed significantly to {current_edge:.1%} (was {entry_edge:.1%}, {decay:.0%} decay).")
         elif current_edge > -0.05:
             parts.append(f"Edge has disappeared ({current_edge:.1%}).")
         else:
-            parts.append(f"Edge has reversed to {current_edge:.1%} — position is against us.")
+            parts.append(f"Edge has reversed to {current_edge:.1%} — model now predicts a losing position.")
 
         # Forecast detail (weather only)
         mean = detail.get("forecast_mean")
