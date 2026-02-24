@@ -187,18 +187,20 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 | `CASE2_POSITION_PCT` | 8% of bankroll | When re-enabled (was 10%) |
 | Quarter-Kelly | Kelly/4 | Base sizing formula, multiplied by confirmation level |
 
-### Exposure Caps (Dynamic, Percentage-Based) — RECOVERY MODE
+### Exposure Caps (Dynamic, Percentage-Based)
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `MAX_TOTAL_EXPOSURE_PCT` | 40% of bankroll | Was 60%, tightened for recovery |
-| `MAX_TOTAL_EXPOSURE_CENTS` | $16.00 | Fallback (was $60.00) |
-| `MAX_PER_CITY_PCT` | 15% of bankroll | Was 20% |
+| `MAX_TOTAL_EXPOSURE_PCT` | 60% of bankroll | Was 40% — confirmed outcomes bypass entirely |
+| `MAX_TOTAL_EXPOSURE_CENTS` | $18.00 | Fallback |
+| `MAX_PER_CITY_PCT` | 15% of bankroll | Confirmed outcomes bypass |
 | `MAX_PER_CITY_CENTS` | $6.00 | Fallback (was $10.00) |
-| `MAX_DAILY_CITY_SPEND_CENTS` | $12.00 | Was $35.00 |
-| `MAX_PER_TICKER_CENTS` | $8.00 | Was $15.00 |
-| `MAX_CONTRACTS_PER_TICKER` | 15 | Was 25 |
-| `MAX_OPEN_POSITIONS` | 6 | Was 20 — forces selectivity |
+| `MAX_DAILY_CITY_SPEND_CENTS` | $12.00 | Confirmed outcomes bypass |
+| `MAX_PER_TICKER_CENTS` | $8.00 | Still enforced for confirmed outcomes |
+| `MAX_CONTRACTS_PER_TICKER` | 15 | Still enforced for confirmed outcomes |
+| `MAX_OPEN_POSITIONS` | 6 | Confirmed outcomes bypass |
 | `MAX_CORRELATED_POSITIONS` | 2 | Was 3 (3 for confirmed outcomes, was 4) |
+
+**Confirmed outcome bypass:** CASE 1/3 trades (`CONFIRMED_OUTCOME` verdict) bypass: total exposure cap, per-city cap, daily city spend cap, max positions cap, and liquidity reserve. They still respect: daily loss limit, per-ticker cap, contract cap, correlated positions cap, consecutive loss pause, and cooldown.
 
 ### NWS Rounding Buffer
 | Parameter | Value | Notes |
@@ -250,7 +252,7 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 | `SETTLEMENT_HOUR_ET` | 10 AM ET | When Kalshi processes settlements |
 | `SETTLEMENT_PROXIMITY_HOURS` | 2 hrs | No new positions within 2hrs of close |
 | `SETTLEMENT_PROXIMITY_EDGE_OVERRIDE` | 20% | Exceptional edge overrides proximity block |
-| `LIQUIDITY_RESERVE_PCT` | 40% | Reserve cash for confirmed outcomes (was 30%) |
+| `LIQUIDITY_RESERVE_PCT` | 20% | Reserve cash (was 40% — confirmed outcomes now bypass caps directly) |
 | `PRE_SETTLEMENT_SIZING_MULT` | 0.75x | 75% sizing before settlements clear (was 60%) |
 
 ### Account Tracking

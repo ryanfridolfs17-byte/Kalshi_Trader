@@ -160,9 +160,9 @@ APPROVAL_THRESHOLD_CENTS = 2500     # $25.00
 DAILY_LOSS_LIMIT_CENTS = 600        # $6.00 (was $20.00)
 
 # Max total money at risk across all active positions
-# RECOVERY MODE: 40% of bankroll (was 60%)
-MAX_TOTAL_EXPOSURE_PCT = 0.40       # 40% of bankroll (was 60%)
-MAX_TOTAL_EXPOSURE_CENTS = 1600     # $16.00 fallback (was $60.00)
+# Confirmed outcomes bypass this cap entirely (near-guaranteed wins)
+MAX_TOTAL_EXPOSURE_PCT = 0.60       # 60% of bankroll (was 40% in recovery)
+MAX_TOTAL_EXPOSURE_CENTS = 1800     # $18.00 fallback
 
 # Max open positions at once
 # RECOVERY MODE: 6 positions (was 20) — forces selectivity
@@ -262,8 +262,8 @@ MAX_DAILY_FORECAST_TRADES = 5   # Was 8 — force selectivity during recovery
 #   06Z pulse:   6:00 AM - 9:00 AM   (supplementary GFS/ECMWF runs)
 #   12Z cascade: 2:30 PM - 6:30 PM   (second full refresh, new listings from 10 AM)
 SETTLEMENT_HOUR_ET = 10             # Hour (ET) when settlements process
-# RECOVERY MODE: 40% reserve (was 30%) — keep more dry powder for confirmed outcomes
-LIQUIDITY_RESERVE_PCT = 0.40        # 40% of bankroll reserved for confirmed outcomes
+# 20% reserve — confirmed outcomes bypass this + exposure caps, so less reserve needed
+LIQUIDITY_RESERVE_PCT = 0.20        # 20% of bankroll reserved (was 40%)
 PRE_SETTLEMENT_SIZING_MULT = 0.75   # 75% sizing before settlements clear (was 60%)
 
 # ═══════════════════════════════════════════════════════
