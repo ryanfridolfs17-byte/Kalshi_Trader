@@ -157,7 +157,7 @@ def main():
     # Network-dependent init steps wrapped in try/except so transient
     # API failures don't prevent startup. The main loop retries each cycle.
     try:
-        _reconcile_positions(client, risk)
+        _reconcile_positions(client, risk, trade_log=trade_log)
     except Exception as e:
         print(f"  [STARTUP] WARNING: Position reconciliation failed: {e}")
         print(f"  [STARTUP] Will retry next cycle")
@@ -301,7 +301,7 @@ def main():
             # ═══════════════════════════════════════════════
             # SYNC POSITIONS & BALANCE WITH KALSHI
             # ═══════════════════════════════════════════════
-            _reconcile_positions(client, risk)
+            _reconcile_positions(client, risk, trade_log=trade_log)
             _sync_balance(client, risk, strategy)
             _check_resting_orders(client, risk, trade_log, intel=intel)
 
@@ -1156,34 +1156,52 @@ def _check_resting_orders(client, risk, trade_log, intel=None):
                 except Exception:
                     pass
         else:
-            # Exit filled — estimate P&L and mark settled.
-            # Use pending_exit_contracts (the actual exit size) instead of
-            # the original trade's contracts, and compute per-contract cost
-            # to avoid using the full position cost for partial exits.
-            exit_price = trade.get("pending_exit_price", 50)
-            exit_contracts = trade.get("pending_exit_contracts", trade.get("contracts", 1))
-            original_contracts = trade.get("contracts", 1)
-            cost_cents = trade.get("cost_cents", 0)
-            cost_per_contract = cost_cents / max(original_contracts, 1)
-            exit_cost = int(cost_per_contract * exit_contracts)
-            sell_value = exit_price * exit_contracts
-            profit_cents = sell_value - exit_cost
+            # No longer resting — verify if filled or cancelled before recording P&L.
+            exit_was_cancelled = False
+            try:
+                cancelled_resp = client.get_orders(ticker=trade.get("ticker"), status="canceled")
+                if cancelled_resp:
+                    cancelled_orders = cancelled_resp.get("orders", [])
+                    exit_was_cancelled = any(co.get("order_id") == exit_order_id for co in cancelled_orders)
+            except Exception as e:
+                # API error — skip update, retry next cycle
+                print(f"  [RESTING] API error checking exit order {exit_order_id}: {e} — will retry")
+                continue
 
-            trade["settled"] = True
-            trade["settled_at"] = datetime.now(timezone.utc).isoformat()
-            trade["result"] = "exit_win" if profit_cents > 0 else "exit_loss"
-            trade["profit_cents"] = profit_cents
-            trade["exit_price_cents"] = exit_price
-            trade["exit_order_id"] = exit_order_id
-            trade["exit_contracts"] = exit_contracts
-            trade.pop("pending_exit_order_id", None)
-            trade.pop("pending_exit_time", None)
-            trade.pop("pending_exit_price", None)
-            trade.pop("pending_exit_contracts", None)
+            if exit_was_cancelled:
+                # Exit was cancelled (not filled) — clear pending tracking
+                trade.pop("pending_exit_order_id", None)
+                trade.pop("pending_exit_time", None)
+                trade.pop("pending_exit_price", None)
+                trade.pop("pending_exit_contracts", None)
+                print(f"  [RESTING] Exit cancelled (not filled): {exit_order_id} ({trade['ticker']})")
+                updated = True
+            else:
+                # Exit filled — estimate P&L and mark settled.
+                exit_price = trade.get("pending_exit_price", 50)
+                exit_contracts = trade.get("pending_exit_contracts", trade.get("contracts", 1))
+                original_contracts = trade.get("contracts", 1)
+                cost_cents = trade.get("cost_cents", 0)
+                cost_per_contract = cost_cents / max(original_contracts, 1)
+                exit_cost = int(cost_per_contract * exit_contracts)
+                sell_value = exit_price * exit_contracts
+                profit_cents = sell_value - exit_cost
 
-            print(f"  [RESTING] Exit filled: {exit_order_id} ({trade['ticker']}) "
-                  f"{exit_contracts}x @ {exit_price}c, P&L: ${profit_cents/100:+.2f}")
-            updated = True
+                trade["settled"] = True
+                trade["settled_at"] = datetime.now(timezone.utc).isoformat()
+                trade["result"] = "exit_win" if profit_cents > 0 else "exit_loss"
+                trade["profit_cents"] = profit_cents
+                trade["exit_price_cents"] = exit_price
+                trade["exit_order_id"] = exit_order_id
+                trade["exit_contracts"] = exit_contracts
+                trade.pop("pending_exit_order_id", None)
+                trade.pop("pending_exit_time", None)
+                trade.pop("pending_exit_price", None)
+                trade.pop("pending_exit_contracts", None)
+
+                print(f"  [RESTING] Exit filled: {exit_order_id} ({trade['ticker']}) "
+                      f"{exit_contracts}x @ {exit_price}c, P&L: ${profit_cents/100:+.2f}")
+                updated = True
 
     # --- Check resting HEDGE orders ---
     for trade in trade_log:
@@ -1211,10 +1229,26 @@ def _check_resting_orders(client, risk, trade_log, intel=None):
                 except Exception:
                     pass
         else:
-            # Hedge filled — _reconcile_positions() handles position removal
-            trade.pop("pending_hedge_order_id", None)
-            trade.pop("pending_hedge_time", None)
-            print(f"  [RESTING] Hedge filled: {hedge_order_id} ({trade['ticker']})")
+            # No longer resting — verify if filled or cancelled
+            hedge_was_cancelled = False
+            try:
+                cancelled_resp = client.get_orders(ticker=trade.get("ticker"), status="canceled")
+                if cancelled_resp:
+                    cancelled_orders = cancelled_resp.get("orders", [])
+                    hedge_was_cancelled = any(co.get("order_id") == hedge_order_id for co in cancelled_orders)
+            except Exception as e:
+                print(f"  [RESTING] API error checking hedge order {hedge_order_id}: {e} — will retry")
+                continue
+
+            if hedge_was_cancelled:
+                trade.pop("pending_hedge_order_id", None)
+                trade.pop("pending_hedge_time", None)
+                print(f"  [RESTING] Hedge cancelled (not filled): {hedge_order_id} ({trade['ticker']})")
+            else:
+                # Hedge filled — _reconcile_positions() handles position removal
+                trade.pop("pending_hedge_order_id", None)
+                trade.pop("pending_hedge_time", None)
+                print(f"  [RESTING] Hedge filled: {hedge_order_id} ({trade['ticker']})")
             updated = True
 
     # --- Check resting PARE orders (on positions, not trade log) ---
@@ -2811,7 +2845,7 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
         print(f"  [P&L SYNC] Error: {e}")
 
 
-def _reconcile_positions(client, risk):
+def _reconcile_positions(client, risk, trade_log=None):
     """Full sync: replace local positions with Kalshi's actual positions.
 
     Kalshi is the source of truth. This corrects any drift from state
@@ -2851,13 +2885,24 @@ def _reconcile_positions(client, risk):
             # Preserve local metadata (title, edge, etc.) if we have it
             local = local_lookup.get((ticker, side), {})
 
+            # Timestamp priority: local state > trade_log entry > now()
+            ts = local.get("timestamp")
+            if not ts and trade_log:
+                # Look up the original trade entry for this ticker
+                for t in reversed(trade_log):
+                    if t.get("ticker") == ticker and t.get("timestamp"):
+                        ts = t["timestamp"]
+                        break
+            if not ts:
+                ts = datetime.now().isoformat()
+
             pos_entry = {
                 "ticker": ticker,
                 "side": side,
                 "cost_cents": cost_cents,
                 "contracts": contracts,
                 "city_code": city_code,
-                "timestamp": local.get("timestamp", datetime.now().isoformat()),
+                "timestamp": ts,
                 "title": local.get("title", ""),
                 "edge": local.get("edge", 0),
                 "expected_profit_cents": local.get("expected_profit_cents", 0),

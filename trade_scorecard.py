@@ -630,7 +630,7 @@ class TradeScorecard:
         # Series tickers map in CITIES: KXHIGHNY → NYC, KXHIGHCHI → CHI
         for city_code, info in self.cities.items():
             series = info.get("series_ticker", "")
-            if series and ticker.startswith(series.replace("KXHIGH", "KXHIGH")):
+            if series and ticker.startswith(series):
                 return city_code
         return ""
 

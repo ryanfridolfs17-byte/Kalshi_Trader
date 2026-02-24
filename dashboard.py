@@ -439,6 +439,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # Accepts total_payout_cents (what Kalshi shows as "Total payout")
             ticker = payload.get("ticker")
             total_payout_cents = payload.get("total_payout_cents")
+            close_side = payload.get("side", "")  # Optional: disambiguate YES/NO on same ticker
             if not ticker or total_payout_cents is None:
                 self._send_json({"error": "Missing ticker or total_payout_cents"}, 400)
                 return
@@ -450,11 +451,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
             positions = risk.get("positions", [])
             pos = None
             pos_idx = None
-            for i, p in enumerate(positions):
-                if p.get("ticker") == ticker:
-                    pos = p
-                    pos_idx = i
-                    break
+            # Prefer exact (ticker, side) match if side was provided
+            if close_side:
+                for i, p in enumerate(positions):
+                    if p.get("ticker") == ticker and p.get("side") == close_side:
+                        pos = p
+                        pos_idx = i
+                        break
+            # Fallback: match by ticker only
+            if pos is None:
+                for i, p in enumerate(positions):
+                    if p.get("ticker") == ticker:
+                        pos = p
+                        pos_idx = i
+                        break
 
             if pos is None:
                 self._send_json({"error": f"Position {ticker} not found"}, 404)
