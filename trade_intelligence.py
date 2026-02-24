@@ -326,7 +326,9 @@ class TradeIntelligence:
                         # Don't wait until obs_high is inside the bucket — exit when
                         # temperature is approaching. This was missing and caused AUS B84.5
                         # (-$22.75) and DAL B77.5 (-$14.04) to bleed without exit signals.
-                        if is_today and side == "no" and obs_high is not None:
+                        # Only fire during peak heating hours (before 7 PM local). After 7 PM,
+                        # the daily high is set — temp is dropping, not approaching the bucket.
+                        if is_today and side == "no" and obs_high is not None and now_hour < 19:
                             gap_to_bucket = temp_low - obs_high
                             if now_hour >= 14 and 0 < gap_to_bucket <= 2:
                                 # After 2 PM, within 2°F of bucket floor — full exit
@@ -358,7 +360,7 @@ class TradeIntelligence:
                         # (from raw 1-min readings used for settlement) can be higher than
                         # the displayed value. If observed high is within 1°F of bucket floor,
                         # the REAL temp may already be inside the bucket.
-                        if is_today and side == "no" and obs_high is not None and now_hour >= 14:
+                        if is_today and side == "no" and obs_high is not None and 14 <= now_hour < 19:
                             if obs_high >= temp_low - config.ROUNDING_BUFFER_HARD_F and obs_high < temp_low:
                                 actions.append({
                                     "ticker": ticker, "action": "full_exit", "urgency": "high",
