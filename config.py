@@ -149,6 +149,9 @@ CASE3_GAP_THRESHOLDS = {
     11: 12,  # 11AM: 12°F (was 10°F — too aggressive, temps rise 15°F+ after 11 AM)
     10: 15,  # 10AM: 15°F — very early, need massive gap (new)
 }
+CASE3_COOLING_REQUIRED_BEFORE_HOUR = 14  # Before 2 PM local: require cooling evidence (temp declining from peak)
+                                         # This prevents CASE 3 firing on normal morning temps that will rise 15°F+.
+                                         # Only exception: cold front detected (current temp >= 3°F below today's high).
 CASE3_ENSEMBLE_VETO_GAP_LATE = 3       # 3PM+: ensemble mean within 3°F of bucket = veto
 CASE3_ENSEMBLE_VETO_GAP_DEFAULT = 5    # Before 3PM: ensemble mean within 5°F = veto
 

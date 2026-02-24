@@ -1105,6 +1105,36 @@ class TradeIntelligence:
         for CASE 1/3 (NO trades). CASE 2 callers should pass fresh=True
         to bypass cache entirely.
         """
+        result = self._fetch_todays_observations(city_code, fresh=fresh)
+        if result is None:
+            return None
+        return result["high"]
+
+    def get_temperature_trend(self, city_code):
+        """
+        Return today's high AND the latest observation temperature.
+        Used by CASE 3 to detect whether the daily peak has passed:
+        - If latest_temp << todays_high → cold front moved through, peak is set
+        - If latest_temp ≈ todays_high → still warming, peak NOT yet reached
+
+        Returns {"high": float, "latest": float, "cooling": bool, "drop": float} or None.
+        "cooling" is True when latest temp is ≥3°F below today's high (peak likely passed).
+        """
+        result = self._fetch_todays_observations(city_code, fresh=True)
+        if result is None:
+            return None
+        high = result["high"]
+        latest = result["latest"]
+        drop = high - latest
+        cooling = drop >= 3.0  # 3°F below peak → peak has passed
+        return {"high": high, "latest": latest, "cooling": cooling, "drop": drop}
+
+    def _fetch_todays_observations(self, city_code, fresh=False):
+        """
+        Internal: fetch all NWS observations since midnight local time.
+        Returns {"high": max_temp, "latest": most_recent_temp} or None.
+        Cached for 5 minutes (bypass with fresh=True).
+        """
         city = CITIES.get(city_code)
         if not city:
             return None
@@ -1114,12 +1144,12 @@ class TradeIntelligence:
         # Cache for 5 minutes (high temp can only increase, so stale = conservative)
         # CASE 2 (YES on current bucket) MUST bypass cache — temp rising out of
         # the bucket makes the stale reading dangerous for YES-side bets.
-        cache_key = f"high_{station}"
+        cache_key = f"obs_{station}"
         if not fresh and cache_key in self._obs_cache:
             cached = self._obs_cache[cache_key]
             age = (datetime.now() - cached["fetched_at"]).total_seconds()
             if age < 300:  # 5 min
-                return cached["temp"]
+                return cached["data"]
 
         try:
             # Query observations from midnight local time using the 'start' param.
@@ -1145,7 +1175,7 @@ class TradeIntelligence:
             features = data.get("features", [])
 
             local_date = datetime.now(tz).strftime("%Y-%m-%d")
-            todays_temps = []
+            todays_obs = []  # list of (utc_timestamp, temp_f)
 
             for obs in features:
                 props = obs.get("properties", {})
@@ -1160,15 +1190,23 @@ class TradeIntelligence:
                     temp_c = props.get("temperature", {}).get("value")
                     if temp_c is not None:
                         temp_f = round(temp_c * 9 / 5 + 32)
-                        todays_temps.append(temp_f)
+                        todays_obs.append((obs_utc, temp_f))
 
-            if todays_temps:
-                high = max(todays_temps)
+            if todays_obs:
+                high = max(t for _, t in todays_obs)
+                # NWS features are ordered newest-first
+                latest = todays_obs[0][1]
+                result = {"high": high, "latest": latest}
                 self._obs_cache[cache_key] = {
+                    "data": result,
+                    "fetched_at": datetime.now(),
+                }
+                # Also update legacy cache key for backward compatibility
+                self._obs_cache[f"high_{station}"] = {
                     "temp": high,
                     "fetched_at": datetime.now(),
                 }
-                return high
+                return result
 
         except Exception:
             pass

@@ -914,27 +914,51 @@ class Strategy:
                 }
 
         # CASE 3: High already BELOW the bucket's lower bound — graduated time thresholds
-        # Earlier detection = cheaper NO contracts = more profit.
-        # Thresholds tightened after DC 54.5 loss (3°F gap at 3PM was too aggressive).
+        # A confirmed outcome requires the daily peak to have ALREADY OCCURRED:
+        #   1) Cold front moved through → high was early morning, now cooling
+        #   2) Afternoon peak has passed → temp declining from diurnal max
+        # Before 2 PM, temperature is normally still RISING, so a gap doesn't mean
+        # "unreachable" — it just means "hasn't warmed up yet." Must detect cooling.
         # NWS rounding buffer: displayed high could be 1°F+ below actual raw reading
         temp_gap = temp_low - todays_high - config.ROUNDING_BUFFER_HARD_F
+
+        # COOLING GATE: Before 2 PM local, require evidence that the daily peak
+        # has already occurred (current temp declining from today's high).
+        # Without this, CASE 3 fires on normal morning temps that will rise 15°F+.
+        case3_cooling_ok = True
+        if local_hour < config.CASE3_COOLING_REQUIRED_BEFORE_HOUR:
+            trend = self.intel.get_temperature_trend(city_code)
+            if trend is None:
+                print(f"    [CASE3] {city_code} @ {local_hour}:00: no trend data, blocking pre-afternoon CASE 3")
+                case3_cooling_ok = False
+            elif not trend["cooling"]:
+                print(f"    [CASE3] {city_code} @ {local_hour}:00: temp NOT cooling "
+                      f"(high={trend['high']}°F, latest={trend['latest']}°F, drop={trend['drop']:.0f}°F < 3°F) "
+                      f"— peak not yet reached, blocking CASE 3")
+                case3_cooling_ok = False
+            else:
+                print(f"    [CASE3] {city_code} @ {local_hour}:00: cooling detected "
+                      f"(high={trend['high']}°F, latest={trend['latest']}°F, drop={trend['drop']:.0f}°F) "
+                      f"— cold front likely, proceeding with gap check")
+
         case3_triggered = False
-        for min_hour, min_gap in sorted(config.CASE3_GAP_THRESHOLDS.items(), reverse=True):
-            if local_hour >= min_hour and temp_gap > min_gap:
-                case3_triggered = True
-                print(f"    [CASE3] {city_code} gap check: obs_high={todays_high}°F, "
-                      f"bucket_floor={temp_low}°F, gap={temp_gap:.0f}°F > {min_gap}°F @ {local_hour}:00 local → triggered")
-                break
-        if not case3_triggered and temp_gap > 0:
-            # Log near-misses for debugging
-            applicable_gap = None
+        if case3_cooling_ok:
             for min_hour, min_gap in sorted(config.CASE3_GAP_THRESHOLDS.items(), reverse=True):
-                if local_hour >= min_hour:
-                    applicable_gap = min_gap
+                if local_hour >= min_hour and temp_gap > min_gap:
+                    case3_triggered = True
+                    print(f"    [CASE3] {city_code} gap check: obs_high={todays_high}°F, "
+                          f"bucket_floor={temp_low}°F, gap={temp_gap:.0f}°F > {min_gap}°F @ {local_hour}:00 local → triggered")
                     break
-            if applicable_gap is not None:
-                print(f"    [CASE3] {city_code} gap check: obs_high={todays_high}°F, "
-                      f"bucket_floor={temp_low}°F, gap={temp_gap:.0f}°F <= {applicable_gap}°F @ {local_hour}:00 → NOT triggered")
+            if not case3_triggered and temp_gap > 0:
+                # Log near-misses for debugging
+                applicable_gap = None
+                for min_hour, min_gap in sorted(config.CASE3_GAP_THRESHOLDS.items(), reverse=True):
+                    if local_hour >= min_hour:
+                        applicable_gap = min_gap
+                        break
+                if applicable_gap is not None:
+                    print(f"    [CASE3] {city_code} gap check: obs_high={todays_high}°F, "
+                          f"bucket_floor={temp_low}°F, gap={temp_gap:.0f}°F <= {applicable_gap}°F @ {local_hour}:00 → NOT triggered")
 
         # ENSEMBLE SANITY CHECK: The gap thresholds above are static and don't
         # account for warm/cold fronts. Cross-reference the ensemble forecast —
