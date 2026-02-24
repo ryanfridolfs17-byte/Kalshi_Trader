@@ -130,14 +130,9 @@ Weather markets settle on NWS Daily Climate Reports from these specific stations
 | Deposited | $100.00 |
 | Current Balance | $47.93 |
 | **Account P&L** | **-$52.07** |
-| Total Trades | 62 |
-| Wins / Losses | 35W / 27L |
-| **Win Rate** | **56.5%** |
-| Avg Win | $1.68 |
-| Avg Loss | $4.41 (2.6x avg win) |
-| Total Won | $58.80 |
-| Total Lost | $118.97 |
-| Total Fees | $12.63 |
+| Total Trades | 67 |
+| Wins / Losses | 37W / 30L |
+| **Win Rate** | **55.2%** |
 | Biggest Win | $8.87 (DAL T77 Feb 18) |
 | Biggest Loss | -$22.75 (AUS B84.5 Feb 17) |
 
@@ -170,10 +165,9 @@ Weather markets settle on NWS Daily Climate Reports from these specific stations
 | Feb 21 | 12W/5L | -$8.60 | -$52.04 |
 | Feb 22 | 3W/2L | -$1.21 | -$53.25 |
 | Feb 23 | 8W/10L | -$6.92 | -$60.17 |
-| Feb 24 | 0W/5L | -$31.81* | -$52.07** |
+| Feb 24 | 2W/3L | +$3.70 | -$56.47* |
 
-*Feb 24: 5 NO positions ($31.81 total) placed by false CASE 3 "confirmed outcomes" at 11-12 PM. All were ensemble-predicted to lose. Manually exited. Root cause: CASE 3 was classified as CONFIRMED_OUTCOME with max sizing + risk bypasses, but temp was still rising.
-**Balance recovered to $47.93 after manual exits (partial recovery vs letting positions settle as losses).
+*Feb 24: 5 NO positions ($31.81 total) placed by false CASE 3 "confirmed outcomes" at 11-12 PM ET. Manually exited all at ~2 PM ET. MIA B67.5 NO sold at 85c (bought 51c, +$5.10 win). ATL/SATX/NOLA small losses. Net +$3.70 gross before fees. Root cause: CASE 3 was classified as CONFIRMED_OUTCOME with max sizing + risk bypasses, but temp was still rising. Fixed: CASE 2/3 demoted to STRONG verdict, cooling gate added, 7 veto bugs fixed. Balance: $47.93.
 
 ## Risk Parameters (Current Values) — RECOVERY MODE
 
