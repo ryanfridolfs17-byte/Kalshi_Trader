@@ -146,7 +146,8 @@ CASE3_GAP_THRESHOLDS = {
     14: 6,   # 2PM: 6°F (unchanged)
     13: 7,   # 1PM: 7°F (unchanged)
     12: 8,   # Noon: 8°F (unchanged)
-    11: 10,  # 11AM: 10°F (unchanged, also used as CASE 1 gate now at 10AM)
+    11: 12,  # 11AM: 12°F (was 10°F — too aggressive, temps rise 15°F+ after 11 AM)
+    10: 15,  # 10AM: 15°F — very early, need massive gap (new)
 }
 CASE3_ENSEMBLE_VETO_GAP_LATE = 3       # 3PM+: ensemble mean within 3°F of bucket = veto
 CASE3_ENSEMBLE_VETO_GAP_DEFAULT = 5    # Before 3PM: ensemble mean within 5°F = veto
