@@ -138,7 +138,7 @@ All values in `config.py`. Cents = 100 per $1.00.
 - **NO ceiling**: 60¢ (`NO_SIDE_MAX_PRICE_CENTS`). **NO sizing**: ≥50¢ gets 40% normal.
 - **Per-city per-model bias correction**: Learned from `quant_analytics.get_model_bias()` (5+ dp). Defaults: DEN +4°F, Gulf +3°F, desert +2°F.
 - **Next-day guard**: 1.5x edge threshold, 50% sizing. Confirmed outcomes exempt.
-- **Same-cycle cooldown exempt**. 6-hour same-ticker re-entry cooldown (CASE 1/3 exempt).
+- **Same-cycle cooldown exempt**. 6-hour same-ticker re-entry cooldown (CASE 1 exempt only — CASE 3 returns STRONG, not CONFIRMED_OUTCOME).
 - **Bias streak**: 3+ days same direction → immediate adjustment.
 
 ### Confirmed Outcome Rules

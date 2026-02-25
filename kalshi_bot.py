@@ -458,7 +458,9 @@ def main():
                     if parsed_quick:
                         city = parsed_quick.get("city_code", "")
                         city_exp = risk.state.get("city_exposure", {}).get(city, 0)
-                        if city_exp >= config.MAX_PER_CITY_CENTS:
+                        balance = risk.state.get("balance_cents", config.MAX_TOTAL_EXPOSURE_CENTS)
+                        city_cap = max(int(balance * config.MAX_PER_CITY_PCT), config.MAX_PER_CITY_CENTS)
+                        if city_exp >= city_cap:
                             city_is_maxed = True
                             # Still evaluate tickers we hold (for edge visibility)
                             held_tickers = {p.get("ticker") for p in risk.state.get("positions", [])}
@@ -466,7 +468,7 @@ def main():
                                 skip_reasons["City maxed out"] = skip_reasons.get("City maxed out", 0) + 1
                                 scan_entries.append({
                                     "ticker": ticker, "city": city, "category": "city_maxed",
-                                    "reason": f"{city} exposure ${city_exp/100:.2f} >= ${config.MAX_PER_CITY_CENTS/100:.2f}",
+                                    "reason": f"{city} exposure ${city_exp/100:.2f} >= ${city_cap/100:.2f}",
                                 })
                                 continue
 
@@ -700,7 +702,7 @@ def main():
                         continue
 
                     # 6-hour same-ticker re-entry cooldown — prevents re-entering a thesis
-                    # that already lost/exited. Confirmed outcomes (CASE 1/3) are exempt.
+                    # that already lost/exited. CASE 1 (CONFIRMED_OUTCOME) exempt only.
                     reentry_hours = getattr(config, 'SAME_TICKER_REENTRY_HOURS', 6)
                     if reentry_hours > 0 and signal.get("confirmation_verdict") != "CONFIRMED_OUTCOME":
                         reentry_cutoff = (datetime.now() - timedelta(hours=reentry_hours)).isoformat()

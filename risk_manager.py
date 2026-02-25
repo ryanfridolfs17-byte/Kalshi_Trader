@@ -108,7 +108,7 @@ class RiskManager:
         if available - cost < reserve_cents:
             if not is_confirmed and edge < 0.20:  # Override for exceptional edge or confirmed outcomes
                 return False, (f"Liquidity reserve: ${available/100:.2f} available, "
-                               f"trade costs ${cost/100:.2f}, need ${reserve_cents/100:.2f} reserve (25% of bankroll)")
+                               f"trade costs ${cost/100:.2f}, need ${reserve_cents/100:.2f} reserve ({int(config.LIQUIDITY_RESERVE_PCT*100)}% of bankroll)")
 
         # 3. Max positions (count only active, pending are settling out)
         # Confirmed outcomes bypass — near-guaranteed wins always allowed
