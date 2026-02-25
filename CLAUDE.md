@@ -122,10 +122,11 @@ Weather uses `signal_confirmer.py` (5-source voting: 4 deterministic models + NW
 - **`maker_strategy.py`** — v4.0 maker execution engine. Posts limit orders at fair_value - spread_buffer (default 2¢). Manages order lifecycle: placement, fill tracking, stale order cancellation (30min), adverse selection detection. State persisted in `maker_orders.json`.
 - **`trade_analyzer.py`** — End-of-day post-mortem analysis. Analyzes settled trades: entry edge vs outcome, per-model accuracy scorecard, guard effectiveness review, exit timing analysis, Kelly sizing review. Called on day change, writes to `trade_analysis.json`.
 - **`dashboard.py`** — BaseHTTPRequestHandler web dashboard (not Flask) with health monitoring, email alerts, position/trade display. Runs in a daemon thread. Key API endpoints: `/api/health`, `/api/state`, `/api/force-exit` (places market sell orders via shared KalshiClient), `/api/close-position` (records manual exits), `/api/resume`, `/api/sync-positions`, `/api/clear-failed`, `/api/reset`. The KalshiClient instance is shared from `kalshi_bot.py` via `set_kalshi_client()` for the force-exit endpoint.
+- **`self_improver.py`** — Weekly self-improvement engine (Phase 4). Runs Sunday 11 PM ET. Measures weekly performance (Sharpe, drawdown, win rate, edge realization), diagnoses shortfalls against targets, proposes max 3 parameter adjustments (within 25% change bounds), replay-backtests against actual trades, deploys overrides only if improvement ≥ 5%. Overrides written to `config_overrides.json` (7-day expiry, auto-revert). Never adjusts risk limits (`DAILY_LOSS_LIMIT_CENTS`, `MAX_TOTAL_EXPOSURE_PCT`, etc.) — only sizing/timing parameters.
 
 ### Data Files (Runtime State)
 
-All state is persisted as JSON in `STATE_DIR` (defaults to `.`, set to `/data` on Railway for volume persistence): `trade_history.json`, `risk_state.json`, `pnl_history.json`, `backtest_results.json`, `edge_attribution.json`, `bot_status.json`, `pending_trades.json`, `scan_log.json` (per-market evaluation log, 7-day rolling retention, exposed via `/api/state`), `maker_orders.json` (tracked open maker orders), `model_accuracy.json` (per-model forecast error tracking), `daily_reports.json` (daily P&L summaries), `trade_analysis.json` (post-settlement trade analysis), `bias_history.json` (NWS station forecast bias history), `seasonal_weights.json` (learned seasonal sizing adjustments), `forecast_log.json` (daily deterministic model predictions for all 20 cities — reconciled nightly against NWS actuals to build model accuracy data without waiting for trades to settle).
+All state is persisted as JSON in `STATE_DIR` (defaults to `.`, set to `/data` on Railway for volume persistence): `trade_history.json`, `risk_state.json`, `pnl_history.json`, `backtest_results.json`, `edge_attribution.json`, `bot_status.json`, `pending_trades.json`, `scan_log.json` (per-market evaluation log, 7-day rolling retention, exposed via `/api/state`), `maker_orders.json` (tracked open maker orders), `model_accuracy.json` (per-model forecast error tracking), `daily_reports.json` (daily P&L summaries), `trade_analysis.json` (post-settlement trade analysis), `bias_history.json` (NWS station forecast bias history), `seasonal_weights.json` (learned seasonal sizing adjustments), `forecast_log.json` (daily deterministic model predictions for all 20 cities — reconciled nightly against NWS actuals to build model accuracy data without waiting for trades to settle), `config_overrides.json` (self-improvement parameter overrides, 7-day expiry), `improvement_log.json` (weekly self-improvement review history, last 52 entries).
 
 ### Key Design Decisions
 
@@ -492,9 +493,11 @@ MC_PERCENTILE = 0.95
 MC_MIN_HISTORICAL_TRADES = 30
 ```
 
-### Phase 4: Weekly Self-Improvement (`self_improver.py`)
+### Phase 4: Weekly Self-Improvement (`self_improver.py`) — DONE
 
-**Goal:** Bot recursively evaluates and improves its own parameters weekly. Runs Sunday 11 PM.
+**Implemented.** Bot recursively evaluates and improves its own parameters weekly. Runs Sunday 11 PM ET.
+
+**Pipeline:** `_measure_performance()` → `_find_shortfalls()` → `_diagnose_underperformance()` → `_replay_backtest()` → `_apply_overrides()` (if improvement ≥ 5%)
 
 **Performance targets:**
 | Target | Threshold |
@@ -503,22 +506,27 @@ MC_MIN_HISTORICAL_TRADES = 30
 | Max drawdown | ≤ 15% |
 | Win rate | ≥ 55% |
 | Edge realization (realized/predicted) | ≥ 70% |
-| Scorecard first-pass rate | ≥ 80% |
-| Maker fill rate | ≥ 40% |
 
-**Cycle:** measure → score vs targets → diagnose underperformance → propose parameter adjustments → backtest against past week → deploy only if backtested improvement > 5%
+**Safe parameters (auto-adjustable with bounds):**
+| Parameter | Min | Max |
+|-----------|-----|-----|
+| `MIN_EDGE` | 0.05 | 0.20 |
+| `MAKER_SPREAD_BUFFER_CENTS` | 1 | 5 |
+| `MAX_MODEL_DIVERGENCE_F` | 3.0 | 6.0 |
+| `NEXT_DAY_SIZING_MULTIPLIER` | 0.30 | 0.70 |
+| `ROUNDING_BUFFER_SOFT_F` | 1.0 | 3.0 |
+| `PRE_SETTLEMENT_SIZING_MULT` | 0.50 | 1.0 |
+| `NO_SIDE_SIZING_MULTIPLIER` | 0.30 | 0.80 |
+| `NO_SIDE_MAX_PRICE_CENTS` | 40 | 70 |
+
+**NEVER auto-adjusted:** `DAILY_LOSS_LIMIT_CENTS`, `MAX_TOTAL_EXPOSURE_PCT`, `MAX_PER_CITY_PCT`, `MAX_PER_TICKER_CENTS`, `MAX_CONTRACTS_PER_TICKER`, `KILL_SWITCH_*`, `CASE2_ENABLED`, `FEE_ADJUSTED_MIN_EDGE`, `TOTAL_DEPOSITS_CENTS`, `CONSECUTIVE_LOSS_PAUSE`
 
 **Safety constraints:**
-- Max 3 parameter changes per week
-- Max 25% change per parameter per week
-- Changes must validate in backtest before deployment
-- Never adjust risk limits upward (only tighten or relax sizing/timing)
+- Max 3 parameter changes per week (`SELF_IMPROVE_MAX_PROPOSALS`)
+- Max 25% change per parameter per week (`SELF_IMPROVE_MAX_CHANGE_PCT`)
+- Replay backtest against actual trades must show ≥ 5% improvement (`SELF_IMPROVE_MIN_IMPROVEMENT_PCT`)
+- Minimum 10 trades in lookback window (`SELF_IMPROVE_MIN_TRADES`)
+- Overrides written to `config_overrides.json` (NOT `config.py`), expire after 7 days and auto-revert
+- Loaded at bot startup via `load_config_overrides()`, applied via `setattr(config, param, value)`
 
-**Config additions:**
-```python
-WEEKLY_REVIEW_DAY = 6  # Sunday
-WEEKLY_REVIEW_HOUR = 23  # 11 PM
-MAX_PARAM_ADJUSTMENTS_PER_WEEK = 3
-MAX_PARAM_CHANGE_PCT = 0.25
-MIN_BACKTEST_IMPROVEMENT = 0.05
-```
+**Diagnosis priority:** (1) Edge realization → raise `MIN_EDGE`, (2) Win rate → reduce `NO_SIDE_SIZING_MULTIPLIER` or widen `ROUNDING_BUFFER_SOFT_F`, (3) Drawdown → reduce `PRE_SETTLEMENT_SIZING_MULT`, (4) Sharpe → widen `MAKER_SPREAD_BUFFER_CENTS`
