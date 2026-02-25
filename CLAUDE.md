@@ -124,7 +124,11 @@ All values in `config.py`. Cents = 100 per $1.00.
 | `MAX_PER_TICKER_CENTS` | $8.00 | Enforced always |
 | `MAX_CONTRACTS_PER_TICKER` | 15 | Enforced always |
 | `MAX_OPEN_POSITIONS` | 6 | Confirmed outcomes bypass |
+| `MAX_CORRELATED_POSITIONS` | 2 (3 for confirmed) | Separate caps for normal vs CASE 1 |
+| `MAX_DAILY_CITY_SPEND_CENTS` | $12.00 | Cumulative daily per-city (distinct from instantaneous MAX_PER_CITY_PCT). Confirmed outcomes bypass. |
 | `LIQUIDITY_RESERVE_PCT` | 20% | |
+| `TRADE_COOLDOWN` | 120 sec | Matches 2min scan interval. Same-cycle exempt. |
+| `SETTLEMENT_PROXIMITY_HOURS` | 2 hrs | No new positions. 20% edge overrides. |
 | Quarter-Kelly | Kelly/4 × confirmation | |
 
 ### Strategy Guards
@@ -138,10 +142,14 @@ All values in `config.py`. Cents = 100 per $1.00.
 - **Bias streak**: 3+ days same direction → immediate adjustment.
 
 ### Confirmed Outcome Rules
-- **CASE 1** (high exceeded bucket): `CONFIRMED_OUTCOME`. Bypasses most caps. Min 10 AM local. +1°F rounding buffer.
-- **CASE 2** (YES on current bucket): **DISABLED** (`CASE2_ENABLED=False`). Returns STRONG when re-enabled.
-- **CASE 3** (gap too large for bucket): Returns STRONG. Cooling gate mandatory before 2 PM. Graduated gaps: 10AM:15°F → 4PM+:2°F. Ensemble veto mandatory.
-- **Confirmed bypass**: CASE 1 bypasses total/city/position caps. Still respects: daily loss, per-ticker, contracts, correlated, cooldown.
+- **CASE 1** (high exceeded bucket): `CONFIRMED_OUTCOME`. Min 10 AM local. Rounding: `todays_high > temp_high + 1°F` (obs must exceed strike by 1°F to confirm).
+- **CASE 2** (YES on current bucket): **DISABLED** (`CASE2_ENABLED=False`). Returns STRONG when re-enabled. Ensemble veto: `mean > ceiling+2°F` = block. **No ensemble = blocked.**
+- **CASE 3** (gap too large for bucket): Returns STRONG. Gap reduced by 1°F (real temp could be higher than NWS display).
+  - **Cooling gate (MANDATORY before 2 PM):** `latest_temp <= todays_high - 3°F` (evidence peak has passed). Uses `get_temperature_trend()`. Without cooling evidence, CASE 3 blocked.
+  - **Graduated gaps:** 10AM:15°F, 11AM:12°F, 12PM:8°F, 1PM:7°F, 2PM:6°F, 3PM:4°F, 4PM+:2°F (`CASE3_GAP_THRESHOLDS`)
+  - **Ensemble veto (MANDATORY):** 3PM+: mean within 3°F of bucket floor = veto. Earlier: 5°F. **No ensemble = blocked.**
+- **Confirmed bypass (CASE 1 only)**: Bypasses total/city/daily-city-spend/position caps. Still respects: daily loss, per-ticker, contracts, correlated (cap=3), cooldown.
+- **SP500 convention**: Uses `city_code="SP500"` in risk manager for per-market exposure tracking. New market types must follow this pattern.
 
 ### Exit Logic (Thesis-First)
 | Priority | Trigger | Action |
@@ -169,6 +177,16 @@ Weekly (Sun 11 PM). Safe params: MIN_EDGE, MAKER_SPREAD_BUFFER_CENTS, MAX_MODEL_
 
 ### Dashboard Force-Exit
 `POST /api/force-exit` — `{"ticker": "KXHIGH..."}` or `{"ticker": "all"}`. Uses shared KalshiClient via `set_kalshi_client()`. Price floor: `yes_price: 1` or `no_price: 1`.
+
+### Model Accuracy Flow
+`strategy.py` fetches weights+biases → `weather_engine.get_temperature_distribution()` applies per-model bias correction then accuracy weights in `_build_distribution()`. On settlement: `trade_intelligence._update_model_accuracy_from_settlement()` → `quant_analytics.record_model_accuracy()` → `model_accuracy.json`. Daily: `log_daily_forecasts()` logs all 20 cities → `reconcile_forecast_log()` records accuracy (builds data 10x faster than settlements alone).
+
+### Infrastructure Invariants (landmines if refactoring)
+- **Dashboard outside restart loop**: `start_dashboard_server()` in `__main__` block, NOT inside `main()`. Prevents port binding crash loop.
+- **Python 3.12 import alias**: `import traceback as _tb` inside `main()` to avoid shadowing global `traceback`.
+- **Timezone-aware everywhere**: `datetime.now(timezone.utc)`, `_parse_ts()` helper handles mixed naive/aware.
+- **Cache key split**: `get_latest_observation()` uses `latest_{station}`, `_fetch_todays_observations()` uses `obs_{station}`. Different formats.
+- **Open-Meteo model names**: `gfs_seamless`, `ecmwf_ifs025`, `icon_seamless_eps`, `gem_global`. Silently renamed Feb 24 — returns None on wrong names (zero trades, no error logged).
 
 ## Future Roadmap
 - **Phase 2**: Becker dataset integration (400M+ trades, calibration surface, optimal timing)
