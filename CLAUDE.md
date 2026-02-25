@@ -2,6 +2,57 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Workflow Orchestration
+
+### 1. Plan Mode Default
+- Enter plan mode for ANY non-trivial task (3+ steps or architectural decisions)
+- If something goes sideways, STOP and re-plan immediately — don't keep pushing
+- Use plan mode for verification steps, not just building
+- Write detailed specs upfront to reduce ambiguity
+
+### 2. Subagent Strategy
+- Use subagents liberally to keep main context window clean
+- Offload research, exploration, and parallel analysis to subagents
+- For complex problems, throw more compute at it via subagents
+- One task per subagent for focused execution
+
+### 3. Self-Improvement Loop
+- After ANY correction from the user: update `tasks/lessons.md` with the pattern
+- Write rules for yourself that prevent the same mistake
+- Ruthlessly iterate on these lessons until mistake rate drops
+- Review lessons at session start for relevant project
+
+### 4. Verification Before Done
+- Never mark a task complete without proving it works
+- Diff behavior between main and your changes when relevant
+- Ask yourself: "Would a staff engineer approve this?"
+- Run tests, check logs, demonstrate correctness
+
+### 5. Demand Elegance (Balanced)
+- For non-trivial changes: pause and ask "is there a more elegant way?"
+- If a fix feels hacky: "Knowing everything I know now, implement the elegant solution"
+- Skip this for simple, obvious fixes — don't over-engineer
+- Challenge your own work before presenting it
+
+### 6. Autonomous Bug Fixing
+- When given a bug report: just fix it. Don't ask for hand-holding
+- Point at logs, errors, failing tests — then resolve them
+- Zero context switching required from the user
+- Go fix failing CI tests without being told how
+
+### Task Management
+1. **Plan First:** Write plan to `tasks/todo.md` with checkable items
+2. **Verify Plan:** Check in before starting implementation
+3. **Track Progress:** Mark items complete as you go
+4. **Explain Changes:** High-level summary at each step
+5. **Document Results:** Add review section to `tasks/todo.md`
+6. **Capture Lessons:** Update `tasks/lessons.md` after corrections
+
+### Core Principles
+- **Simplicity First:** Make every change as simple as possible. Impact minimal code.
+- **No Laziness:** Find root causes. No temporary fixes. Senior developer standards.
+- **Minimal Impact:** Changes should only touch what's necessary. Avoid introducing bugs.
+
 ## Git & Deployment
 
 - **Working branch:** `master` — day-to-day development happens here.
@@ -383,3 +434,91 @@ All values are set in `config.py`. Values in cents (100 cents = $1.00).
 - ~~**DST timing logic**~~: DONE — Replaced hardcoded UTC offsets with `zoneinfo.ZoneInfo` in strategy.py, trade_intelligence.py, and risk_manager.py.
 - **Dead bracket scalping**: Fee drag too high on 1-3¢ contracts (floor is 5¢).
 - **Certainty bias exploitation**: Needs multi-contract position management.
+
+## v4.0 Roadmap — Remaining Phases
+
+Phase 1 (trade_scorecard.py, maker_strategy.py) is DONE and live. The following phases are next.
+
+### Phase 2: Becker Dataset Integration (`becker_analytics.py`, `calibration_timer.py`)
+
+**Goal:** Download and analyze the Becker prediction market dataset (400M+ trades, Kalshi + Polymarket, 2020–present) to extract empirical calibration data for weather markets specifically.
+
+**Setup:**
+```bash
+pip install duckdb pandas pyarrow matplotlib --break-system-packages
+git clone https://github.com/Jon-Becker/prediction-market-analysis
+cd prediction-market-analysis
+make setup  # Downloads 36GB compressed, extracts to data/
+```
+
+**`becker_analytics.py` — Key methods:**
+- `get_weather_trades()` — Filter to Kalshi weather tickers (pattern: `KXHIGH{city}-{date}-T{temp}`)
+- `get_calibration_by_price(bucket_width=5)` — Implied vs realized probability at each price level
+- `get_calibration_surface(hours_buckets=[168,72,48,24,12,6])` — 2D surface: mispricing by (price, time_to_settlement). Key hypothesis: longshot bias is strongest far from settlement
+- `get_maker_taker_edge()` — Separate weather trades by maker/taker, compute excess returns
+- `get_return_distribution(strategy_filter)` — Historical return distribution for Monte Carlo input
+
+Uses DuckDB for fast columnar queries over Parquet files without loading into memory.
+
+**`calibration_timer.py` — Optimal entry timing:**
+- Returns multiplier (0.0–1.5) for any (price, hours_to_settlement) pair
+- Default multipliers already in trade_scorecard.py: >72h:0.7x, 48-24h:1.2x, 24-12h:1.0x, 12-6h:0.8x, <6h:0.5x
+- After Becker analysis: replace defaults with measured mispricing at each bucket
+- Feeds into scorecard criterion #4 (Timing Window)
+
+### Phase 3: Empirical Kelly with Monte Carlo (`monte_carlo_sizing.py`)
+
+**Goal:** Replace quarter-Kelly heuristic with uncertainty-aware sizing using empirical return distributions from the Becker dataset.
+
+**`monte_carlo_sizing.py` — Process:**
+1. Take historical return distribution from `becker_analytics.get_return_distribution()`
+2. Run 10,000 Monte Carlo simulations resampling returns in random order
+3. For each sim: track equity curve, record max drawdown
+4. Find position fraction keeping 95th percentile drawdown under 20%
+5. Uncertainty haircut: `f_empirical = f_kelly × (1 - CV_edge)` where CV = std/mean of edge estimates
+
+**Fallback logic:**
+- ≥30 historical trades → full empirical Kelly
+- <30 trades → empirical Kelly with extra 0.5x haircut for small sample
+- No historical data → quarter-Kelly (current behavior) with CV-based haircut
+
+**Integration:** Replaces `_kelly_size()` in strategy.py. Feeds into scorecard criterion #7.
+
+**Config additions:**
+```python
+MC_MAX_DRAWDOWN_PCT = 0.20
+MC_N_SIMULATIONS = 10000
+MC_PERCENTILE = 0.95
+MC_MIN_HISTORICAL_TRADES = 30
+```
+
+### Phase 4: Weekly Self-Improvement (`self_improver.py`)
+
+**Goal:** Bot recursively evaluates and improves its own parameters weekly. Runs Sunday 11 PM.
+
+**Performance targets:**
+| Target | Threshold |
+|--------|-----------|
+| Weekly Sharpe | ≥ 1.5 |
+| Max drawdown | ≤ 15% |
+| Win rate | ≥ 55% |
+| Edge realization (realized/predicted) | ≥ 70% |
+| Scorecard first-pass rate | ≥ 80% |
+| Maker fill rate | ≥ 40% |
+
+**Cycle:** measure → score vs targets → diagnose underperformance → propose parameter adjustments → backtest against past week → deploy only if backtested improvement > 5%
+
+**Safety constraints:**
+- Max 3 parameter changes per week
+- Max 25% change per parameter per week
+- Changes must validate in backtest before deployment
+- Never adjust risk limits upward (only tighten or relax sizing/timing)
+
+**Config additions:**
+```python
+WEEKLY_REVIEW_DAY = 6  # Sunday
+WEEKLY_REVIEW_HOUR = 23  # 11 PM
+MAX_PARAM_ADJUSTMENTS_PER_WEEK = 3
+MAX_PARAM_CHANGE_PCT = 0.25
+MIN_BACKTEST_IMPROVEMENT = 0.05
+```
