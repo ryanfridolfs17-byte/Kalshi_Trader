@@ -408,7 +408,27 @@ BACKTEST_RESULTS_FILE = os.path.join(STATE_DIR, "backtest_results.json")
 SCAN_LOG_FILE = os.path.join(STATE_DIR, "scan_log.json")
 MAKER_ORDERS_FILE = os.path.join(STATE_DIR, "maker_orders.json")
 FORECAST_LOG_FILE = os.path.join(STATE_DIR, "forecast_log.json")
+CONFIG_OVERRIDES_FILE = os.path.join(STATE_DIR, "config_overrides.json")
+IMPROVEMENT_LOG_FILE = os.path.join(STATE_DIR, "improvement_log.json")
 LOG_LEVEL = "DEBUG"  # "DEBUG" for verbose output
+
+# ═══════════════════════════════════════════════════════
+# WEEKLY SELF-IMPROVEMENT ENGINE (Phase 4)
+# ═══════════════════════════════════════════════════════
+SELF_IMPROVE_ENABLED = True
+SELF_IMPROVE_DAY = 6              # 0=Mon, 6=Sun
+SELF_IMPROVE_HOUR_ET = 23         # 11 PM ET
+SELF_IMPROVE_LOOKBACK_DAYS = 7
+SELF_IMPROVE_MAX_PROPOSALS = 3
+SELF_IMPROVE_MAX_CHANGE_PCT = 0.25
+SELF_IMPROVE_MIN_IMPROVEMENT_PCT = 5
+SELF_IMPROVE_MIN_TRADES = 10
+
+# Performance targets
+SELF_IMPROVE_TARGET_SHARPE = 1.5
+SELF_IMPROVE_TARGET_MAX_DD_PCT = 0.15
+SELF_IMPROVE_TARGET_WIN_RATE = 0.55
+SELF_IMPROVE_TARGET_EDGE_REALIZATION = 0.70
 
 # ═══════════════════════════════════════════════════════
 # TRADE SCORECARD THRESHOLDS (v4.0)

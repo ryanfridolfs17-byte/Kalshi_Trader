@@ -151,6 +151,15 @@ def main():
     scorecard = TradeScorecard(kalshi_client=client, risk_manager=risk)
     maker = MakerStrategy(kalshi_client=client, risk_manager=risk)
 
+    # Load self-improvement config overrides (if any active)
+    try:
+        from self_improver import load_config_overrides
+        overrides = load_config_overrides()
+        if overrides:
+            print(f"  [SELF-IMPROVE] {len(overrides)} parameter override(s) active")
+    except Exception as e:
+        print(f"  [SELF-IMPROVE] Could not load overrides: {e}")
+
     trade_log = _load_trade_log()
 
     # ─── RECONCILE WITH EXCHANGE ───
@@ -281,6 +290,7 @@ def main():
     last_report_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     last_analysis_hour = -1  # Track post-settlement re-analysis
     last_forecast_log_date = None  # Track daily forecast logging
+    last_weekly_review_date = None  # Track weekly self-improvement review
     while True:
         try:
             cycle += 1
@@ -368,6 +378,19 @@ def main():
                     reconcile_forecast_log(strategy.quant)
                 except Exception as e:
                     print(f"  [FORECAST LOG] Error reconciling: {e}")
+
+            # Weekly self-improvement review (Sunday 11 PM ET)
+            if (config.SELF_IMPROVE_ENABLED and
+                    current_hour_et == config.SELF_IMPROVE_HOUR_ET and
+                    datetime.now(ZoneInfo("America/New_York")).weekday() == config.SELF_IMPROVE_DAY and
+                    last_weekly_review_date != today_str):
+                try:
+                    from self_improver import run_weekly_review
+                    run_weekly_review()
+                    last_weekly_review_date = today_str
+                except Exception as e:
+                    print(f"  [SELF-IMPROVE] Error: {e}")
+                    last_weekly_review_date = today_str  # Don't retry every cycle
 
             # Check for dashboard-approved pending trades
             _process_approved_trades(client, risk, trade_log)
