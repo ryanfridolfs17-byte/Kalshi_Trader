@@ -2595,24 +2595,55 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
         except Exception:
             pass  # If positions fetch fails, positions_fetched stays False
 
-        # Group fills by ticker
-        ticker_flows = {}  # ticker → {buy_cost, sell_revenue}
+        # Group fills by ticker, then process chronologically with pairing model
+        # (matches pnl_reconciliation.py logic — proven correct to the penny)
+        from collections import defaultdict
+        ticker_fill_lists = defaultdict(list)
         for fill in all_fills:
             ticker = fill.get("ticker", "")
-            if not ticker:
-                continue
-            if ticker not in ticker_flows:
-                ticker_flows[ticker] = {"buy_cost": 0, "sell_revenue": 0}
+            if ticker:
+                ticker_fill_lists[ticker].append(fill)
 
-            action = fill.get("action", "")
-            side = fill.get("side", "")
-            count = fill.get("count", 0)
-            price = fill.get("yes_price", 0) if side == "yes" else fill.get("no_price", 0)
-
-            if action == "buy":
-                ticker_flows[ticker]["buy_cost"] += price * count
-            elif action == "sell":
-                ticker_flows[ticker]["sell_revenue"] += price * count
+        ticker_flows = {}  # ticker → {total_cost, pair_revenue, yes_held, no_held}
+        for ticker, fills in ticker_fill_lists.items():
+            # Sort chronologically — order matters for pairing sells with held contracts
+            fills.sort(key=lambda f: f.get("created_time", ""))
+            yes_held = 0
+            no_held = 0
+            total_cost = 0
+            pair_revenue = 0
+            for f in fills:
+                count = f.get("count", 0)
+                action = f.get("action", "")
+                side = f.get("side", "")
+                if action == "buy":
+                    if side == "yes":
+                        yes_held += count
+                        total_cost += f.get("yes_price", 0) * count
+                    else:
+                        no_held += count
+                        total_cost += f.get("no_price", 0) * count
+                elif action == "sell":
+                    # Selling YES pairs with held NO contracts (and vice versa)
+                    # Each pair yields 100c (YES + NO = $1.00)
+                    if side == "yes":
+                        can_pair = min(count, no_held)
+                        excess = count - can_pair
+                        total_cost += f.get("yes_price", 0) * count
+                        pair_revenue += can_pair * 100
+                        no_held -= can_pair
+                        yes_held += excess
+                    elif side == "no":
+                        can_pair = min(count, yes_held)
+                        excess = count - can_pair
+                        total_cost += f.get("no_price", 0) * count
+                        pair_revenue += can_pair * 100
+                        yes_held -= can_pair
+                        no_held += excess
+            ticker_flows[ticker] = {
+                "total_cost": total_cost, "pair_revenue": pair_revenue,
+                "yes_held": yes_held, "no_held": no_held,
+            }
 
         # Build settlement revenue lookup
         settle_rev = {}  # ticker → revenue
@@ -2648,13 +2679,13 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
                 if not positions_fetched:
                     continue  # Positions fetch failed, can't determine
 
-            buy_cost = flows["buy_cost"]
-            sell_revenue = flows["sell_revenue"]
+            total_cost = flows["total_cost"]
+            pair_revenue = flows["pair_revenue"]
             settlement_revenue = settle_rev.pop(ticker, 0)
 
-            ticker_pnl = sell_revenue + settlement_revenue - buy_cost
-            total_invested += buy_cost
-            total_returned += sell_revenue + settlement_revenue
+            ticker_pnl = pair_revenue + settlement_revenue - total_cost
+            total_invested += total_cost
+            total_returned += pair_revenue + settlement_revenue
 
             if ticker_pnl > 0:
                 wins += 1
@@ -2670,7 +2701,7 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
                 date_pnl[market_date]["pnl_cents"] += ticker_pnl
                 date_pnl[market_date]["tickers"].append({
                     "ticker": ticker, "pnl_cents": ticker_pnl,
-                    "buy_cost": buy_cost, "sell_revenue": sell_revenue,
+                    "total_cost": total_cost, "pair_revenue": pair_revenue,
                     "settlement_revenue": settlement_revenue,
                 })
                 if ticker_pnl > 0:
@@ -2703,9 +2734,9 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
             # Check if settlement is from today using the settle_ts field
             settle_ts = s.get("settled_time", "") or s.get("settle_ts", "") or ""
             if settle_ts and today_str in settle_ts:
-                buy_cost = ticker_flows.get(sticker, {}).get("buy_cost", 0)
-                sell_revenue_s = ticker_flows.get(sticker, {}).get("sell_revenue", 0)
-                t_pnl = sell_revenue_s + revenue - buy_cost
+                t_cost = ticker_flows.get(sticker, {}).get("total_cost", 0)
+                p_rev = ticker_flows.get(sticker, {}).get("pair_revenue", 0)
+                t_pnl = p_rev + revenue - t_cost
                 today_pnl += t_pnl
                 if t_pnl > 0:
                     today_wins += 1
@@ -2743,15 +2774,15 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
                     # Ticker has fills and is NOT open → it's closed
                     # Determine win/loss from settlement data or P&L
                     flows = ticker_flows.get(t_ticker, {})
-                    buy_cost = flows.get("buy_cost", 0)
-                    sell_revenue = flows.get("sell_revenue", 0)
+                    t_cost = flows.get("total_cost", 0)
+                    p_rev = flows.get("pair_revenue", 0)
                     s_revenue = settle_rev_copy.get(t_ticker, 0)
-                    t_pnl = sell_revenue + s_revenue - buy_cost
+                    t_pnl = p_rev + s_revenue - t_cost
 
                     # Apportion P&L to this trade entry proportionally by cost.
                     # IMPORTANT: Partial exits (EXIT_PARTIAL, PARE) are already
                     # settled with their own profit_cents. Their sell revenue is
-                    # already in ticker_flows["sell_revenue"]. So we must subtract
+                    # already in ticker_flows pair_revenue. So we must subtract
                     # the already-settled P&L from t_pnl before assigning to this
                     # entry, to avoid double-counting.
                     already_settled_pnl = sum(
@@ -2808,7 +2839,7 @@ def _sync_pnl_from_kalshi(client, trade_log=None, intel=None):
         open_cost = 0
         for ticker, flows in ticker_flows.items():
             if ticker in open_tickers:
-                open_cost += flows["buy_cost"] - flows["sell_revenue"]
+                open_cost += flows["total_cost"] - flows["pair_revenue"]
 
         # Get current balance for account-level P&L
         account_balance = None
