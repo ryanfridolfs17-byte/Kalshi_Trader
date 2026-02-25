@@ -525,7 +525,7 @@ class TradeScorecard:
         # 2. Model disagreement as uncertainty proxy
         if weather_data:
             model_spread = weather_data.get("model_spread", 0)
-            if model_spread > 4.0:  # Match MAX_MODEL_DIVERGENCE_F in strategy.py (was 3.0)
+            if model_spread > config.MAX_MODEL_DIVERGENCE_F:
                 warnings.append(f"Model spread {model_spread:.1f}°F indicates uncertainty")
 
         # 3. Anomalous temperature departure

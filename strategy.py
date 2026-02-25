@@ -278,11 +278,11 @@ class Strategy:
         market_prob = ref_price / 100.0
         edge = our_prob - market_prob  # Positive = underpriced YES
 
-        # Need at least 8% raw edge
-        min_weather_edge = 0.08
+        # Need at least MIN_EDGE raw edge (pre-filter before fee-adjusted check)
+        min_weather_edge = config.MIN_EDGE
         if abs(edge) < min_weather_edge:
             if config.LOG_LEVEL == "DEBUG" and ref_price >= 10 and ref_price <= 90:
-                print(f"    [STRATEGY] {ticker} edge={edge:+.1%} < 8% (prob={our_prob:.0%} vs mkt={market_prob:.0%})")
+                print(f"    [STRATEGY] {ticker} edge={edge:+.1%} < {min_weather_edge:.0%} (prob={our_prob:.0%} vs mkt={market_prob:.0%})")
             return None
 
         # Fee-adjusted edge: subtract expected Kalshi fee drag
@@ -1074,9 +1074,8 @@ class Strategy:
         Normal forecast-based trades must clear a higher bar early.
 
         MORNING  (6 AM-12 PM ET): 12% — be selective, save capital
-        AFTERNOON (12-4 PM ET):    8% — confirmed outcomes start appearing
-        EVENING  (4 PM+ ET):       8% — arbitrage and confirmed outcomes
-        OVERNIGHT (12-6 AM ET):   10% — good models but thin liquidity
+        AFTERNOON (12 PM+ ET):    10% (MIN_EDGE) — confirmed outcomes + arbitrage
+        OVERNIGHT (12-6 AM ET):   12% — thin liquidity, be selective
         """
         # Arbitrage and confirmed outcomes always pass at base threshold
         strategy = signal.get("strategy", "")
