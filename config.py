@@ -342,7 +342,7 @@ WARM_CITIES = set(WINTER_WARM_CITY_BIAS.keys())  # Derived from dict
 MODEL_BIAS_MIN_DATAPOINTS = 5  # Min datapoints before using learned bias (was implicit 10)
 
 # Skip trades where total payout (contracts × payout_per_contract) is below this
-MIN_PAYOUT_DOLLARS = 2.00      # Was $1.50 — filter dust trades, focus capital on meaningful positions
+MIN_PAYOUT_DOLLARS = 1.00      # Was $2.00 — lowered for small bankroll where 1-contract trades are normal
 
 # Minimum volume on a market to trade it
 # Note: Kalshi weather markets are low-volume. 1+ is realistic.
