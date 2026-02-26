@@ -22,7 +22,7 @@ import config
 
 # Only these parameters can be auto-adjusted, with hard min/max bounds
 PARAM_BOUNDS = {
-    "MIN_EDGE":                    (0.05, 0.20),
+    "MIN_EDGE":                    (0.04, 0.20),
     "MAKER_SPREAD_BUFFER_CENTS":   (1, 5),
     "MAX_MODEL_DIVERGENCE_F":      (3.0, 6.0),
     "NEXT_DAY_SIZING_MULTIPLIER":  (0.30, 0.70),

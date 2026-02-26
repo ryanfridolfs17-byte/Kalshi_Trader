@@ -481,29 +481,34 @@ class Strategy:
                 print(f"    [STRATEGY] Models converge within {model_spread:.1f}°F — 1.2x confidence boost")
 
             # Forecast-strike separation: don't bet NO when the forecast
-            # is too close to the bucket range (high chance of landing inside)
+            # is too close to the bucket range (high chance of landing inside).
+            # NWS ±1°F rounding means the effective bucket is wider — a raw temp
+            # just outside the nominal bucket could round INTO it.
             forecast_mean = distribution["forecasted_high_mean"]
-            if temp_low <= forecast_mean <= temp_high:
+            effective_low = temp_low - config.ROUNDING_BUFFER_HARD_F
+            effective_high = temp_high + config.ROUNDING_BUFFER_HARD_F
+            if effective_low <= forecast_mean <= effective_high:
                 separation = 0
-            elif forecast_mean < temp_low:
-                separation = temp_low - forecast_mean
+            elif forecast_mean < effective_low:
+                separation = effective_low - forecast_mean
             else:
-                separation = forecast_mean - temp_high
+                separation = forecast_mean - effective_high
             if separation < config.MIN_FORECAST_STRIKE_SEPARATION_F:
-                print(f"    [STRATEGY] Skipped NO on {city_code} {temp_low}-{temp_high}°F: "
+                print(f"    [STRATEGY] Skipped NO on {city_code} {temp_low}-{temp_high}°F "
+                      f"(effective {effective_low}-{effective_high}°F with rounding): "
                       f"forecast {forecast_mean:.1f}°F only {separation:.1f}°F away "
                       f"(need {config.MIN_FORECAST_STRIKE_SEPARATION_F}°F)")
                 return None
 
-            # Rounding buffer for NO trades
+            # Rounding buffer for NO trades (uses expanded boundaries)
             rounding_multiplier = 1.0
             if temp_high < 200 and temp_low > -100:  # Bounded bucket
-                dist_to_low = abs(forecast_mean - temp_low)
-                dist_to_high = abs(forecast_mean - temp_high)
+                dist_to_low = abs(forecast_mean - effective_low)
+                dist_to_high = abs(forecast_mean - effective_high)
                 nearest_strike_dist = min(dist_to_low, dist_to_high)
                 if nearest_strike_dist <= config.ROUNDING_BUFFER_HARD_F:
                     print(f"    [STRATEGY] Rounding buffer: forecast {forecast_mean:.1f}°F is "
-                          f"{nearest_strike_dist:.1f}°F from strike — NO TRADE")
+                          f"{nearest_strike_dist:.1f}°F from effective strike — NO TRADE")
                     return None
                 elif nearest_strike_dist <= config.ROUNDING_BUFFER_SOFT_F:
                     rounding_multiplier = 0.5
@@ -1073,9 +1078,9 @@ class Strategy:
         Confirmed outcomes and arbitrage bypass this entirely.
         Normal forecast-based trades must clear a higher bar early.
 
-        MORNING  (6 AM-12 PM ET): 12% — be selective, save capital
-        AFTERNOON (12 PM+ ET):    10% (MIN_EDGE) — confirmed outcomes + arbitrage
-        OVERNIGHT (12-6 AM ET):   12% — thin liquidity, be selective
+        MORNING  (6 AM-12 PM ET): 9% — moderate selectivity
+        AFTERNOON (12 PM+ ET):    7% (MIN_EDGE) — confirmed outcomes + arbitrage
+        OVERNIGHT (12-6 AM ET):   10% — thin liquidity, be selective
         """
         # Arbitrage and confirmed outcomes always pass at base threshold
         strategy = signal.get("strategy", "")
@@ -1086,11 +1091,11 @@ class Strategy:
 
         h = self._get_et_hour()
         if h < 6:
-            base_threshold = 0.12   # Overnight: 12% — thin liquidity, be selective (was 9%)
+            base_threshold = 0.10   # Overnight: 10% — thin liquidity, be selective (was 12%)
         elif h < 12:
-            base_threshold = 0.12   # Morning: 12% — save capital for afternoon confirmed outcomes (was 10%)
+            base_threshold = 0.09   # Morning: 9% — moderate selectivity (was 12%)
         else:
-            base_threshold = config.MIN_EDGE  # Afternoon/evening: base 10%
+            base_threshold = config.MIN_EDGE  # Afternoon/evening: base 7%
 
         # Next-day guard: evening trades for tomorrow carry 12-18h uncertainty.
         # Require 1.5x base threshold to compensate for forecast degradation.

@@ -242,8 +242,8 @@ MODEL_CONVERGENCE_BOOST_F = 2           # <2°F model spread = 1.2x confidence
 # (our maker strategy) pay lower/zero fees, but we model
 # worst-case taker rate as conservative safety margin.
 KALSHI_FEE_PCT = 0.07                   # 7% of expected profit per contract
-# RECOVERY MODE: 5% min net edge (was 4%) — need bigger margin for safety
-FEE_ADJUSTED_MIN_EDGE = 0.05            # 5% minimum net edge after fees (was 4%)
+# Lowered from 5% to 3%: safety floor after fee drag. Profitable at volume.
+FEE_ADJUSTED_MIN_EDGE = 0.03            # 3% minimum net edge after fees
 FEE_ADJUSTMENT_ENABLED = True
 
 # ═══════════════════════════════════════════════════════
@@ -310,8 +310,9 @@ ADAPTIVE_LEARNING_BLEND = 0.3        # Weight given to empirical data vs theoret
 # STRATEGY SETTINGS
 # ═══════════════════════════════════════════════════════
 # Minimum edge to consider a trade
-# RECOVERY MODE: 10% min edge (was 8%) — only take clear mispricings
-MIN_EDGE = 0.10
+# Lowered from 10% to 7%: NO-side rounding fix makes trades safer,
+# enabling high-frequency small-edge strategy (5-10% profit per trade)
+MIN_EDGE = 0.07
 
 # NO-side price ceiling — hard-reject NO positions above this price.
 # At 70c+, downside is 70c per contract but upside is only 30c. The loss/win ratio
@@ -438,7 +439,7 @@ SELF_IMPROVE_TARGET_EDGE_REALIZATION = 0.70
 SCORECARD_ENABLED = True
 SCORECARD_MAX_ITERATIONS = 3              # Max diagnose-fix-retry loops
 MIN_FORECAST_CONVERGENCE = 0.50           # 50% of ensemble must agree within 2°F (was 60% — redundant with 4°F model divergence gate)
-MIN_EDGE_AFTER_FEES = 0.05               # 5% minimum edge (same as FEE_ADJUSTED_MIN_EDGE)
+MIN_EDGE_AFTER_FEES = 0.03               # 3% minimum edge (same as FEE_ADJUSTED_MIN_EDGE)
 MIN_TIMING_MULTIPLIER = 0.50             # Don't trade in bad timing windows
 MIN_LIQUIDITY_CONTRACTS = 3              # Need 3+ contracts at target price
 MAX_CORRELATION_EXPOSURE = 0.40          # 40% max in correlated positions

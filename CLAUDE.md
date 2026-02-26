@@ -69,7 +69,7 @@ market_scanner.py → strategy.py → confirmer → trade_scorecard.py → risk_
 - **Quarter-Kelly sizing** (Kelly/4 × confirmation level)
 - **Maker strategy** — limit orders, not market orders
 - **NWS settlement** — Weather markets settle on NWS Daily Climate Reports, not model forecasts
-- **NWS rounding** — ±1°F DOS-era conversion error. Buffer: ±1°F = no trade, ±2°F = 50% size
+- **NWS rounding** — ±1°F DOS-era conversion error. Buffer: ±1°F = no trade, ±2°F = 50% size. **NO-side expands bucket by ±1°F before separation check.**
 - **Fee-adjusted edge** — 7% fee drag deducted before min edge check. Side-aware formula.
 - **Only CASE 1 = CONFIRMED_OUTCOME** — temp can't un-happen. CASE 2/3 = STRONG (normal risk checks).
 - **CASE 2 disabled** (recovery mode). Returns STRONG when re-enabled.
@@ -106,8 +106,8 @@ All values in `config.py`. Cents = 100 per $1.00.
 ### Core Limits
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `MIN_EDGE` | 10% | Raw minimum (recovery). Morning/overnight: 12%. |
-| `FEE_ADJUSTED_MIN_EDGE` | 5% | After 7% fee drag |
+| `MIN_EDGE` | 7% | Lowered from 10% for high-freq small-edge strategy. Morning: 9%, overnight: 10%. |
+| `FEE_ADJUSTED_MIN_EDGE` | 3% | After 7% fee drag. Lowered from 5% to enable more volume. |
 | `MIN_PAYOUT_DOLLARS` | $1.00 | Was $2.00 — lowered for small bankroll |
 | `DAILY_LOSS_LIMIT_CENTS` | $6.00 | 15% of bankroll |
 | `MAX_DAILY_FORECAST_TRADES` | 5/day | Confirmed outcomes exempt |
@@ -132,7 +132,7 @@ All values in `config.py`. Cents = 100 per $1.00.
 | Quarter-Kelly | Kelly/4 × confirmation | |
 
 ### Strategy Guards
-- **Rounding buffer**: ±1°F = no trade, ±2°F = 50% size. NO-side needs ≥3°F separation.
+- **Rounding buffer**: ±1°F = no trade, ±2°F = 50% size. **NO-side uses rounding-expanded boundaries** (bucket ± 1°F) for separation check — needs ≥3°F from expanded boundary.
 - **Model divergence**: >4°F spread = skip. <2°F = 1.2x boost.
 - **Longshot floor**: 5¢. **Near-certainty cap**: 88¢.
 - **NO ceiling**: 60¢ (`NO_SIDE_MAX_PRICE_CENTS`). **NO sizing**: ≥50¢ gets 40% normal.
