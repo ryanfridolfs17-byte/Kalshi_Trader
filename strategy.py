@@ -157,6 +157,12 @@ class Strategy:
         if best.get("confirmation_multiplier", 1.0) != 1.0:
             contracts = max(1, int(contracts * best["confirmation_multiplier"]))
 
+        # Convergence boost sizing reduction: near-market trades get reduced sizing
+        if best.get("convergence_boost"):
+            conv_mult = getattr(config, 'CONVERGENCE_SIZING_MULTIPLIER', 0.65)
+            contracts = max(1, int(contracts * conv_mult))
+            print(f"    [CONVERGENCE] Sizing: {conv_mult:.0%} → {contracts} contracts")
+
         # Next-day sizing reduction: evening trades for tomorrow get 50% sizing
         target_date = best.get("target_date")
         city_code_sig = best.get("city_code")
@@ -276,10 +282,48 @@ class Strategy:
             return None
 
         market_prob = ref_price / 100.0
-        edge = our_prob - market_prob  # Positive = underpriced YES
+        raw_edge = our_prob - market_prob  # Positive = underpriced YES
+
+        # Step 3b: Convergence confidence boost (two-pass approach)
+        # When raw edge < MIN_EDGE but all signals converge, boost our_prob
+        convergence_result = None
+        convergence_boost_applied = False
+        early_confirmation = None
+        min_weather_edge = config.MIN_EDGE
+
+        if (getattr(config, 'CONVERGENCE_BOOST_ENABLED', False)
+                and abs(raw_edge) < min_weather_edge):
+            # Pass 1: Quick 3-component check (no API calls)
+            prelim = self._preliminary_convergence_score(
+                distribution, city_code, target_date
+            )
+            if prelim is not None and prelim >= getattr(config, 'CONVERGENCE_MIN_SCORE', 0.75) - 0.10:
+                # Promising — call confirmer early for full 4-component score
+                city_info = CITIES[city_code]
+                early_confirmation = self.confirmer.confirm_signal(
+                    city_info=city_info,
+                    target_date=target_date,
+                    temp_low=temp_low,
+                    temp_high=temp_high,
+                    ensemble_prob=our_prob,
+                    market_price_cents=ref_price,
+                )
+                # Pass 2: Full convergence calculation
+                convergence_result = self._calculate_convergence_boost(
+                    distribution, early_confirmation, city_code, target_date,
+                    our_prob, market_prob
+                )
+                if convergence_result["eligible"]:
+                    our_prob += convergence_result["boost"]
+                    our_prob = min(0.95, max(0.05, our_prob))
+                    convergence_boost_applied = True
+                    print(f"    [CONVERGENCE] {ticker}: boost {convergence_result['boost']:+.1%} "
+                          f"→ adj_prob={our_prob:.0%} (was {our_prob - convergence_result['boost']:.0%})")
+
+        # Recompute edge with potentially boosted our_prob
+        edge = our_prob - market_prob
 
         # Need at least MIN_EDGE raw edge (pre-filter before fee-adjusted check)
-        min_weather_edge = config.MIN_EDGE
         if abs(edge) < min_weather_edge:
             if config.LOG_LEVEL == "DEBUG" and ref_price >= 10 and ref_price <= 90:
                 print(f"    [STRATEGY] {ticker} edge={edge:+.1%} < {min_weather_edge:.0%} (prob={our_prob:.0%} vs mkt={market_prob:.0%})")
@@ -316,15 +360,19 @@ class Strategy:
                 return None
 
         # Step 4: Get confirmation from independent sources
+        # Reuse early confirmation if already fetched for convergence boost
         city_info = CITIES[city_code]
-        confirmation = self.confirmer.confirm_signal(
-            city_info=city_info,
-            target_date=target_date,
-            temp_low=temp_low,
-            temp_high=temp_high,
-            ensemble_prob=our_prob,
-            market_price_cents=ref_price,
-        )
+        if early_confirmation is not None:
+            confirmation = early_confirmation
+        else:
+            confirmation = self.confirmer.confirm_signal(
+                city_info=city_info,
+                target_date=target_date,
+                temp_low=temp_low,
+                temp_high=temp_high,
+                ensemble_prob=our_prob,
+                market_price_cents=ref_price,
+            )
 
         # Print confirmation details
         self.confirmer.print_vote_details(confirmation)
@@ -463,6 +511,7 @@ class Strategy:
                 "model_means": distribution.get("model_means", {}),
                 "model_weights_used": model_weights or {},
                 "model_biases_used": model_biases or {},
+                "convergence_boost": convergence_result if convergence_boost_applied else None,
             }
         else:
             # Overpriced YES — buy NO
@@ -552,6 +601,7 @@ class Strategy:
                 "model_means": distribution.get("model_means", {}),
                 "model_weights_used": model_weights or {},
                 "model_biases_used": model_biases or {},
+                "convergence_boost": convergence_result if convergence_boost_applied else None,
             }
 
         return signal
@@ -1057,6 +1107,168 @@ class Strategy:
     def _get_et_hour(self):
         """Get current hour in Eastern Time (DST-aware)."""
         return datetime.now(ZoneInfo("America/New_York")).hour
+
+    # ═══════════════════════════════════════════════════════
+    # CONVERGENCE CONFIDENCE BOOST
+    # ═══════════════════════════════════════════════════════
+
+    def _observation_score(self, city_code, target_date, distribution):
+        """
+        How well do real-time observations match the forecast trajectory?
+        Returns 0.0-1.0. Returns 0.0 if guards fail (not afternoon, no obs).
+        """
+        city_info = CITIES.get(city_code, {})
+        tz_name = city_info.get("timezone", "America/New_York")
+        local_hour = datetime.now(ZoneInfo(tz_name)).hour
+
+        if local_hour < getattr(config, 'CONVERGENCE_MIN_LOCAL_HOUR', 12):
+            return 0.0
+
+        trend = self.intel.get_temperature_trend(city_code)
+        if trend is None:
+            return 0.0
+
+        forecast_mean = distribution.get("forecasted_high_mean", 0)
+        observed_high = trend["high"]
+        obs_forecast_gap = abs(observed_high - forecast_mean)
+
+        if obs_forecast_gap <= 2.0:
+            obs_score = 1.0
+        elif obs_forecast_gap <= 4.0:
+            obs_score = 0.6
+        elif obs_forecast_gap <= 6.0:
+            obs_score = 0.3
+        else:
+            obs_score = 0.0
+
+        # Bonus: cooling confirmed (peak passed) after 2 PM → trajectory locked
+        if trend["cooling"] and local_hour >= 14:
+            obs_score = min(1.0, obs_score + 0.2)
+
+        return obs_score
+
+    def _preliminary_convergence_score(self, distribution, city_code, target_date):
+        """
+        Quick 3-component convergence score (no confirmer API call).
+        Returns float or None if guards fail.
+        """
+        city_info = CITIES.get(city_code, {})
+        tz_name = city_info.get("timezone", "America/New_York")
+        local_now = datetime.now(ZoneInfo(tz_name))
+
+        # Guard: afternoon only
+        if local_now.hour < getattr(config, 'CONVERGENCE_MIN_LOCAL_HOUR', 12):
+            return None
+        # Guard: same-day only
+        if target_date != local_now.strftime("%Y-%m-%d"):
+            return None
+
+        # Component 1: Model family convergence (weight 0.33)
+        model_spread = distribution.get("model_spread", 99.0)
+        model_score = max(0.0, min(1.0, (5.0 - model_spread) / 3.5))
+
+        # Component 2: Ensemble tightness (weight 0.33)
+        std_dev = distribution.get("std_dev", 99.0)
+        ensemble_score = max(0.0, min(1.0, (5.0 - std_dev) / 3.5))
+
+        # Component 3: Observation confirmation (weight 0.34)
+        obs_score = self._observation_score(city_code, target_date, distribution)
+
+        # Weighted average of 3 components
+        prelim = model_score * 0.33 + ensemble_score * 0.33 + obs_score * 0.34
+        return prelim
+
+    def _calculate_convergence_boost(self, distribution, confirmation, city_code,
+                                      target_date, our_prob, market_prob):
+        """
+        Full 4-component convergence score and probability boost calculation.
+        Returns dict with eligible, boost, convergence_score, components, reason.
+        """
+        result = {"eligible": False, "boost": 0.0, "convergence_score": 0.0,
+                  "components": {}, "reason": ""}
+
+        city_info = CITIES.get(city_code, {})
+        tz_name = city_info.get("timezone", "America/New_York")
+        local_now = datetime.now(ZoneInfo(tz_name))
+
+        # Guard: afternoon only
+        if local_now.hour < getattr(config, 'CONVERGENCE_MIN_LOCAL_HOUR', 12):
+            result["reason"] = "too_early"
+            return result
+        # Guard: same-day only
+        if target_date != local_now.strftime("%Y-%m-%d"):
+            result["reason"] = "next_day"
+            return result
+        # Guard: confirmation not REJECT
+        if confirmation.get("verdict") == "REJECT":
+            result["reason"] = "rejected"
+            return result
+        # Guard: observations available
+        if self._observation_score(city_code, target_date, distribution) == 0.0:
+            trend = self.intel.get_temperature_trend(city_code)
+            if trend is None:
+                result["reason"] = "no_observations"
+                return result
+
+        # Component 1: Source agreement (weight 0.30)
+        agree = confirmation.get("agree_count", 0)
+        disagree = confirmation.get("disagree_count", 0)
+        total_voted = agree + disagree
+        source_score = agree / total_voted if total_voted > 0 else 0.0
+
+        # Component 2: Model family convergence (weight 0.25)
+        model_spread = distribution.get("model_spread", 99.0)
+        model_score = max(0.0, min(1.0, (5.0 - model_spread) / 3.5))
+
+        # Component 3: Ensemble tightness (weight 0.25)
+        std_dev = distribution.get("std_dev", 99.0)
+        ensemble_score = max(0.0, min(1.0, (5.0 - std_dev) / 3.5))
+
+        # Component 4: Observation confirmation (weight 0.20)
+        obs_score = self._observation_score(city_code, target_date, distribution)
+
+        # Weighted average
+        score = (source_score * 0.30 + model_score * 0.25 +
+                 ensemble_score * 0.25 + obs_score * 0.20)
+
+        result["convergence_score"] = round(score, 3)
+        result["components"] = {
+            "source_agreement": round(source_score, 3),
+            "model_convergence": round(model_score, 3),
+            "ensemble_tightness": round(ensemble_score, 3),
+            "observation_confirmation": round(obs_score, 3),
+        }
+
+        min_score = getattr(config, 'CONVERGENCE_MIN_SCORE', 0.75)
+        if score < min_score:
+            result["reason"] = f"score {score:.2f} < {min_score}"
+            return result
+
+        # Graduated boost: linear from MIN_BOOST at threshold to MAX_BOOST at 1.0
+        min_boost = getattr(config, 'CONVERGENCE_MIN_BOOST_PCT', 0.06)
+        max_boost = getattr(config, 'CONVERGENCE_MAX_BOOST_PCT', 0.12)
+        score_range = 1.0 - min_score
+        if score_range > 0:
+            boost_fraction = min(1.0, (score - min_score) / score_range)
+        else:
+            boost_fraction = 1.0
+        boost = min_boost + boost_fraction * (max_boost - min_boost)
+
+        # Direction: boost toward the signal the ensemble favors
+        raw_edge = our_prob - market_prob
+        if raw_edge < 0:
+            boost = -boost  # NO side — reduce our_prob to increase NO edge
+
+        result["eligible"] = True
+        result["boost"] = round(boost, 4)
+        result["raw_edge"] = round(raw_edge, 4)
+        result["reason"] = "convergence_boost_applied"
+
+        print(f"    [CONVERGENCE] Score={score:.2f} "
+              f"(src={source_score:.2f} mod={model_score:.2f} "
+              f"ens={ensemble_score:.2f} obs={obs_score:.2f}) "
+              f"→ boost={boost:+.1%}")
+        return result
 
     def _get_edge_period(self):
         """Return human-readable label for current edge period."""

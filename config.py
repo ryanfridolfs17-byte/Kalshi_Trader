@@ -236,6 +236,19 @@ MAX_MODEL_DIVERGENCE_F = 4              # >4°F model spread = NO TRADE
 MODEL_CONVERGENCE_BOOST_F = 2           # <2°F model spread = 1.2x confidence
 
 # ═══════════════════════════════════════════════════════
+# CONVERGENCE CONFIDENCE BOOST
+# ═══════════════════════════════════════════════════════
+# When multiple signals converge (sources agree, models tight, obs confirm),
+# boost our_prob to create synthetic edge for high-conviction near-market trades.
+# Afternoon same-day only. Reduced sizing. All other guards still apply.
+CONVERGENCE_BOOST_ENABLED = True
+CONVERGENCE_MIN_LOCAL_HOUR = 12         # Only activate 12 PM+ local time
+CONVERGENCE_MIN_SCORE = 0.75            # Minimum convergence score (0-1) to activate
+CONVERGENCE_MIN_BOOST_PCT = 0.06        # 6% boost at score=0.75
+CONVERGENCE_MAX_BOOST_PCT = 0.12        # 12% boost at score=1.0
+CONVERGENCE_SIZING_MULTIPLIER = 0.65    # 65% of normal Kelly (reduced conviction)
+
+# ═══════════════════════════════════════════════════════
 # FEE-ADJUSTED EDGE
 # ═══════════════════════════════════════════════════════
 # Kalshi charges ~7% of profit on taker fills. Limit orders
