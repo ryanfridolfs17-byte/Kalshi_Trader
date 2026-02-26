@@ -297,7 +297,15 @@ class Strategy:
             prelim = self._preliminary_convergence_score(
                 distribution, city_code, target_date
             )
-            if prelim is not None and prelim >= getattr(config, 'CONVERGENCE_MIN_SCORE', 0.75) - 0.10:
+            prelim_threshold = getattr(config, 'CONVERGENCE_MIN_SCORE', 0.75) - 0.10
+            if prelim is None:
+                print(f"    [CONVERGENCE] {ticker}: prelim=None (guards failed: not afternoon or next-day)")
+            elif prelim < prelim_threshold:
+                print(f"    [CONVERGENCE] {ticker}: prelim={prelim:.2f} < {prelim_threshold:.2f} "
+                      f"(model_spread={distribution.get('model_spread', '?')}°F, "
+                      f"std_dev={distribution.get('std_dev', '?')}°F) — skipped")
+            else:
+                print(f"    [CONVERGENCE] {ticker}: prelim={prelim:.2f} >= {prelim_threshold:.2f} — calling confirmer")
                 # Promising — call confirmer early for full 4-component score
                 city_info = CITIES[city_code]
                 early_confirmation = self.confirmer.confirm_signal(
@@ -317,8 +325,14 @@ class Strategy:
                     our_prob += convergence_result["boost"]
                     our_prob = min(0.95, max(0.05, our_prob))
                     convergence_boost_applied = True
-                    print(f"    [CONVERGENCE] {ticker}: boost {convergence_result['boost']:+.1%} "
+                    print(f"    [CONVERGENCE] {ticker}: BOOST {convergence_result['boost']:+.1%} "
                           f"→ adj_prob={our_prob:.0%} (was {our_prob - convergence_result['boost']:.0%})")
+                else:
+                    comp = convergence_result.get('components', {})
+                    print(f"    [CONVERGENCE] {ticker}: full score={convergence_result['convergence_score']:.2f} "
+                          f"— {convergence_result.get('reason', '?')} "
+                          f"(src={comp.get('source_agreement', '?')} mod={comp.get('model_convergence', '?')} "
+                          f"ens={comp.get('ensemble_tightness', '?')} obs={comp.get('observation_confirmation', '?')})")
 
         # Recompute edge with potentially boosted our_prob
         edge = our_prob - market_prob
