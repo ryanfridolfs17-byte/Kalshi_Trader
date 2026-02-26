@@ -291,6 +291,12 @@ class Strategy:
         early_confirmation = None
         min_weather_edge = config.MIN_EDGE
 
+        # Diagnostic: log all markets reaching this point
+        if 10 <= ref_price <= 90:
+            print(f"    [CONV-DIAG] {ticker}: prob={our_prob:.0%} mkt={market_prob:.0%} "
+                  f"raw_edge={raw_edge:+.1%} min_edge={min_weather_edge:.0%} "
+                  f"date={target_date} enabled={getattr(config, 'CONVERGENCE_BOOST_ENABLED', False)}")
+
         if (getattr(config, 'CONVERGENCE_BOOST_ENABLED', False)
                 and abs(raw_edge) < min_weather_edge):
             # Pass 1: Quick 3-component check (no API calls)
