@@ -247,6 +247,7 @@ CONVERGENCE_MIN_SCORE = 0.75            # Minimum convergence score (0-1) to act
 CONVERGENCE_MIN_BOOST_PCT = 0.06        # 6% boost at score=0.75
 CONVERGENCE_MAX_BOOST_PCT = 0.12        # 12% boost at score=1.0
 CONVERGENCE_SIZING_MULTIPLIER = 0.65    # 65% of normal Kelly (reduced conviction)
+CONVERGENCE_NEXT_DAY_SIZING = 0.50      # Extra 50% reduction for next-day (0.65 * 0.50 = ~33% of normal)
 
 # ═══════════════════════════════════════════════════════
 # FEE-ADJUSTED EDGE
