@@ -160,8 +160,12 @@ class Strategy:
         # Convergence boost sizing reduction: near-market trades get reduced sizing
         if best.get("convergence_boost"):
             conv_mult = getattr(config, 'CONVERGENCE_SIZING_MULTIPLIER', 0.65)
+            # Next-day convergence = extra conservative (proof of concept)
+            if best["convergence_boost"].get("is_next_day"):
+                conv_mult *= getattr(config, 'CONVERGENCE_NEXT_DAY_SIZING', 0.50)
             contracts = max(1, int(contracts * conv_mult))
-            print(f"    [CONVERGENCE] Sizing: {conv_mult:.0%} → {contracts} contracts")
+            print(f"    [CONVERGENCE] Sizing: {conv_mult:.0%} -> {contracts} contracts"
+                  f"{' (next-day)' if best['convergence_boost'].get('is_next_day') else ''}")
 
         # Next-day sizing reduction: evening trades for tomorrow get 50% sizing
         target_date = best.get("target_date")
@@ -305,7 +309,7 @@ class Strategy:
             )
             prelim_threshold = getattr(config, 'CONVERGENCE_MIN_SCORE', 0.75) - 0.10
             if prelim is None:
-                print(f"    [CONVERGENCE] {ticker}: prelim=None (guards failed: not afternoon or next-day)")
+                print(f"    [CONVERGENCE] {ticker}: prelim=None (guards failed: not afternoon for same-day)")
             elif prelim < prelim_threshold:
                 print(f"    [CONVERGENCE] {ticker}: prelim={prelim:.2f} < {prelim_threshold:.2f} "
                       f"(model_spread={distribution.get('model_spread', '?')}°F, "
@@ -1176,26 +1180,29 @@ class Strategy:
         tz_name = city_info.get("timezone", "America/New_York")
         local_now = datetime.now(ZoneInfo(tz_name))
 
-        # Guard: afternoon only
-        if local_now.hour < getattr(config, 'CONVERGENCE_MIN_LOCAL_HOUR', 12):
-            return None
-        # Guard: same-day only
-        if target_date != local_now.strftime("%Y-%m-%d"):
+        # Guard: afternoon only (for same-day). Next-day allowed anytime.
+        is_same_day = target_date == local_now.strftime("%Y-%m-%d")
+        if is_same_day and local_now.hour < getattr(config, 'CONVERGENCE_MIN_LOCAL_HOUR', 12):
             return None
 
-        # Component 1: Model family convergence (weight 0.33)
+        # Component 1: Model family convergence
         model_spread = distribution.get("model_spread", 99.0)
         model_score = max(0.0, min(1.0, (5.0 - model_spread) / 3.5))
 
-        # Component 2: Ensemble tightness (weight 0.33)
+        # Component 2: Ensemble tightness
         std_dev = distribution.get("std_dev", 99.0)
         ensemble_score = max(0.0, min(1.0, (5.0 - std_dev) / 3.5))
 
-        # Component 3: Observation confirmation (weight 0.34)
+        # Component 3: Observation confirmation (0 for next-day — no obs yet)
         obs_score = self._observation_score(city_code, target_date, distribution)
 
-        # Weighted average of 3 components
-        prelim = model_score * 0.33 + ensemble_score * 0.33 + obs_score * 0.34
+        if is_same_day:
+            # Same-day: all 3 components
+            prelim = model_score * 0.33 + ensemble_score * 0.33 + obs_score * 0.34
+        else:
+            # Next-day: reweight to model + ensemble only (obs unavailable)
+            prelim = model_score * 0.50 + ensemble_score * 0.50
+
         return prelim
 
     def _calculate_convergence_boost(self, distribution, confirmation, city_code,
@@ -1211,45 +1218,49 @@ class Strategy:
         tz_name = city_info.get("timezone", "America/New_York")
         local_now = datetime.now(ZoneInfo(tz_name))
 
-        # Guard: afternoon only
-        if local_now.hour < getattr(config, 'CONVERGENCE_MIN_LOCAL_HOUR', 12):
+        is_same_day = target_date == local_now.strftime("%Y-%m-%d")
+
+        # Guard: afternoon only (same-day). Next-day allowed anytime.
+        if is_same_day and local_now.hour < getattr(config, 'CONVERGENCE_MIN_LOCAL_HOUR', 12):
             result["reason"] = "too_early"
-            return result
-        # Guard: same-day only
-        if target_date != local_now.strftime("%Y-%m-%d"):
-            result["reason"] = "next_day"
             return result
         # Guard: confirmation not REJECT
         if confirmation.get("verdict") == "REJECT":
             result["reason"] = "rejected"
             return result
-        # Guard: observations available
-        if self._observation_score(city_code, target_date, distribution) == 0.0:
-            trend = self.intel.get_temperature_trend(city_code)
-            if trend is None:
-                result["reason"] = "no_observations"
-                return result
+        # Guard: observations required for same-day only
+        if is_same_day:
+            if self._observation_score(city_code, target_date, distribution) == 0.0:
+                trend = self.intel.get_temperature_trend(city_code)
+                if trend is None:
+                    result["reason"] = "no_observations"
+                    return result
 
-        # Component 1: Source agreement (weight 0.30)
+        # Component 1: Source agreement
         agree = confirmation.get("agree_count", 0)
         disagree = confirmation.get("disagree_count", 0)
         total_voted = agree + disagree
         source_score = agree / total_voted if total_voted > 0 else 0.0
 
-        # Component 2: Model family convergence (weight 0.25)
+        # Component 2: Model family convergence
         model_spread = distribution.get("model_spread", 99.0)
         model_score = max(0.0, min(1.0, (5.0 - model_spread) / 3.5))
 
-        # Component 3: Ensemble tightness (weight 0.25)
+        # Component 3: Ensemble tightness
         std_dev = distribution.get("std_dev", 99.0)
         ensemble_score = max(0.0, min(1.0, (5.0 - std_dev) / 3.5))
 
-        # Component 4: Observation confirmation (weight 0.20)
+        # Component 4: Observation confirmation (0 for next-day)
         obs_score = self._observation_score(city_code, target_date, distribution)
 
-        # Weighted average
-        score = (source_score * 0.30 + model_score * 0.25 +
-                 ensemble_score * 0.25 + obs_score * 0.20)
+        if is_same_day:
+            # Same-day: all 4 components
+            score = (source_score * 0.30 + model_score * 0.25 +
+                     ensemble_score * 0.25 + obs_score * 0.20)
+        else:
+            # Next-day: reweight — no obs, lean heavier on source agreement + models
+            score = (source_score * 0.40 + model_score * 0.30 +
+                     ensemble_score * 0.30)
 
         result["convergence_score"] = round(score, 3)
         result["components"] = {
@@ -1282,6 +1293,7 @@ class Strategy:
         result["eligible"] = True
         result["boost"] = round(boost, 4)
         result["raw_edge"] = round(raw_edge, 4)
+        result["is_next_day"] = not is_same_day
         result["reason"] = "convergence_boost_applied"
 
         print(f"    [CONVERGENCE] Score={score:.2f} "

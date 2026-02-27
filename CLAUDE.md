@@ -140,7 +140,7 @@ All values in `config.py`. Cents = 100 per $1.00.
 - **Next-day guard**: 1.5x edge threshold, 50% sizing. Confirmed outcomes exempt.
 - **Same-cycle cooldown exempt**. 6-hour same-ticker re-entry cooldown (CASE 1 exempt only — CASE 3 returns STRONG, not CONFIRMED_OUTCOME).
 - **Bias streak**: 3+ days same direction → immediate adjustment.
-- **Convergence confidence boost**: Afternoon same-day: when sources agree, models tight, obs confirm forecast, boost `our_prob` by 6-12% to create synthetic edge. Score ≥0.75 required from 4 components: source agreement (30%), model convergence (25%), ensemble tightness (25%), obs confirmation (20%). Reduced sizing (65% Kelly). Two-pass: preliminary 3-component check avoids unnecessary API calls. Only activates when raw edge < MIN_EDGE (no double-dip). Config: `CONVERGENCE_BOOST_ENABLED`, `_MIN_SCORE=0.75`, `_MIN_BOOST_PCT=6%`, `_MAX_BOOST_PCT=12%`, `_SIZING_MULTIPLIER=0.65`.
+- **Convergence confidence boost**: When sources agree, models tight, and (same-day) obs confirm forecast, boost `our_prob` by 6-12% to create synthetic edge. Score ≥0.75 required. Same-day: 4 components (source 30%, model 25%, ensemble 25%, obs 20%), afternoon only, 65% sizing. Next-day: 3 components reweighted (source 40%, model 30%, ensemble 30%), ~33% sizing (0.65 * 0.50). Two-pass: preliminary check avoids unnecessary API calls. Only activates when raw edge < MIN_EDGE (no double-dip).
 
 ### Confirmed Outcome Rules
 - **CASE 1** (high exceeded bucket): `CONFIRMED_OUTCOME`. Min 10 AM local. Rounding: `todays_high > temp_high + 1°F` (obs must exceed strike by 1°F to confirm).
