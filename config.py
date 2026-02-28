@@ -227,7 +227,7 @@ SETTLEMENT_PROXIMITY_EDGE_OVERRIDE = 0.20  # Exceptional edge overrides
 # readings which can be higher than displayed time series.
 ROUNDING_BUFFER_HARD_F = 1              # ±1°F of strike = NO TRADE
 ROUNDING_BUFFER_SOFT_F = 2              # ±2°F of strike = 50% size reduction
-MIN_FORECAST_STRIKE_SEPARATION_F = 2    # Forecast mean must be ≥2°F from nearest strike (was 3 — paired with bias fix)
+MIN_FORECAST_STRIKE_SEPARATION_F = 1.5  # Forecast mean must be ≥1.5°F from nearest strike (was 3 → 2 → 1.5)
 
 # ═══════════════════════════════════════════════════════
 # MODEL DIVERGENCE GATE (tightened from hardcoded 5°F)
