@@ -434,11 +434,14 @@ class Strategy:
         if edge > 0:
             bucket_width = temp_high - temp_low
 
-            # FIX 1: Ban 1°F buckets for YES — forecast spread too wide relative to target
+            # FIX 1: Narrow 1°F buckets for YES — only trade with high edge + strong confirmation
             if bucket_width <= 1:
-                print(f"    [STRATEGY] Skipped YES on 1°F bucket {temp_low}-{temp_high}°F: "
-                      f"too narrow to trade reliably")
-                return None
+                if edge < 0.15 or confirmation["verdict"] not in ("STRONG", "CONFIRMED_OUTCOME"):
+                    print(f"    [STRATEGY] Skipped YES on 1°F bucket {temp_low}-{temp_high}°F: "
+                          f"edge={edge:.0%} (need 15%), verdict={confirmation['verdict']} (need STRONG+)")
+                    return None
+                print(f"    [STRATEGY] Allowing 1°F bucket {temp_low}-{temp_high}°F: "
+                      f"edge={edge:.0%}, verdict={confirmation['verdict']}")
 
             # FIX 2: Model disagreement detector — if model families disagree by >4°F, skip
             model_spread = distribution.get("model_spread", 0)
@@ -557,20 +560,26 @@ class Strategy:
             # is too close to the bucket range (high chance of landing inside).
             # NWS ±1°F rounding means the effective bucket is wider — a raw temp
             # just outside the nominal bucket could round INTO it.
+            # Use RAW (pre-bias) mean for separation — bias is a settlement
+            # correction, not forecast location. Winter bias (+3-4°F) was pushing
+            # means INTO buckets and blocking trades with clear ensemble edge.
             forecast_mean = distribution["forecasted_high_mean"]
+            raw_forecast_mean = distribution.get("raw_forecast_mean", forecast_mean)
             effective_low = temp_low - config.ROUNDING_BUFFER_HARD_F
             effective_high = temp_high + config.ROUNDING_BUFFER_HARD_F
-            if effective_low <= forecast_mean <= effective_high:
+            if effective_low <= raw_forecast_mean <= effective_high:
                 separation = 0
-            elif forecast_mean < effective_low:
-                separation = effective_low - forecast_mean
+            elif raw_forecast_mean < effective_low:
+                separation = effective_low - raw_forecast_mean
             else:
-                separation = forecast_mean - effective_high
+                separation = raw_forecast_mean - effective_high
             if separation < config.MIN_FORECAST_STRIKE_SEPARATION_F:
+                bias_shift = forecast_mean - raw_forecast_mean
                 print(f"    [STRATEGY] Skipped NO on {city_code} {temp_low}-{temp_high}°F "
                       f"(effective {effective_low}-{effective_high}°F with rounding): "
-                      f"forecast {forecast_mean:.1f}°F only {separation:.1f}°F away "
-                      f"(need {config.MIN_FORECAST_STRIKE_SEPARATION_F}°F)")
+                      f"raw_mean {raw_forecast_mean:.1f}°F only {separation:.1f}°F away "
+                      f"(need {config.MIN_FORECAST_STRIKE_SEPARATION_F}°F)"
+                      f"{f' [bias={bias_shift:+.1f}°F]' if abs(bias_shift) > 0.1 else ''}")
                 return None
 
             # Rounding buffer for NO trades (uses expanded boundaries)
@@ -1224,9 +1233,10 @@ class Strategy:
         if is_same_day and local_now.hour < getattr(config, 'CONVERGENCE_MIN_LOCAL_HOUR', 12):
             result["reason"] = "too_early"
             return result
-        # Guard: confirmation not REJECT
-        if confirmation.get("verdict") == "REJECT":
-            result["reason"] = "rejected"
+        # Guard: block only if sources actively disagree (not just abstain)
+        disagree = confirmation.get("disagree_count", 0)
+        if disagree >= 2:
+            result["reason"] = f"rejected: {disagree} sources disagree"
             return result
         # Guard: observations required for same-day only
         if is_same_day:
@@ -1236,11 +1246,17 @@ class Strategy:
                     result["reason"] = "no_observations"
                     return result
 
-        # Component 1: Source agreement
+        # Component 1: Source agreement (penalize low participation)
         agree = confirmation.get("agree_count", 0)
         disagree = confirmation.get("disagree_count", 0)
         total_voted = agree + disagree
-        source_score = agree / total_voted if total_voted > 0 else 0.0
+        if total_voted == 0:
+            source_score = 0.0
+        else:
+            agreement_ratio = agree / total_voted
+            # Participation penalty: 1 voter = 0.5x, 2 = 0.7x, 3+ = 1.0x
+            participation = min(1.0, 0.3 + total_voted * 0.233)
+            source_score = agreement_ratio * participation
 
         # Component 2: Model family convergence
         model_spread = distribution.get("model_spread", 99.0)
@@ -1299,7 +1315,7 @@ class Strategy:
         print(f"    [CONVERGENCE] Score={score:.2f} "
               f"(src={source_score:.2f} mod={model_score:.2f} "
               f"ens={ensemble_score:.2f} obs={obs_score:.2f}) "
-              f"→ boost={boost:+.1%}")
+              f"-> boost={boost:+.1%}")
         return result
 
     def _get_edge_period(self):
