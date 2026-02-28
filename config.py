@@ -232,7 +232,8 @@ MIN_FORECAST_STRIKE_SEPARATION_F = 1.5  # Forecast mean must be ≥1.5°F from n
 # ═══════════════════════════════════════════════════════
 # MODEL DIVERGENCE GATE (tightened from hardcoded 5°F)
 # ═══════════════════════════════════════════════════════
-MAX_MODEL_DIVERGENCE_F = 6              # >6°F model spread = NO TRADE (was 4 — too tight in winter)
+MAX_MODEL_DIVERGENCE_F = 6              # YES-side: >6°F = skip (bucket-specific, uncertainty kills YES)
+MAX_MODEL_DIVERGENCE_NO_F = 12          # NO-side: >12°F = skip (models can disagree on WHERE but agree on NOT HERE)
 MODEL_CONVERGENCE_BOOST_F = 2           # <2°F model spread = 1.2x confidence
 
 # ═══════════════════════════════════════════════════════
@@ -357,7 +358,7 @@ WARM_CITIES = set(WINTER_WARM_CITY_BIAS.keys())  # Derived from dict
 MODEL_BIAS_MIN_DATAPOINTS = 5  # Min datapoints before using learned bias (was implicit 10)
 
 # Skip trades where total payout (contracts × payout_per_contract) is below this
-MIN_PAYOUT_DOLLARS = 1.00      # Was $2.00 — lowered for small bankroll where 1-contract trades are normal
+MIN_PAYOUT_DOLLARS = 0.25      # Was $1.00 — lowered further for $48 bankroll where 1-contract NO trades are the norm
 
 # Minimum volume on a market to trade it
 # Note: Kalshi weather markets are low-volume. 1+ is realistic.

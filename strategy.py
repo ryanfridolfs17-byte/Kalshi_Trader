@@ -542,12 +542,15 @@ class Strategy:
             }
         else:
             # Overpriced YES — buy NO
-            # Model disagreement check for NO trades too
+            # Model disagreement check for NO trades — higher threshold than YES.
+            # Models can disagree about WHERE the temp lands but still agree it's
+            # NOT in a specific 2°F bucket. Only block extreme disagreement.
             model_spread = distribution.get("model_spread", 0)
-            if model_spread > config.MAX_MODEL_DIVERGENCE_F:
+            no_divergence_limit = getattr(config, 'MAX_MODEL_DIVERGENCE_NO_F', config.MAX_MODEL_DIVERGENCE_F)
+            if model_spread > no_divergence_limit:
                 model_means = distribution.get("model_means", {})
                 print(f"    [STRATEGY] Skipped NO: model families disagree by {model_spread:.1f}°F "
-                      f"({model_means}) — too uncertain (max {config.MAX_MODEL_DIVERGENCE_F}°F)")
+                      f"({model_means}) — too uncertain (max {no_divergence_limit}°F)")
                 return None
 
             # Model convergence boost for NO trades
