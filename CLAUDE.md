@@ -108,7 +108,7 @@ All values in `config.py`. Cents = 100 per $1.00.
 |-----------|-------|-------|
 | `MIN_EDGE` | 7% | Lowered from 10% for high-freq small-edge strategy. Morning: 9%, overnight: 10%. |
 | `FEE_ADJUSTED_MIN_EDGE` | 3% | After 7% fee drag. Lowered from 5% to enable more volume. |
-| `MIN_PAYOUT_DOLLARS` | $1.00 | Was $2.00 — lowered for small bankroll |
+| `MIN_PAYOUT_DOLLARS` | $0.25 | Was $1.00 — lowered for $48 bankroll where 1-contract NO trades are normal |
 | `DAILY_LOSS_LIMIT_CENTS` | $6.00 | 15% of bankroll |
 | `MAX_DAILY_FORECAST_TRADES` | 5/day | Confirmed outcomes exempt |
 | `CONSECUTIVE_LOSS_PAUSE` | 3 losses / 60 min | |
@@ -133,7 +133,7 @@ All values in `config.py`. Cents = 100 per $1.00.
 
 ### Strategy Guards
 - **Rounding buffer**: ±1°F = no trade, ±2°F = 50% size. **NO-side uses rounding-expanded boundaries** (bucket ± 1°F) for separation check — needs ≥1.5°F from expanded boundary (was 3°F). Uses **raw (pre-bias) forecast mean** for separation to avoid winter bias blocking valid trades.
-- **Model divergence**: >6°F spread = skip (was 4°F — too tight in winter). <2°F = 1.2x boost.
+- **Model divergence**: YES >6°F = skip, NO >12°F = skip (models can disagree on WHERE but agree on NOT HERE). <2°F = 1.2x boost.
 - **Longshot floor**: 5¢. **Near-certainty cap**: 88¢.
 - **NO ceiling**: 60¢ (`NO_SIDE_MAX_PRICE_CENTS`). **NO sizing**: ≥50¢ gets 40% normal.
 - **Per-city per-model bias correction**: Learned from `quant_analytics.get_model_bias()` (5+ dp). Defaults: DEN +4°F, Gulf +3°F, desert +2°F.
