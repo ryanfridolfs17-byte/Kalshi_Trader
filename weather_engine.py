@@ -316,6 +316,7 @@ class WeatherEngine:
 
         all_highs = []
         all_weights = []
+        raw_uncorrected_highs = []  # Track original highs before bias correction
         corrected_family_highs = {}  # Track bias-corrected highs for model_means
 
         def _weight_for(model_key):
@@ -345,10 +346,16 @@ class WeatherEngine:
             corrected_highs = [t + correction for t in highs] if correction != 0 else highs
             corrected_family_highs[family_name] = corrected_highs
             all_highs.extend(corrected_highs)
+            raw_uncorrected_highs.extend(highs)
             all_weights.extend([w] * len(corrected_highs))
 
         # Build the distribution with accuracy-based weights
         result = self._build_distribution(city_code, target_date, all_highs, sources_used, all_weights)
+
+        # Store raw (pre-bias) mean for separation checks — bias shifts the mean
+        # toward buckets and can block valid NO trades (especially winter warm cities)
+        if raw_uncorrected_highs:
+            result["raw_forecast_mean"] = round(sum(raw_uncorrected_highs) / len(raw_uncorrected_highs), 1)
 
         # Add per-model family means for disagreement detection
         # Uses bias-corrected highs so model_spread reflects actual predictions
