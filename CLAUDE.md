@@ -132,7 +132,7 @@ All values in `config.py`. Cents = 100 per $1.00.
 | Quarter-Kelly | Kelly/4 × confirmation | |
 
 ### Strategy Guards
-- **Rounding buffer**: ±1°F = no trade, ±2°F = 50% size. **NO-side uses rounding-expanded boundaries** (bucket ± 1°F) for separation check — needs ≥1.5°F from expanded boundary (was 3°F). Uses **raw (pre-bias) forecast mean** for separation to avoid winter bias blocking valid trades.
+- **Rounding buffer**: ±1°F = no trade, ±2°F = 50% size. **NO-side uses rounding-expanded boundaries** (bucket ± 1°F) for separation check — needs ≥1°F from expanded boundary (was 3°F). Uses **raw (pre-bias) forecast mean** for separation to avoid winter bias blocking valid trades.
 - **Model divergence**: YES >6°F = skip, NO >12°F = skip (models can disagree on WHERE but agree on NOT HERE). <2°F = 1.2x boost.
 - **Longshot floor**: 5¢. **Near-certainty cap**: 88¢.
 - **NO ceiling**: 60¢ (`NO_SIDE_MAX_PRICE_CENTS`). **NO sizing**: ≥50¢ gets 40% normal.
