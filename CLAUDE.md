@@ -69,7 +69,7 @@ market_scanner.py → strategy.py → confirmer → trade_scorecard.py → risk_
 - **Quarter-Kelly sizing** (Kelly/4 × confirmation level)
 - **Maker strategy** — limit orders, not market orders
 - **NWS settlement** — Weather markets settle on NWS Daily Climate Reports, not model forecasts
-- **NWS rounding** — ±1°F DOS-era conversion error. Buffer: ±1°F = no trade, ±2°F = 50% size. **NO-side expands bucket by ±1°F before separation check.**
+- **NWS rounding** — ±1°F DOS-era conversion error. Buffer: ±1°F = no trade, ±2°F = 50% size. **NO-side expands bucket by ±1°F before separation check.** Dynamic separation: `max(2°F, std_dev*0.6)`. CONFIRM gets 1.5x penalty.
 - **Fee-adjusted edge** — 7% fee drag deducted before min edge check. Side-aware formula.
 - **Only CASE 1 = CONFIRMED_OUTCOME** — temp can't un-happen. CASE 2/3 = STRONG (normal risk checks).
 - **CASE 2 disabled** (recovery mode). Returns STRONG when re-enabled.
@@ -132,10 +132,11 @@ All values in `config.py`. Cents = 100 per $1.00.
 | Quarter-Kelly | Kelly/4 × confirmation | |
 
 ### Strategy Guards
-- **Rounding buffer**: ±1°F = no trade, ±2°F = 50% size. **NO-side uses rounding-expanded boundaries** (bucket ± 1°F) for separation check — needs ≥1°F from expanded boundary (was 3°F). Uses **raw (pre-bias) forecast mean** for separation to avoid winter bias blocking valid trades.
-- **Model divergence**: YES >6°F = skip, NO >12°F = skip (models can disagree on WHERE but agree on NOT HERE). <2°F = 1.2x boost.
+- **Rounding buffer**: ±1°F = no trade, ±2°F = 50% size. **NO-side uses rounding-expanded boundaries** (bucket ± 1°F) for separation check. Uses **raw (pre-bias) forecast mean** for separation to avoid winter bias blocking valid trades.
+- **NO-side dynamic separation**: `max(2.0°F, std_dev * 0.6)` from expanded boundary. Scales with forecast uncertainty — tight models need 2°F, spread models need 3-4°F+. **CONFIRM-level NO gets 1.5x penalty** (requires 50% more separation than STRONG). Prevents close-call losses where forecast is within typical 3-5°F error of bucket.
+- **Model divergence**: YES >6°F = skip, NO >8°F = skip (was 12°F — large spread invalidates separation check). <2°F = 1.2x boost.
 - **Longshot floor**: 5¢. **Near-certainty cap**: 88¢.
-- **NO ceiling**: 60¢ (`NO_SIDE_MAX_PRICE_CENTS`). **NO sizing**: ≥50¢ gets 40% normal.
+- **NO ceiling**: 55¢ (`NO_SIDE_MAX_PRICE_CENTS`, was 60¢). **NO sizing**: ≥50¢ gets 40% normal.
 - **Per-city per-model bias correction**: Learned from `quant_analytics.get_model_bias()` (5+ dp). Defaults: DEN +4°F, Gulf +3°F, desert +2°F.
 - **Next-day guard**: 1.5x edge threshold, 50% sizing. Confirmed outcomes exempt.
 - **Same-cycle cooldown exempt**. 6-hour same-ticker re-entry cooldown (CASE 1 exempt only — CASE 3 returns STRONG, not CONFIRMED_OUTCOME).
@@ -174,7 +175,7 @@ Limit orders at `fair_value - 2¢`. Dynamic: high edge → 1¢, low edge → 3¢
 - Auto-cancel: buy 25min, exit/hedge 30min.
 
 ### Self-Improver (Phase 4 — Live)
-Weekly (Sun 11 PM). Safe params: MIN_EDGE, MAKER_SPREAD_BUFFER_CENTS, MAX_MODEL_DIVERGENCE_F, NEXT_DAY_SIZING_MULTIPLIER, ROUNDING_BUFFER_SOFT_F, PRE_SETTLEMENT_SIZING_MULT, NO_SIDE_SIZING_MULTIPLIER, NO_SIDE_MAX_PRICE_CENTS. Max 3 changes/week, 25% max change, 5% improvement required. Never touches risk limits or kill switch.
+Weekly (Sun 11 PM). Safe params: MIN_EDGE, MAKER_SPREAD_BUFFER_CENTS, MAX_MODEL_DIVERGENCE_F, NEXT_DAY_SIZING_MULTIPLIER, ROUNDING_BUFFER_SOFT_F, PRE_SETTLEMENT_SIZING_MULT, NO_SIDE_SIZING_MULTIPLIER, NO_SIDE_MAX_PRICE_CENTS, NO_SEPARATION_STD_DEV_MULTIPLIER. Max 3 changes/week, 25% max change, 5% improvement required. Never touches risk limits or kill switch.
 
 ### Dashboard Force-Exit
 `POST /api/force-exit` — `{"ticker": "KXHIGH..."}` or `{"ticker": "all"}`. Uses shared KalshiClient via `set_kalshi_client()`. Price floor: `yes_price: 1` or `no_price: 1`.

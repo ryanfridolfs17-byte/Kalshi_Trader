@@ -30,6 +30,7 @@ PARAM_BOUNDS = {
     "PRE_SETTLEMENT_SIZING_MULT":  (0.50, 1.0),
     "NO_SIDE_SIZING_MULTIPLIER":   (0.30, 0.80),
     "NO_SIDE_MAX_PRICE_CENTS":     (40, 70),
+    "NO_SEPARATION_STD_DEV_MULTIPLIER": (0.3, 1.0),
 }
 
 # These parameters must NEVER be auto-adjusted (risk limits, kill switches)
