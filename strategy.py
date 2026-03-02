@@ -566,6 +566,15 @@ class Strategy:
             # Use RAW (pre-bias) mean for separation — bias is a settlement
             # correction, not forecast location. Winter bias (+3-4°F) was pushing
             # means INTO buckets and blocking trades with clear ensemble edge.
+            #
+            # Dynamic separation: scales with forecast uncertainty (std_dev).
+            # When models are tight (std_dev=3°F), 2°F floor is sufficient.
+            # When models are spread (std_dev=7°F), require 4.2°F — proportional to risk.
+            forecast_std = distribution.get("std_dev", 5.0)
+            dynamic_separation = max(
+                config.MIN_FORECAST_STRIKE_SEPARATION_F,
+                forecast_std * getattr(config, 'NO_SEPARATION_STD_DEV_MULTIPLIER', 0.6)
+            )
             forecast_mean = distribution["forecasted_high_mean"]
             raw_forecast_mean = distribution.get("raw_forecast_mean", forecast_mean)
             effective_low = temp_low - config.ROUNDING_BUFFER_HARD_F
@@ -576,14 +585,25 @@ class Strategy:
                 separation = effective_low - raw_forecast_mean
             else:
                 separation = raw_forecast_mean - effective_high
-            if separation < config.MIN_FORECAST_STRIKE_SEPARATION_F:
+            if separation < dynamic_separation:
                 bias_shift = forecast_mean - raw_forecast_mean
                 print(f"    [STRATEGY] Skipped NO on {city_code} {temp_low}-{temp_high}°F "
                       f"(effective {effective_low}-{effective_high}°F with rounding): "
                       f"raw_mean {raw_forecast_mean:.1f}°F only {separation:.1f}°F away "
-                      f"(need {config.MIN_FORECAST_STRIKE_SEPARATION_F}°F)"
+                      f"(need {dynamic_separation:.1f}°F = max({config.MIN_FORECAST_STRIKE_SEPARATION_F}, "
+                      f"std={forecast_std:.1f}*{getattr(config, 'NO_SEPARATION_STD_DEV_MULTIPLIER', 0.6)}))"
                       f"{f' [bias={bias_shift:+.1f}°F]' if abs(bias_shift) > 0.1 else ''}")
                 return None
+
+            # CONFIRM-level NO trades need extra separation — only 2/5 sources agree,
+            # NWS abstains. Weak evidence for betting "temp will NOT be in this bucket".
+            if confirmation.get("verdict") == "CONFIRM":
+                confirm_separation = dynamic_separation * 1.5
+                if separation < confirm_separation:
+                    print(f"    [STRATEGY] CONFIRM-level NO on {city_code} {temp_low}-{temp_high}°F: "
+                          f"separation {separation:.1f}°F < {confirm_separation:.1f}°F "
+                          f"(1.5x CONFIRM penalty on {dynamic_separation:.1f}°F threshold) — skipping")
+                    return None
 
             # Rounding buffer for NO trades (uses expanded boundaries)
             rounding_multiplier = 1.0

@@ -227,13 +227,14 @@ SETTLEMENT_PROXIMITY_EDGE_OVERRIDE = 0.20  # Exceptional edge overrides
 # readings which can be higher than displayed time series.
 ROUNDING_BUFFER_HARD_F = 1              # ±1°F of strike = NO TRADE
 ROUNDING_BUFFER_SOFT_F = 2              # ±2°F of strike = 50% size reduction
-MIN_FORECAST_STRIKE_SEPARATION_F = 1.0  # Forecast mean must be ≥1°F from nearest strike (was 3 → 1.5 → 1)
+MIN_FORECAST_STRIKE_SEPARATION_F = 2.0  # Floor for dynamic separation (was 1.0). Actual: max(floor, std_dev * multiplier)
+NO_SEPARATION_STD_DEV_MULTIPLIER = 0.6  # Dynamic separation = max(floor, std_dev * this). Scales with forecast uncertainty.
 
 # ═══════════════════════════════════════════════════════
 # MODEL DIVERGENCE GATE (tightened from hardcoded 5°F)
 # ═══════════════════════════════════════════════════════
 MAX_MODEL_DIVERGENCE_F = 6              # YES-side: >6°F = skip (bucket-specific, uncertainty kills YES)
-MAX_MODEL_DIVERGENCE_NO_F = 12          # NO-side: >12°F = skip (models can disagree on WHERE but agree on NOT HERE)
+MAX_MODEL_DIVERGENCE_NO_F = 8           # NO-side: >8°F = skip (was 12 — large spread invalidates separation check)
 MODEL_CONVERGENCE_BOOST_F = 2           # <2°F model spread = 1.2x confidence
 
 # ═══════════════════════════════════════════════════════
@@ -333,7 +334,7 @@ MIN_EDGE = 0.07
 # At 70c+, downside is 70c per contract but upside is only 30c. The loss/win ratio
 # makes these structurally unprofitable. AUS B84.5 (-$22.75) and MIA B79.5 (-$22.42)
 # were both NO at 68-77c.
-NO_SIDE_MAX_PRICE_CENTS = 60   # Reject NO positions priced above 60c (was 70c)
+NO_SIDE_MAX_PRICE_CENTS = 55   # Reject NO positions priced above 55c (was 60c — at 55c+ loss/win ratio requires >55% accuracy)
 
 # NO-side sizing multiplier — reduce position size for expensive NO trades.
 # Was 0.70 (70%), which still allowed $10-15 losses. Now 0.40 (40%).
