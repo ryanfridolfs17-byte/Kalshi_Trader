@@ -57,14 +57,14 @@ class Strategy:
 
         # --- FAST REJECT: dead markets ---
         if yes_ask == 0 and no_ask == 0 and last_price == 0:
-            return self._skip(None, ticker)
+            return self._skip("Dead market", ticker)
         if volume == 0 and open_interest == 0 and last_price == 0:
-            return self._skip(None, ticker)
+            return self._skip("Dead market", ticker)
         ref_price = yes_ask if yes_ask > 0 else last_price
         if ref_price <= 1 or ref_price >= 99:
-            return self._skip(None, ticker)
+            return self._skip("Dead market", ticker)
         if yes_ask >= 99 and no_ask >= 99:
-            return self._skip(None, ticker)
+            return self._skip("Dead market", ticker)
 
         # --- Try weather strategy ---
         signal = self._strategy_weather(market, ref_price, todays_high)
@@ -405,8 +405,8 @@ class Strategy:
                     "side": "no",
                     "edge": round(edge, 4),
                     "fee_adjusted_edge": round(edge * 0.93, 4),
-                    "our_prob": round(1.0 - (no_price / 100.0), 4),
-                    "market_prob": round(ref_price / 100.0, 4),
+                    "our_prob": 0.90,  # matches Kelly sizing probability
+                    "market_prob": round(no_price / 100.0, 4),
                     "price_cents": no_price,
                     "suggested_contracts": case3_contracts,
                     "reasoning": (

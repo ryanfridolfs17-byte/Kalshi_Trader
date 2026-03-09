@@ -182,7 +182,7 @@ class TradeIntelligence:
         sync_pnl_from_kalshi() is the single P&L writer.
         """
         settled = []
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         for trade in trade_log:
             if trade.get("settled"):
@@ -375,7 +375,7 @@ class TradeIntelligence:
             total_pnl = total_returned - total_invested
 
             # Today settlements
-            today_str = datetime.now().strftime("%Y-%m-%d")
+            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             today_wins, today_losses, today_pnl = 0, 0, 0
             filled_tickers = set(ticker_flows.keys())
             for s in all_settlements:
@@ -623,7 +623,8 @@ class TradeIntelligence:
                             (obs_utc, round(temp_c * 9 / 5 + 32)))
             if obs_list:
                 high = max(t for _, t in obs_list)
-                latest = obs_list[0][1]  # NWS features newest-first
+                obs_list.sort(key=lambda x: x[0], reverse=True)
+                latest = obs_list[0][1]
                 drop = high - latest
                 return {
                     "high": high, "latest": latest,

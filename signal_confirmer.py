@@ -24,7 +24,7 @@ from datetime import datetime
 # Open-Meteo deterministic endpoints
 _MODEL_APIS = {
     "nws_gfs": {
-        "url": "https://api.open-meteo.com/v1/gfs",
+        "url": "https://api.open-meteo.com/v1/forecast",
         "name": "NWS/GFS HRRR",
     },
     "ecmwf": {

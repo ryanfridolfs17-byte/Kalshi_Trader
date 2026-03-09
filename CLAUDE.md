@@ -48,7 +48,7 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 | `strategy.py` | ~700 | S1 Weather Edge + S2 Arbitrage. CASE 1/3 confirmed outcomes. Quarter-Kelly sizing. |
 | `weather_engine.py` | ~750 | 143 ensemble members (GFS 31, ECMWF 51, ICON 40, GEM 21) via Open-Meteo |
 | `signal_confirmer.py` | ~265 | 5-source voting. STRONG/CONFIRM/REJECT (no WEAK). NWS veto power. |
-| `risk_manager.py` | ~250 | 10 safety checks (down from 19). State in `risk_state.json`. |
+| `risk_manager.py` | ~280 | 10 safety checks + SIZE-DOWN logic. State in `risk_state.json`. |
 | `trade_intelligence.py` | ~760 | Exit logic, settlement P&L sync (single writer), NWS observations |
 | `maker_strategy.py` | ~260 | Limit orders at fair_value - spread_buffer. State in `maker_orders.json`. |
 | `dashboard.py` | ~780 | Web dashboard. `/api/health`, `/api/state`, `/api/force-exit` |
@@ -72,6 +72,7 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 - **Only CASE 1 = CONFIRMED_OUTCOME** -- temp exceeded bucket, can't un-happen. CASE 2 DELETED. CASE 3 = STRONG.
 - **Binary exits** -- HOLD or EXIT. No PARE/HEDGE/TAKE_PROFIT.
 - **Single-writer P&L** -- Only `sync_pnl_from_kalshi()` writes `pnl_history.json`. No exceptions.
+- **Size-down, not reject** -- When caps are exceeded, risk manager reduces contracts to fit instead of blocking.
 - **Kill switch** -- Daily loss = stop for day (auto-resume). 5 consecutive = 4h pause. No Sharpe-based shutdown.
 
 ## NWS Station Mappings (20 Cities)
@@ -152,4 +153,8 @@ Limit orders at `fair_value - 2c`. Dynamic: high edge -> 1c, low edge -> 3c. Sta
 - **Python 3.12**: `import traceback as _tb` to avoid shadowing.
 - **Timezone-aware**: `datetime.now(timezone.utc)`, `ZoneInfo(tz_name)`.
 - **Open-Meteo model names**: `gfs_seamless`, `ecmwf_ifs025`, `icon_seamless_eps`, `gem_global`.
+- **Open-Meteo confirmer URLs**: `/v1/forecast` (GFS), `/v1/ecmwf`, `/v1/dwd-icon`, `/v1/gem`.
 - **Single-writer P&L**: Only `sync_pnl_from_kalshi()` writes `pnl_history.json`.
+- **CITIES dict field**: `nws_station` (NOT `station`). Used for observation fetching.
+- **Daily reset at 6 AM ET**: Risk counters reset at 6 AM Eastern, not UTC midnight.
+- **Balance cache**: Risk manager caches balance for 60s to avoid excessive API calls.

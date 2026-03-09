@@ -97,6 +97,8 @@ def main():
                         "cost_cents": f.get("price_cents", 0) * f.get("contracts", 1),
                         "order_id": f.get("order_id", ""),
                         "order_status": "executed",
+                        "is_confirmed": f.get("is_confirmed", False),
+                        "is_arb": f.get("is_arb", False),
                     })
 
             # --- STEP 3: Evaluate exits for open positions ---
@@ -179,6 +181,10 @@ def main():
                     print("  [RISK] BLOCKED %s: %s" % (ticker, reason))
                     continue
 
+                # Re-read contracts (risk manager may have sized down)
+                contracts = risk_signal.get("contracts", contracts)
+                cost_cents = price_cents * contracts
+
                 # Calculate maker limit price
                 limit_price = maker.calculate_limit_price(signal)
                 if not limit_price or limit_price <= 0:
@@ -252,7 +258,7 @@ def _fetch_observed_highs(markets):
         if not city_info:
             continue
 
-        station = city_info.get("station", "")
+        station = city_info.get("nws_station", "")
         if not station:
             continue
 
@@ -354,7 +360,7 @@ def _write_bot_status(cycle, risk, intel, maker, signals_count, trades_count):
     try:
         rs = risk.get_state_summary()
         # Get balance directly from risk manager's client
-        balance = config.TOTAL_DEPOSITS_CENTS
+        balance = 4000  # fallback ~$40 bankroll
         try:
             if hasattr(intel, 'client') and intel.client:
                 bal = intel.client.get_balance()
