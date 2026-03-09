@@ -719,33 +719,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             })
 
         elif path == "/api/record-accuracy":
-            # Record model accuracy datapoints for manual reconciliation.
-            # Accepts: {"entries": [{"city": "MIA", "model": "gfs_ensemble", "forecast": 66, "actual": 66}, ...]}
-            entries = payload.get("entries")
-            if not isinstance(entries, list):
-                self._send_json({"error": "Missing or invalid 'entries' array"}, 400)
-                return
-            from quant_analytics import QuantAnalytics
-            quant = QuantAnalytics()
-            recorded = []
-            for e in entries:
-                city = e.get("city")
-                model = e.get("model")
-                forecast = e.get("forecast")
-                actual = e.get("actual")
-                if not all([city, model, forecast is not None, actual is not None]):
-                    continue
-                quant.record_model_accuracy(city, model, forecast, actual)
-                recorded.append({"city": city, "model": model, "forecast": forecast, "actual": actual,
-                                 "error": round(forecast - actual, 1)})
-            # Return current state after recording
-            self._send_json({
-                "ok": True,
-                "action": "record_accuracy",
-                "recorded": len(recorded),
-                "entries": recorded,
-                "model_accuracy": quant.model_accuracy,
-            })
+            self._send_json({"error": "Endpoint removed in v4.0"}, 410)
 
         elif path == "/api/reset":
             # Wipe all runtime state files to start fresh
