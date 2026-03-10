@@ -1,664 +1,340 @@
 """
-RISK MANAGER v3.0
-======================
-Safety system that protects your bankroll.
-Every trade must pass ALL checks before execution.
+RISK MANAGER v4.0
+====================
+10 safety checks (down from 19). Simplified kill switch.
+Daily loss = stop for day (auto-resume). 5 consecutive = 4h pause.
+No Sharpe-based shutdown.
 
-CHECKS:
-  1. Daily loss limit
-  2. Total exposure cap
-  3. Max open positions
-  4. Per-city exposure limit (weather)
-  5. Consecutive loss pause
-  6. Cooldown between trades
-  7. Manual approval threshold
+SIZE-DOWN LOGIC: When a trade exceeds caps, reduce contracts to fit
+instead of rejecting entirely. Only hard-reject for non-sizable checks.
 """
 
 import json
 import os
-from datetime import datetime, timedelta, timezone
+import time
+from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 import config
 
 
 class RiskManager:
 
-    def __init__(self):
-        self.state = {
-            "daily_loss_cents": 0,
-            "daily_trade_count": 0,
-            "last_reset_date": datetime.now().strftime("%Y-%m-%d"),
-            "last_trade_time": None,
-            "positions": [],
-            "consecutive_losses": 0,
-            "loss_pause_until": None,
-            "city_exposure": {},  # {"NYC": 300, "CHI": 150, ...}
-            "daily_city_spend": {},  # Cumulative daily spending per city (not reduced by sells)
-            "pending_orders": {},  # Resting orders not yet filled: {"ticker": {"cost": X, "contracts": N, "city_code": "..."}}
-        }
-        self._load_state()
+    def __init__(self, kalshi_client=None):
+        self.client = kalshi_client
+        self._cached_balance = None
+        self._balance_cache_time = 0
+        self.state = self._load_state()
+        self._ensure_state_defaults()
 
-    # ═══════════════════════════════════════════════════════
-    # MAIN CHECK: Can we trade?
-    # ═══════════════════════════════════════════════════════
+    def _ensure_state_defaults(self):
+        defaults = {
+            "positions": {},
+            "daily_pnl_cents": 0,
+            "daily_date": "",
+            "consecutive_losses": 0,
+            "kill_switch_until": None,
+            "last_trade_time": None,
+            "trade_count_today": 0,
+            "total_exposure_cents": 0,
+        }
+        for k, v in defaults.items():
+            if k not in self.state:
+                self.state[k] = v
 
     def check_trade(self, signal):
         """
-        Run all safety checks. Returns (approved, reason).
-        If approved is True, the trade can proceed.
+        Run 10 safety checks. Returns (approved, reason).
+        SIZE-DOWN: If caps are exceeded, reduce signal["contracts"] and
+        signal["cost_cents"] to fit. Only reject if even 1 contract is too many.
         """
-        self._maybe_reset_daily()
-
-        edge = signal.get("edge", 0)
-        price = signal.get("price_cents", 0)
-        contracts = signal.get("suggested_contracts", 0)
-        cost = price * contracts
-
-        # 1. Daily loss limit
-        if self.state["daily_loss_cents"] >= config.DAILY_LOSS_LIMIT_CENTS:
-            return False, f"Daily loss limit hit (${self.state['daily_loss_cents']/100:.2f})"
-
-        # 2. Exposure checks (settlement-aware)
-        classified = self.classify_positions()
-        active_exposure = classified["active_exposure_cents"]
-        pending_exposure = classified["pending_exposure_cents"]
-
-        # 2a. Active exposure cap: dynamic percentage-based (60% of bankroll)
-        # Include pending (resting) order cost — these are committed capital
-        # Confirmed outcomes bypass: near-guaranteed wins shouldn't be blocked
-        balance = self.state.get("balance_cents", config.MAX_TOTAL_EXPOSURE_CENTS)
-        total_pending = self.get_total_pending_cost()
-        exposure_cap = max(int(balance * config.MAX_TOTAL_EXPOSURE_PCT), config.MAX_TOTAL_EXPOSURE_CENTS)
-        is_confirmed = signal.get("confirmation_verdict") == "CONFIRMED_OUTCOME"
-        if active_exposure + total_pending + cost > exposure_cap:
-            if not is_confirmed:
-                return False, (f"Active exposure cap: ${active_exposure/100:.2f} + ${cost/100:.2f} "
-                               f"> ${exposure_cap/100:.2f} ({config.MAX_TOTAL_EXPOSURE_PCT:.0%} of ${balance/100:.2f})"
-                               f" (+${total_pending/100:.2f} resting orders, ${pending_exposure/100:.2f} pending settlement)")
-            else:
-                print(f"    [RISK] Confirmed outcome bypasses exposure cap: "
-                      f"${active_exposure/100:.2f} + ${cost/100:.2f} > ${exposure_cap/100:.2f}")
-
-        # 2b. Hard ceiling: active + resting + settling can't grow unbounded
-        hard_ceiling = exposure_cap * 2
-        if active_exposure + total_pending + pending_exposure + cost > hard_ceiling:
-            return False, (f"Total capital guard: ${(active_exposure + total_pending + pending_exposure)/100:.2f} "
-                           f"+ ${cost/100:.2f} > ${hard_ceiling/100:.2f}")
-
-        # 2c. Dynamic per-position cap: never more than 20% of capital in one trade
-        # If over cap, reduce contracts to fit instead of rejecting outright
-        balance = self.state.get("balance_cents", config.MAX_TOTAL_EXPOSURE_CENTS)
-        max_per_position = int(balance * config.MAX_POSITION_PCT)
-        if cost > max_per_position and price > 0:
-            capped_contracts = max(1, max_per_position // price)
-            capped_cost = price * capped_contracts
-            if capped_cost > max_per_position:
-                return False, f"Per-position cap: even 1 contract @ {price}c > ${max_per_position/100:.2f}"
-            print(f"    [RISK] Position cap: {contracts} → {capped_contracts} contracts "
-                  f"(${cost/100:.2f} → ${capped_cost/100:.2f}, cap ${max_per_position/100:.2f})")
-            signal["suggested_contracts"] = capped_contracts
-            contracts = capped_contracts
-            cost = capped_cost
-
-        # 2d. Liquidity reserve: keep % of bankroll liquid for next-day overnight edge window
-        # Confirmed outcomes bypass: near-guaranteed wins shouldn't be blocked by reserve
-        reserve_cents = int(balance * config.LIQUIDITY_RESERVE_PCT)
-        available = exposure_cap - active_exposure - total_pending
-        is_confirmed = signal.get("confirmation_verdict") == "CONFIRMED_OUTCOME"
-        if available - cost < reserve_cents:
-            if not is_confirmed and edge < 0.20:  # Override for exceptional edge or confirmed outcomes
-                return False, (f"Liquidity reserve: ${available/100:.2f} available, "
-                               f"trade costs ${cost/100:.2f}, need ${reserve_cents/100:.2f} reserve ({int(config.LIQUIDITY_RESERVE_PCT*100)}% of bankroll)")
-
-        # 3. Max positions (count only active, pending are settling out)
-        # Confirmed outcomes bypass — near-guaranteed wins always allowed
-        if len(classified["active"]) >= config.MAX_OPEN_POSITIONS:
-            if not is_confirmed:
-                return False, f"Max {config.MAX_OPEN_POSITIONS} active positions reached"
-            else:
-                print(f"    [RISK] Confirmed outcome bypasses max positions cap ({len(classified['active'])} active)")
-
-        # 4. Per-city exposure (weather strategy) — dynamic percentage-based
-        # Includes pending (resting) order cost for this city
-        # Confirmed outcomes bypass: near-guaranteed wins shouldn't be blocked by city cap
-        city = signal.get("city_code", "")
-        if city:
-            city_cap = max(int(balance * config.MAX_PER_CITY_PCT), config.MAX_PER_CITY_CENTS)
-            city_exp = self.state["city_exposure"].get(city, 0)
-            city_pending = self.get_pending_cost_for_city(city)
-            if city_exp + city_pending + cost > city_cap:
-                if not is_confirmed:
-                    return False, (f"{city} exposure: ${city_exp/100:.2f} + ${city_pending/100:.2f} pending + ${cost/100:.2f} "
-                                   f"> ${city_cap/100:.2f} ({config.MAX_PER_CITY_PCT:.0%} of bankroll)")
-                else:
-                    print(f"    [RISK] Confirmed outcome bypasses {city} city cap: "
-                          f"${(city_exp + city_pending)/100:.2f} + ${cost/100:.2f} > ${city_cap/100:.2f}")
-
-        # 4a2. Cumulative daily city spending cap (prevents sell-and-rebuy chasing)
-        # Confirmed outcomes bypass — near-guaranteed wins shouldn't be blocked
-        if city:
-            daily_spend = self.state.get("daily_city_spend", {}).get(city, 0)
-            if daily_spend + cost > config.MAX_DAILY_CITY_SPEND_CENTS:
-                if not is_confirmed:
-                    return False, (f"{city} daily spend cap: ${daily_spend/100:.2f} + ${cost/100:.2f} "
-                                   f"> ${config.MAX_DAILY_CITY_SPEND_CENTS/100:.2f} cumulative")
-                else:
-                    print(f"    [RISK] Confirmed outcome bypasses {city} daily spend cap")
-
-        # 4b. Correlated positions cap (same city + same date)
-        # Confirmed outcomes get a higher cap (4) since they're near-guaranteed
-        if city:
-            ticker = signal.get("ticker", "")
-            signal_date = self._extract_date_from_ticker(ticker)
-            if signal_date:
-                corr_count = sum(
-                    1 for p in self.state["positions"]
-                    if p.get("city_code") == city
-                    and self._extract_date_from_ticker(p.get("ticker", "")) == signal_date
-                )
-                is_confirmed = signal.get("confirmation_verdict") == "CONFIRMED_OUTCOME"
-                corr_cap = config.MAX_CORRELATED_POSITIONS_CONFIRMED if is_confirmed else config.MAX_CORRELATED_POSITIONS
-                if corr_count >= corr_cap:
-                    return False, f"Max {corr_cap} correlated positions for {city} on {signal_date}"
-
-        # 4c. Per-ticker cost cap (prevents runaway scaling into one contract)
-        # Includes pending (resting) order cost — this was the root cause of the
-        # MIA B79.5 $58.65 position: resting orders were invisible to this check.
         ticker = signal.get("ticker", "")
-        if ticker:
-            existing_ticker_cost = sum(
-                p.get("cost_cents", 0) for p in self.state["positions"]
-                if p.get("ticker") == ticker
-            )
-            pending_ticker_cost = self.get_pending_cost_for_ticker(ticker)
-            total_ticker_cost = existing_ticker_cost + pending_ticker_cost
-            if total_ticker_cost + cost > config.MAX_PER_TICKER_CENTS:
-                return False, (f"Ticker {ticker} capped: ${existing_ticker_cost/100:.2f} filled + "
-                               f"${pending_ticker_cost/100:.2f} pending + ${cost/100:.2f} "
-                               f"> ${config.MAX_PER_TICKER_CENTS/100:.2f}")
+        city = signal.get("city_code", "")
+        price_cents = signal.get("price_cents", 0)
+        contracts = signal.get("contracts", signal.get("suggested_contracts", 1))
+        is_confirmed = signal.get("is_confirmed", False)
+        is_arb = signal.get("is_arb", False)
 
-            # 4d. Per-ticker contract count cap (prevents cheap contract explosion)
-            existing_contracts = sum(
-                p.get("contracts", 0) for p in self.state["positions"]
-                if p.get("ticker") == ticker
-            )
-            pending_contracts = self.get_pending_contracts_for_ticker(ticker)
-            total_contracts = existing_contracts + pending_contracts
-            new_contracts = signal.get("suggested_contracts", 0)
-            if total_contracts + new_contracts > config.MAX_CONTRACTS_PER_TICKER:
-                return False, (f"Contract cap: {existing_contracts} filled + {pending_contracts} pending + "
-                               f"{new_contracts} new > {config.MAX_CONTRACTS_PER_TICKER}")
+        self._check_daily_reset()
 
-        # 5. Consecutive loss pause
-        if self.state["loss_pause_until"]:
-            pause_until = datetime.fromisoformat(self.state["loss_pause_until"])
-            if datetime.now() < pause_until:
-                remaining = (pause_until - datetime.now()).total_seconds() / 60
-                return False, f"Loss streak pause: {remaining:.0f} min remaining"
+        # --- HARD CHECKS (cannot size down, binary pass/fail) ---
 
-        if self.state["consecutive_losses"] >= config.CONSECUTIVE_LOSS_PAUSE:
-            # Activate pause
-            pause_until = datetime.now() + timedelta(minutes=config.CONSECUTIVE_LOSS_PAUSE_MINUTES)
-            self.state["loss_pause_until"] = pause_until.isoformat()
-            self._save_state()
-            return False, f"{config.CONSECUTIVE_LOSS_PAUSE} losses in a row — pausing {config.CONSECUTIVE_LOSS_PAUSE_MINUTES} min"
+        # 1. Kill switch
+        if self.state.get("kill_switch_until"):
+            until = self.state["kill_switch_until"]
+            if datetime.now(timezone.utc).isoformat() < until:
+                return False, "Kill switch active until " + until
+            else:
+                self.state["kill_switch_until"] = None
+                self.state["consecutive_losses"] = 0
+                self._save_state()
 
-        # 6. Cooldown (exempt for signals from same scan cycle — different cities
-        #    evaluated in one pass shouldn't block each other)
-        if self.state["last_trade_time"] and not signal.get("same_scan_cycle"):
-            elapsed = (datetime.now() - datetime.fromisoformat(self.state["last_trade_time"])).total_seconds()
+        # 2. Daily loss limit
+        dpnl = self.state["daily_pnl_cents"]
+        if dpnl <= -config.DAILY_LOSS_LIMIT_CENTS:
+            return False, "Daily loss limit hit: %dc" % dpnl
+
+        # 3. Consecutive loss pause — set kill switch ONCE, don't reset timer
+        if self.state["consecutive_losses"] >= config.KILL_SWITCH_CONSEC_LOSSES:
+            if not self.state.get("kill_switch_until"):
+                pause_until = datetime.now(timezone.utc) + timedelta(
+                    hours=config.KILL_SWITCH_PAUSE_HOURS
+                )
+                self.state["kill_switch_until"] = pause_until.isoformat()
+                self._save_state()
+            return False, "%d consecutive losses -> %dh pause" % (
+                config.KILL_SWITCH_CONSEC_LOSSES, config.KILL_SWITCH_PAUSE_HOURS)
+
+        # 4. Trade cooldown (same-cycle trades exempt)
+        last = self.state.get("last_trade_time")
+        if last and not signal.get("same_cycle", False):
+            if isinstance(last, str):
+                last = 0
+            elapsed = time.time() - last
             if elapsed < config.TRADE_COOLDOWN:
-                remaining = config.TRADE_COOLDOWN - elapsed
-                return False, f"Cooldown: {remaining:.0f}s remaining"
+                return False, "Cooldown: %ds remaining" % int(config.TRADE_COOLDOWN - elapsed)
 
-        # 6b. Daily forecast trade count cap (confirmed outcomes + arbitrage exempt)
-        is_confirmed = signal.get("confirmation_verdict") == "CONFIRMED_OUTCOME"
-        is_arbitrage = signal.get("strategy") == "S2-Arbitrage"
-        if not is_confirmed and not is_arbitrage:
-            forecast_trades_today = self.state.get("daily_forecast_trades", 0)
-            if forecast_trades_today >= config.MAX_DAILY_FORECAST_TRADES:
-                return False, (f"Daily forecast trade cap: {forecast_trades_today} trades "
-                               f"(max {config.MAX_DAILY_FORECAST_TRADES}/day)")
+        # 5. Max open positions (confirmed/arb bypass)
+        if not is_confirmed and not is_arb:
+            open_count = len(self.state["positions"])
+            if open_count >= config.MAX_OPEN_POSITIONS:
+                return False, "Max %d open positions (%d active)" % (
+                    config.MAX_OPEN_POSITIONS, open_count)
 
-        # 7. Manual approval
-        if cost > config.APPROVAL_THRESHOLD_CENTS:
-            return "NEEDS_APPROVAL", f"Trade costs ${cost/100:.2f} > ${config.APPROVAL_THRESHOLD_CENTS/100:.2f} — needs approval"
+        # --- SIZABLE CHECKS (reduce contracts to fit) ---
 
-        # 8. Settlement proximity — no new positions within N hours of close
-        close_time_str = signal.get("close_time")
-        if close_time_str:
-            try:
-                close_time = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
-                now_utc = datetime.now(timezone.utc)
-                hours_until_close = (close_time - now_utc).total_seconds() / 3600
-                if 0 < hours_until_close <= config.SETTLEMENT_PROXIMITY_HOURS:
-                    if edge <= config.SETTLEMENT_PROXIMITY_EDGE_OVERRIDE:
-                        return False, f"Too close to settlement ({hours_until_close:.1f}h, edge {edge:.0%} < {config.SETTLEMENT_PROXIMITY_EDGE_OVERRIDE:.0%})"
-            except (ValueError, TypeError):
-                pass  # Graceful degradation if close_time is unparseable
+        balance = self._get_balance_cents()
+        max_contracts = contracts  # Start with requested amount
 
-        # All checks passed
-        return True, "All risk checks passed"
+        # 6. Total exposure (confirmed bypass)
+        if not is_confirmed:
+            max_exposure = int(balance * config.MAX_TOTAL_EXPOSURE_PCT)
+            cur_exp = self.state["total_exposure_cents"]
+            room = max_exposure - cur_exp
+            if room <= 0:
+                return False, "Exposure limit: %dc used of %dc" % (cur_exp, max_exposure)
+            if price_cents > 0:
+                max_by_exposure = room // price_cents
+                max_contracts = min(max_contracts, max_by_exposure)
 
-    # ═══════════════════════════════════════════════════════
-    # RECORD KEEPING
-    # ═══════════════════════════════════════════════════════
+        # 7. Per-ticker limit
+        ticker_exp = self._ticker_exposure(ticker)
+        ticker_room = config.MAX_PER_TICKER_CENTS - ticker_exp
+        if ticker_room <= 0:
+            return False, "Per-ticker limit reached for %s" % ticker
+        if price_cents > 0:
+            max_by_ticker = ticker_room // price_cents
+            max_contracts = min(max_contracts, max_by_ticker)
 
-    def record_trade(self, ticker, side, cost_cents, contracts, city_code="",
-                     title="", edge=0, expected_profit_cents=0, market_description="",
-                     confirmation_verdict="", strategy=""):
-        """Record a new position, or merge into existing if same ticker (scale-in)."""
-        # Check if we already hold this ticker — merge if so
-        existing = None
-        for p in self.state["positions"]:
-            if p.get("ticker") == ticker:
-                existing = p
-                break
+        # 8. Per-city concentration (confirmed bypass)
+        if not is_confirmed:
+            max_city = int(balance * config.MAX_PER_CITY_PCT)
+            city_exp = self._city_exposure(city)
+            city_room = max_city - city_exp
+            if city_room <= 0:
+                return False, "City %s limit reached" % city
+            if price_cents > 0:
+                max_by_city = city_room // price_cents
+                max_contracts = min(max_contracts, max_by_city)
 
-        if existing:
-            existing["contracts"] += contracts
-            existing["cost_cents"] += cost_cents
-            existing["edge"] = edge  # Update to latest edge
-            existing["expected_profit_cents"] += expected_profit_cents
-        else:
-            self.state["positions"].append({
-                "ticker": ticker,
-                "side": side,
-                "cost_cents": cost_cents,
-                "contracts": contracts,
-                "city_code": city_code,
-                "timestamp": datetime.now().isoformat(),
-                "title": title,
-                "edge": edge,
-                "expected_profit_cents": expected_profit_cents,
-                "market_description": market_description,
-            })
+        # 9. Correlated positions
+        max_corr = config.MAX_CORRELATED_POSITIONS
+        if is_confirmed:
+            max_corr += 1
+        city_positions = sum(1 for p in self.state["positions"].values()
+                           if p.get("city_code") == city)
+        if city_positions >= max_corr:
+            return False, "Correlated limit: %d positions in %s (max %d)" % (
+                city_positions, city, max_corr)
 
-        self.state["last_trade_time"] = datetime.now().isoformat()
-        self.state["daily_trade_count"] += 1
-        # Track forecast trades for daily cap — confirmed outcomes and arbitrage are exempt
-        is_confirmed = confirmation_verdict == "CONFIRMED_OUTCOME"
-        is_arbitrage = strategy == "S2-Arbitrage"
-        if not is_confirmed and not is_arbitrage:
-            if "daily_forecast_trades" not in self.state:
-                self.state["daily_forecast_trades"] = 0
-            self.state["daily_forecast_trades"] += 1
+        # 10. Max contracts per ticker
+        existing = self.state["positions"].get(ticker, {})
+        existing_contracts = existing.get("contracts", 0)
+        max_by_contract_limit = config.MAX_CONTRACTS_PER_TICKER - existing_contracts
+        if max_by_contract_limit <= 0:
+            return False, "Contract limit reached for %s" % ticker
+        max_contracts = min(max_contracts, max_by_contract_limit)
 
-        if city_code:
-            self.state["city_exposure"][city_code] = self.state["city_exposure"].get(city_code, 0) + cost_cents
-            # Track cumulative daily spending (never reduced by sells — resets at midnight)
-            if "daily_city_spend" not in self.state:
-                self.state["daily_city_spend"] = {}
-            self.state["daily_city_spend"][city_code] = self.state["daily_city_spend"].get(city_code, 0) + cost_cents
+        # --- Apply size-down ---
+        if max_contracts < 1:
+            return False, "All caps exceeded — cannot fit even 1 contract"
 
+        if max_contracts < contracts:
+            signal["contracts"] = max_contracts
+            signal["suggested_contracts"] = max_contracts
+            signal["cost_cents"] = price_cents * max_contracts
+
+        return True, "Approved (%d contracts)" % max_contracts
+
+    def record_trade(self, trade_info):
+        """Record a new trade in risk state."""
+        ticker = trade_info.get("ticker", "")
+        cost_cents = trade_info.get("cost_cents", 0)
+
+        # If position already exists, subtract old cost before overwriting
+        if ticker in self.state["positions"]:
+            old_cost = self.state["positions"][ticker].get("cost_cents", 0)
+            self.state["total_exposure_cents"] = max(
+                0, self.state["total_exposure_cents"] - old_cost
+            )
+
+        self.state["positions"][ticker] = {
+            "ticker": ticker,
+            "city_code": trade_info.get("city_code", ""),
+            "side": trade_info.get("side", "yes"),
+            "price_cents": trade_info.get("price_cents", 0),
+            "contracts": trade_info.get("contracts", 1),
+            "cost_cents": cost_cents,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "order_id": trade_info.get("order_id", ""),
+            "order_status": trade_info.get("order_status", "resting"),
+            "is_confirmed": trade_info.get("is_confirmed", False),
+            "is_arb": trade_info.get("is_arb", False),
+        }
+        self.state["total_exposure_cents"] += cost_cents
+        self.state["last_trade_time"] = time.time()
+        self.state["trade_count_today"] += 1
         self._save_state()
 
-    def record_loss(self, amount_cents):
-        """Record a loss."""
-        self.state["daily_loss_cents"] += amount_cents
+    def record_settlement(self, ticker, pnl_cents):
+        """Record settlement result."""
+        cost = 0
+        if ticker in self.state["positions"]:
+            cost = self.state["positions"][ticker].get("cost_cents", 0)
+            del self.state["positions"][ticker]
+        self.state["daily_pnl_cents"] += pnl_cents
+        self.state["total_exposure_cents"] = max(
+            0, self.state["total_exposure_cents"] - cost
+        )
+        if pnl_cents < 0:
+            self.state["consecutive_losses"] += 1
+        else:
+            self.state["consecutive_losses"] = 0
+        self._save_state()
+
+    def release_exposure(self, ticker, cost_cents=0, city_code=""):
+        """Remove position and release exposure. Called by trade_intelligence."""
+        if ticker in self.state["positions"]:
+            stored_cost = self.state["positions"][ticker].get("cost_cents", 0)
+            del self.state["positions"][ticker]
+            self.state["total_exposure_cents"] = max(
+                0, self.state["total_exposure_cents"] - stored_cost
+            )
+        elif cost_cents > 0:
+            self.state["total_exposure_cents"] = max(
+                0, self.state["total_exposure_cents"] - cost_cents
+            )
+        self._save_state()
+
+    def record_win(self, profit_cents):
+        """Record a win: update daily P&L, reset consecutive losses."""
+        self.state["daily_pnl_cents"] += profit_cents
+        self.state["consecutive_losses"] = 0
+        self._save_state()
+
+    def record_loss(self, cost_cents):
+        """Record a loss: update daily P&L, increment consecutive losses."""
+        self.state["daily_pnl_cents"] -= cost_cents
         self.state["consecutive_losses"] += 1
         self._save_state()
 
-    def record_win(self, amount_cents):
-        """Record a win — resets consecutive loss counter."""
-        self.state["consecutive_losses"] = 0
-        self.state["loss_pause_until"] = None
-        self._save_state()
+    def close_position(self, ticker):
+        """Remove a position from tracking."""
+        if ticker in self.state["positions"]:
+            cost = self.state["positions"][ticker].get("cost_cents", 0)
+            del self.state["positions"][ticker]
+            self.state["total_exposure_cents"] = max(
+                0, self.state["total_exposure_cents"] - cost
+            )
+            self._save_state()
 
-    def remove_position(self, ticker):
-        """Remove a settled/closed position."""
-        self.state["positions"] = [
-            p for p in self.state["positions"] if p["ticker"] != ticker
-        ]
-        # Recalculate city exposure
-        self.state["city_exposure"] = {}
-        for p in self.state["positions"]:
-            city = p.get("city_code", "")
-            if city:
-                self.state["city_exposure"][city] = self.state["city_exposure"].get(city, 0) + p["cost_cents"]
-        self._save_state()
-
-    # ═══════════════════════════════════════════════════════
-    # PENDING (RESTING) ORDER TRACKING
-    # ═══════════════════════════════════════════════════════
-    # Resting orders are invisible to position-based caps. Without tracking,
-    # the bot can pile up unlimited resting orders that all fill later,
-    # creating catastrophically large positions (e.g., MIA B79.5 at $58.65).
-
-    def add_pending_order(self, ticker, cost_cents, contracts, city_code=""):
-        """Track a resting order's cost so risk checks include it."""
-        if "pending_orders" not in self.state:
-            self.state["pending_orders"] = {}
-        existing = self.state["pending_orders"].get(ticker, {"cost": 0, "contracts": 0, "city_code": city_code})
-        existing["cost"] = existing.get("cost", 0) + cost_cents
-        existing["contracts"] = existing.get("contracts", 0) + contracts
-        existing["city_code"] = city_code
-        existing["placed_at"] = datetime.now().isoformat()
-        self.state["pending_orders"][ticker] = existing
+    def add_pending_order(self, ticker, order_info):
+        """Track a pending/resting order. Adds to exposure tracking."""
+        cost = order_info.get("cost_cents", 0)
+        # Subtract old cost if overwriting existing position
+        if ticker in self.state["positions"]:
+            old_cost = self.state["positions"][ticker].get("cost_cents", 0)
+            self.state["total_exposure_cents"] = max(
+                0, self.state["total_exposure_cents"] - old_cost
+            )
+        self.state["positions"][ticker] = order_info
+        self.state["total_exposure_cents"] += cost
         self._save_state()
 
     def clear_pending_order(self, ticker):
-        """Remove a pending order after fill or cancel."""
-        if "pending_orders" not in self.state:
-            self.state["pending_orders"] = {}
-        self.state["pending_orders"].pop(ticker, None)
-        self._save_state()
-
-    def get_pending_cost_for_ticker(self, ticker):
-        """Get total cost of resting orders for a ticker."""
-        pending = self.state.get("pending_orders", {})
-        return pending.get(ticker, {}).get("cost", 0)
-
-    def get_pending_contracts_for_ticker(self, ticker):
-        """Get total contract count of resting orders for a ticker."""
-        pending = self.state.get("pending_orders", {})
-        return pending.get(ticker, {}).get("contracts", 0)
-
-    def get_pending_cost_for_city(self, city_code):
-        """Get total cost of resting orders for a city."""
-        pending = self.state.get("pending_orders", {})
-        return sum(v.get("cost", 0) for v in pending.values() if v.get("city_code") == city_code)
-
-    def get_total_pending_cost(self):
-        """Get total cost of all resting orders."""
-        pending = self.state.get("pending_orders", {})
-        return sum(v.get("cost", 0) for v in pending.values())
-
-    def reduce_position(self, ticker, sell_contracts, released_cost_cents):
-        """Reduce a position's contract count and cost after a partial sell.
-        If contracts reach 0, removes the position entirely."""
-        for pos in self.state["positions"]:
-            if pos.get("ticker") == ticker:
-                pos["contracts"] = max(0, pos["contracts"] - sell_contracts)
-                pos["cost_cents"] = max(0, pos["cost_cents"] - released_cost_cents)
-
-                if pos["contracts"] <= 0:
-                    self.remove_position(ticker)
-                else:
-                    # Update city exposure
-                    city = pos.get("city_code", "")
-                    if city and city in self.state.get("city_exposure", {}):
-                        self.state["city_exposure"][city] = max(
-                            0, self.state["city_exposure"][city] - released_cost_cents
-                        )
-                    self._save_state()
-                return
-        # Position not found — nothing to reduce
-
-    def release_exposure(self, ticker, cost_cents, city_code=""):
-        """Release exposure when a trade settles or expires."""
-        # Reduce total exposure
-        self.state["total_exposure_cents"] = max(
-            0, self.state.get("total_exposure_cents", 0) - cost_cents
-        )
-        # Reduce city exposure
-        if city_code and city_code in self.state.get("city_exposure", {}):
-            self.state["city_exposure"][city_code] = max(
-                0, self.state["city_exposure"][city_code] - cost_cents
+        """Remove a pending order that was cancelled."""
+        if ticker in self.state["positions"]:
+            cost = self.state["positions"][ticker].get("cost_cents", 0)
+            del self.state["positions"][ticker]
+            self.state["total_exposure_cents"] = max(
+                0, self.state["total_exposure_cents"] - cost
             )
-        # Remove from positions list
-        self.remove_position(ticker)
-
-    # ═══════════════════════════════════════════════════════
-    # KILL SWITCH / OBSERVATION MODE
-    # ═══════════════════════════════════════════════════════
-
-    def check_kill_switch(self, trade_log):
-        """Check if the bot should enter observation mode.
-        Returns (is_observation, reason)."""
-        # Reload observation_mode from disk — the dashboard's /api/resume
-        # endpoint writes directly to risk_state.json, so we need to pick
-        # up external changes each cycle.
-        try:
-            if os.path.exists(config.RISK_STATE_FILE):
-                with open(config.RISK_STATE_FILE) as f:
-                    disk_state = json.load(f)
-                if not disk_state.get("observation_mode") and self.state.get("observation_mode"):
-                    # Dashboard resumed trading — apply to in-memory state
-                    self.state["observation_mode"] = False
-                    self.state["observation_reason"] = ""
-                    self.state["consecutive_losses"] = disk_state.get("consecutive_losses", 0)
-                    self.state["loss_pause_until"] = disk_state.get("loss_pause_until")
-                    print("  [RISK] Observation mode cleared via dashboard")
-        except Exception:
-            pass
-
-        # Manual override from config
-        if config.OBSERVATION_MODE:
-            self.state["observation_mode"] = True
-            self.state["observation_reason"] = "Manual override (config)"
             self._save_state()
-            return True, "Manual override (config)"
 
-        # Already in observation mode (persisted)
-        if self.state.get("observation_mode"):
-            return True, self.state.get("observation_reason", "Kill switch active")
+    def get_positions(self):
+        return dict(self.state.get("positions", {}))
 
-        # Check 1: Consecutive losses
-        if self.state["consecutive_losses"] >= config.KILL_SWITCH_CONSECUTIVE_LOSSES:
-            reason = f"{self.state['consecutive_losses']} consecutive losses"
-            self.state["observation_mode"] = True
-            self.state["observation_reason"] = reason
-            self._save_state()
-            return True, reason
+    def get_state_summary(self):
+        return {
+            "open_positions": len(self.state["positions"]),
+            "daily_pnl_cents": self.state["daily_pnl_cents"],
+            "consecutive_losses": self.state["consecutive_losses"],
+            "total_exposure_cents": self.state["total_exposure_cents"],
+            "kill_switch_until": self.state.get("kill_switch_until"),
+            "trade_count_today": self.state["trade_count_today"],
+        }
 
-        # Check 2: 7-day Sharpe ratio
-        settled = [
-            t for t in trade_log
-            if t.get("settled") and t.get("profit_cents") is not None
-            and t.get("result") not in ("expired_dry_run",)
-        ]
-        now = datetime.now(timezone.utc)
-        def _parse_ts(ts_str):
-            dt = datetime.fromisoformat(ts_str)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt
-        recent = [
-            t for t in settled
-            if t.get("timestamp") and
-            (now - _parse_ts(t["timestamp"])).days <= 7
-        ]
-        if len(recent) >= 3:
-            pnls = [t["profit_cents"] / 100.0 for t in recent]
-            mean_pnl = sum(pnls) / len(pnls)
-            variance = sum((p - mean_pnl) ** 2 for p in pnls) / len(pnls)
-            stdev = variance ** 0.5
-            sharpe = mean_pnl / stdev if stdev > 0 else 0
-            if sharpe < config.KILL_SWITCH_MIN_SHARPE_7D:
-                reason = f"7-day Sharpe {sharpe:.2f} < {config.KILL_SWITCH_MIN_SHARPE_7D}"
-                self.state["observation_mode"] = True
-                self.state["observation_reason"] = reason
-                self._save_state()
-                return True, reason
+    def _ticker_exposure(self, ticker):
+        pos = self.state["positions"].get(ticker, {})
+        return pos.get("cost_cents", 0)
 
-        return False, ""
+    def _city_exposure(self, city):
+        total = 0
+        for p in self.state["positions"].values():
+            if p.get("city_code") == city:
+                total += p.get("cost_cents", 0)
+        return total
 
-    def resume_trading(self):
-        """Reset observation mode and consecutive losses to resume trading."""
-        self.state["observation_mode"] = False
-        self.state["observation_reason"] = ""
-        self.state["consecutive_losses"] = 0
-        self.state["loss_pause_until"] = None
-        self._save_state()
-
-    # ═══════════════════════════════════════════════════════
-    # SETTLEMENT-AWARE CAPITAL MANAGEMENT
-    # ═══════════════════════════════════════════════════════
-
-    def _parse_market_date(self, ticker):
-        """Parse market date from ticker. Returns date object or None.
-        Ticker format: KXHIGHNY-26FEB14-B46.5 → Feb 14, 2026."""
-        parts = ticker.split("-") if ticker else []
-        if len(parts) >= 2:
+    def _get_balance_cents(self):
+        """Get balance with 60s cache to avoid excessive API calls."""
+        now = time.time()
+        if self._cached_balance and now - self._balance_cache_time < 60:
+            return self._cached_balance
+        if self.client:
             try:
-                return datetime.strptime(parts[1], "%y%b%d").date()
-            except ValueError:
+                bal = self.client.get_balance()
+                if bal and "balance" in bal:
+                    self._cached_balance = bal["balance"]
+                    self._balance_cache_time = now
+                    return self._cached_balance
+            except Exception:
                 pass
-        return None
+        if self._cached_balance:
+            return self._cached_balance
+        return getattr(config, "BALANCE_FALLBACK_CENTS", 4800)
 
-    def classify_positions(self):
-        """Split positions into active (tradeable) vs pending settlement (locked).
-
-        Active: market date is today or future.
-        Pending settlement: market date has passed, awaiting 10 AM ET settlement.
-        """
-        today_et = datetime.now(ZoneInfo("America/New_York")).date()
-        active = []
-        pending = []
-
-        for p in self.state["positions"]:
-            market_date = self._parse_market_date(p.get("ticker", ""))
-            if market_date is not None and market_date < today_et:
-                pending.append(p)
-            else:
-                active.append(p)
-
-        return {
-            "active": active,
-            "pending_settlement": pending,
-            "active_exposure_cents": sum(p.get("cost_cents", 0) for p in active),
-            "pending_exposure_cents": sum(p.get("cost_cents", 0) for p in pending),
-        }
-
-    def is_pre_settlement_window(self):
-        """Check if pending settlements exist and it's before settlement hour."""
-        classified = self.classify_positions()
-        if not classified["pending_settlement"]:
-            return False
-        et_hour = datetime.now(ZoneInfo("America/New_York")).hour
-        return et_hour < config.SETTLEMENT_HOUR_ET
-
-    def get_exposure_breakdown(self):
-        """Return structured exposure data for the dashboard."""
-        classified = self.classify_positions()
-        return {
-            "active_exposure_cents": classified["active_exposure_cents"],
-            "pending_settlement_cents": classified["pending_exposure_cents"],
-            "active_positions": len(classified["active"]),
-            "pending_positions": len(classified["pending_settlement"]),
-            "is_pre_settlement": self.is_pre_settlement_window(),
-        }
-
-    def update_balance(self, balance_cents):
-        """Store the current Kalshi account balance for dynamic sizing."""
-        if balance_cents is not None:
-            self.state["balance_cents"] = balance_cents
+    def _check_daily_reset(self):
+        """Reset daily counters at 6 AM ET (approximate trading day start)."""
+        et_now = datetime.now(ZoneInfo("America/New_York"))
+        today = et_now.strftime("%Y-%m-%d")
+        if self.state["daily_date"] != today and et_now.hour >= 6:
+            self.state["daily_date"] = today
+            self.state["daily_pnl_cents"] = 0
+            self.state["trade_count_today"] = 0
             self._save_state()
-
-    # ═══════════════════════════════════════════════════════
-    # STATUS
-    # ═══════════════════════════════════════════════════════
-
-    def print_status(self):
-        """Print current risk state."""
-        self._maybe_reset_daily()
-        classified = self.classify_positions()
-        active_exp = classified["active_exposure_cents"]
-        pending_exp = classified["pending_exposure_cents"]
-        n_active = len(classified["active"])
-        n_pending = len(classified["pending_settlement"])
-        balance = self.state.get("balance_cents")
-
-        print(f"\n  ┌─ Risk Status ─────────────────────────────────")
-        if balance is not None:
-            print(f"  │  Balance:        ${balance/100:.2f}")
-        print(f"  │  Daily loss:     ${self.state['daily_loss_cents']/100:.2f} / ${config.DAILY_LOSS_LIMIT_CENTS/100:.2f}")
-        print(f"  │  Active exposure: ${active_exp/100:.2f} / ${config.MAX_TOTAL_EXPOSURE_CENTS/100:.2f}")
-        if pending_exp > 0:
-            print(f"  │  Pending settle:  ${pending_exp/100:.2f} (locked until {config.SETTLEMENT_HOUR_ET} AM ET)")
-            print(f"  │  Total committed: ${(active_exp + pending_exp)/100:.2f}")
-        pending_note = f" (+{n_pending} settling)" if n_pending > 0 else ""
-        print(f"  │  Positions:      {n_active}{pending_note} / {config.MAX_OPEN_POSITIONS}")
-        print(f"  │  Trades today:   {self.state['daily_trade_count']}")
-        print(f"  │  Loss streak:    {self.state['consecutive_losses']}")
-
-        daily_spend = self.state.get("daily_city_spend", {})
-        if daily_spend:
-            spend_str = ", ".join(f"{c}: ${v/100:.2f}" for c, v in daily_spend.items())
-            print(f"  │  Daily spend:    {spend_str} (cap: ${config.MAX_DAILY_CITY_SPEND_CENTS/100:.2f})")
-
-        if self.state["city_exposure"]:
-            city_str = ", ".join(f"{c}: ${v/100:.2f}" for c, v in self.state["city_exposure"].items())
-            print(f"  │  City exposure:  {city_str}")
-
-        if self.state["loss_pause_until"]:
-            pause = datetime.fromisoformat(self.state["loss_pause_until"])
-            if datetime.now() < pause:
-                remaining = (pause - datetime.now()).total_seconds() / 60
-                print(f"  |  ! PAUSED:      {remaining:.0f} min remaining")
-
-        print(f"  └────────────────────────────────────────────────\n")
-
-    # ═══════════════════════════════════════════════════════
-    # INTERNAL
-    # ═══════════════════════════════════════════════════════
-
-    def _maybe_reset_daily(self):
-        """Reset daily counters at midnight and clean up expired positions."""
-        today = datetime.now().strftime("%Y-%m-%d")
-        if self.state["last_reset_date"] != today:
-            self.state["daily_loss_cents"] = 0
-            self.state["daily_trade_count"] = 0
-            self.state["daily_forecast_trades"] = 0  # Reset forecast trade counter
-            self.state["last_reset_date"] = today
-            self.state["consecutive_losses"] = 0
-            self.state["loss_pause_until"] = None
-            self.state["daily_city_spend"] = {}  # Reset cumulative city spending
-            self._cleanup_expired_positions()
-            self._save_state()
-
-    def _cleanup_expired_positions(self):
-        """Remove positions whose market date has passed.
-        Ticker format: KXHIGHNY-26FEB14-B46.5 → date portion is 26FEB14 (Feb 14, 2026).
-        """
-        today = datetime.now().date()
-        active = []
-        for p in self.state["positions"]:
-            ticker = p.get("ticker", "")
-            parts = ticker.split("-")
-            if len(parts) >= 2:
-                date_str = parts[1]  # e.g. "26FEB14"
-                try:
-                    market_date = datetime.strptime(date_str, "%y%b%d").date()
-                    if market_date >= today:
-                        active.append(p)
-                    else:
-                        print(f"  [RISK] Cleaned up expired position: {ticker} (settled {market_date})")
-                except ValueError:
-                    active.append(p)  # keep positions with unparseable dates
-            else:
-                active.append(p)
-        self.state["positions"] = active
-        # Recalculate city exposure from remaining positions
-        self.state["city_exposure"] = {}
-        for p in self.state["positions"]:
-            city = p.get("city_code", "")
-            if city:
-                self.state["city_exposure"][city] = self.state["city_exposure"].get(city, 0) + p["cost_cents"]
-
-    @staticmethod
-    def _extract_date_from_ticker(ticker):
-        """Extract date portion from ticker like KXHIGHNY-26FEB15-B42.5 → '26FEB15'."""
-        try:
-            parts = ticker.split("-")
-            if len(parts) >= 2:
-                return parts[1]
-        except Exception:
-            pass
-        return None
-
-    def _save_state(self):
-        try:
-            config.atomic_json_save(config.RISK_STATE_FILE, self.state)
-        except Exception:
-            pass
 
     def _load_state(self):
         try:
             if os.path.exists(config.RISK_STATE_FILE):
-                with open(config.RISK_STATE_FILE) as f:
+                with open(config.RISK_STATE_FILE, "r") as f:
                     loaded = json.load(f)
-                    self.state.update(loaded)
-        except Exception:
-            pass
+                    if isinstance(loaded, dict):
+                        return loaded
+        except Exception as e:
+            print("  [RISK] Warning: corrupt state file, starting fresh: %s" % e)
+        return {}
+
+    def _save_state(self):
+        try:
+            config.atomic_json_save(config.RISK_STATE_FILE, self.state)
+        except Exception as e:
+            print("  [RISK] Error saving state: %s" % e)

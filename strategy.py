@@ -1,18 +1,20 @@
 """
-STRATEGY ENGINE v3.1 — Multi-Market Trading
-======================================================
-Primary: Weather ensemble edge (S1)
-Secondary: Spread arbitrage (S2)
-Tertiary: S&P 500 VIX-implied brackets (S3) — toggleable
+STRATEGY ENGINE v4.0 -- Weather Edge Detection
+================================================
+Two strategies: Weather ensemble (S1) and Arbitrage (S2).
+No SP500. No scorecard. No convergence boost. No seasonal sizing.
 
-Decision flow:
-  1. Scan Kalshi for weather/SP500 markets
-  2. Fetch forecasts → build probability distribution
-  3. Compare vs market prices → detect mispricing
-  4. Get second opinions from independent sources
-  5. Risk check (safety layers)
-  6. Size with Quarter-Kelly × confirmation multiplier
-  7. Execute as LIMIT order (maker strategy)
+Pipeline:
+  1. Fast-reject dead markets
+  2. Parse weather bucket (city, date, temp range)
+  3. Check confirmed outcome (CASE 1 only, CASE 3 -> STRONG)
+  4. Fetch 143-member ensemble distribution
+  5. Calculate bucket probability vs market price
+  6. Fee-adjusted edge check (7% drag)
+  7. Signal confirmation (5-source voting)
+  8. NO-side guards (separation, price cap, divergence)
+  9. Quarter-Kelly sizing with confirmation multiplier
+  10. Reductions (next-day, rounding buffer, NO-expensive)
 """
 
 import math
@@ -20,1490 +22,687 @@ from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from weather_engine import WeatherEngine, CITIES
 from signal_confirmer import SignalConfirmer
-from trade_intelligence import TradeIntelligence
-from quant_analytics import QuantAnalytics
-from market_quality import MarketQualityFilter
-from seasonal_confidence import get_seasonal_multiplier, detect_regime as detect_seasonal_regime
 import config
 
 
 class Strategy:
-    """
-    Multi-strategy evaluation engine.
-    Weather is primary, arbitrage is secondary, SP500 is tertiary.
-    """
+    """Edge detection engine. Weather ensemble (S1) + Arbitrage (S2)."""
 
     def __init__(self, kalshi_client=None):
         self.client = kalshi_client
         self.weather = WeatherEngine()
         self.confirmer = SignalConfirmer()
-        self.intel = TradeIntelligence(kalshi_client, self.weather)
-        self.quant = QuantAnalytics(self.weather)
-        self.quality = MarketQualityFilter()
+        self.balance_cents = 4000  # Default $40, updated by caller
 
-        # Conditionally init SP500 components (only if enabled)
-        self.vol_engine = None
-        self.spx_confirmer = None
-        if config.MARKET_TYPES.get("sp500"):
-            try:
-                from volatility_engine import VolatilityEngine
-                from spx_confirmer import SPXConfirmer
-                self.vol_engine = VolatilityEngine()
-                self.spx_confirmer = SPXConfirmer()
-                print("  [STRATEGY] S&P 500 strategy (S3) enabled")
-            except Exception as e:
-                print(f"  [STRATEGY] WARN: Could not init SP500 strategy: {e}")
+    # ===========================================================
+    # MAIN ENTRY
+    # ===========================================================
 
-    # ═══════════════════════════════════════════════════════
-    # MAIN: Evaluate a market
-    # ═══════════════════════════════════════════════════════
+    def evaluate_market(self, market, todays_high=None):
+        """Evaluate a market for trading signals.
 
-    def evaluate_market(self, market):
-        """
-        Run weather strategy and arbitrage against a market.
-        Returns the best signal found.
+        Args:
+            market: Kalshi market dict
+            todays_high: Optional observed high so far (float, degF).
+                          If provided, enables confirmed outcome checks.
+
+        Returns: signal dict with keys per spec.
         """
         ticker = market.get("ticker", "")
-        title = market.get("title", "Unknown")
-
-        # Extract prices
-        yes_bid = market.get("yes_bid", 0) or 0
         yes_ask = market.get("yes_ask", 0) or 0
-        no_bid = market.get("no_bid", 0) or 0
         no_ask = market.get("no_ask", 0) or 0
         last_price = market.get("last_price", 0) or 0
         volume = market.get("volume", 0) or 0
+        open_interest = market.get("open_interest", 0) or 0
 
+        # --- FAST REJECT: dead markets ---
+        if yes_ask == 0 and no_ask == 0 and last_price == 0:
+            return self._skip("Dead market", ticker)
+        if volume == 0 and open_interest == 0 and last_price == 0:
+            return self._skip("Dead market", ticker)
         ref_price = yes_ask if yes_ask > 0 else last_price
-        spread = (yes_ask - yes_bid) if (yes_ask > 0 and yes_bid > 0) else 99
+        if ref_price <= 1 or ref_price >= 99:
+            return self._skip("Dead market", ticker)
+        if yes_ask >= 99 and no_ask >= 99:
+            return self._skip("Dead market", ticker)
 
-        # ─── GATE -1: DEAD MARKET FAST REJECT ───
-        # Skip markets with no real pricing activity
-        # Pattern 1: Price at 99-100¢ or 0-1¢ (settled/certain)
-        if ref_price >= 99 or ref_price <= 1:
-            return self._skip(None)  # Silent skip
-        # Pattern 2: No prices at all
-        if yes_bid == 0 and yes_ask == 0 and last_price == 0:
-            return self._skip(None)
-        # Pattern 3: No bids on either side (nobody trading)
-        if yes_bid == 0 and (market.get("no_bid", 0) or 0) == 0:
-            if volume == 0:
-                return self._skip(None)
-        # Pattern 4: Only one side has quotes at extremes
-        # (yes_ask=100, no_ask=100 = Kalshi default for untouched markets)
-        if yes_ask >= 99 and (market.get("no_ask", 0) or 0) >= 99:
-            return self._skip(None)
-        # Pattern 5: Zero volume entirely
-        if volume == 0 and (market.get("volume_24h", 0) or 0) == 0 and last_price == 0:
-            return self._skip(None)
+        # --- Try weather strategy ---
+        signal = self._strategy_weather(market, ref_price, todays_high)
+        if signal and signal["signal"] == "buy":
+            _t = signal["ticker"]
+            _s = signal["side"]
+            _e = signal["edge"]
+            _v = signal["confirmation_verdict"]
+            print(f"  [SIGNAL] {_t} {_s.upper()} edge={_e:.1%} verdict={_v}")
+            return signal
 
-        # ─── GATE 0: MARKET QUALITY FILTER ───
-        # Must pass BEFORE any strategy runs (catches illiquid markets, longshots)
-        # Note: Kalshi orderbooks are one-sided — yes_bid=0 doesn't mean illiquid.
-        # We need to check actual orderbook depth separately from bid/ask spread.
-        passed, reason, quality_score = self.quality.check_market(market)
-        if not passed:
-            if config.LOG_LEVEL == "DEBUG":
-                self.quality.print_filter_summary(market, passed, reason, quality_score)
-            return self._skip(f"Quality: {reason}")
+        # --- Try arbitrage ---
+        arb = self._strategy_arbitrage(market, yes_ask, no_ask)
+        if arb and arb["signal"] == "buy":
+            _t = arb["ticker"]
+            _e = arb["edge"]
+            print(f"  [SIGNAL] {_t} ARB edge={_e:.1%}")
+            return arb
 
-        signals = []
+        return self._skip(f"No signal for {ticker}", ticker)
 
-        # ─── STRATEGY 1: WEATHER ENSEMBLE EDGE (PRIMARY) ───
-        weather_signal = self._strategy_weather(market, ref_price, spread, volume)
-        if weather_signal:
-            signals.append(weather_signal)
+    # ===========================================================
+    # S1: WEATHER ENSEMBLE EDGE
+    # ===========================================================
 
-        # ─── STRATEGY 2: SPREAD ARBITRAGE (SECONDARY) ───
-        arb_signal = self._strategy_arbitrage(market, yes_ask, no_ask)
-        if arb_signal:
-            signals.append(arb_signal)
-
-        # ─── STRATEGY 3: S&P 500 VIX-IMPLIED BRACKETS ───
-        if self.vol_engine and self.spx_confirmer:
-            sp500_signal = self._strategy_sp500(market, ref_price, spread, volume)
-            if sp500_signal:
-                signals.append(sp500_signal)
-
-        # Return best signal
-        if not signals:
-            return self._skip(f"No signals for {ticker}")
-
-        best = max(signals, key=lambda s: s["edge"] * s["confidence"])
-
-        # Time-based edge threshold: be selective early, save capital for
-        # afternoon confirmed outcomes and arbitrage opportunities.
-        # Confirmed outcomes and arbitrage bypass this entirely.
-        min_edge = self._get_time_adjusted_edge_threshold(best)
-        if best["edge"] < min_edge:
-            return self._skip(f"Best edge {best['edge']:.1%} below {min_edge:.0%} threshold ({self._get_edge_period()})")
-
-        # Confirmed outcomes already have max sizing — skip normal sizing pipeline
-        if best.get("confirmation_verdict") == "CONFIRMED_OUTCOME":
-            best["ticker"] = ticker
-            return best
-
-        # Set ticker before correlation check (needed for same-ticker detection)
-        best["ticker"] = ticker
-
-        # Size the position (set side for NO-side sizing reduction)
-        self._current_side = best.get("side", "yes")
-        contracts = self._kelly_size(
-            best["edge"], best["confidence"], best["price_cents"]
-        )
-        self._current_side = None
-
-        # Apply confirmation multiplier (weather trades only)
-        if best.get("confirmation_multiplier", 1.0) != 1.0:
-            contracts = max(1, int(contracts * best["confirmation_multiplier"]))
-
-        # Convergence boost sizing reduction: near-market trades get reduced sizing
-        if best.get("convergence_boost"):
-            conv_mult = getattr(config, 'CONVERGENCE_SIZING_MULTIPLIER', 0.65)
-            # Next-day convergence = extra conservative (proof of concept)
-            if best["convergence_boost"].get("is_next_day"):
-                conv_mult *= getattr(config, 'CONVERGENCE_NEXT_DAY_SIZING', 0.50)
-            contracts = max(1, int(contracts * conv_mult))
-            print(f"    [CONVERGENCE] Sizing: {conv_mult:.0%} -> {contracts} contracts"
-                  f"{' (next-day)' if best['convergence_boost'].get('is_next_day') else ''}")
-
-        # Next-day sizing reduction: evening trades for tomorrow get 50% sizing
-        target_date = best.get("target_date")
-        city_code_sig = best.get("city_code")
-        if target_date and city_code_sig:
-            tz_name = CITIES.get(city_code_sig, {}).get("timezone", "America/New_York")
-            local_date = datetime.now(ZoneInfo(tz_name)).strftime("%Y-%m-%d")
-            if target_date > local_date:
-                next_day_mult = getattr(config, 'NEXT_DAY_SIZING_MULTIPLIER', 0.50)
-                contracts = max(1, int(contracts * next_day_mult))
-                print(f"    [STRATEGY] Next-day sizing: {next_day_mult:.0%} → {contracts} contracts")
-
-        # Apply correlation adjustment
-        from risk_manager import RiskManager
-        try:
-            rm = RiskManager()
-            corr_mult = self.quant.adjust_for_correlation(best, rm.state.get("positions", []))
-            if corr_mult == 0.0:
-                return self._skip("Already hold this exact position")
-            if corr_mult < 1.0:
-                contracts = max(1, int(contracts * corr_mult))
-        except Exception as e:
-            print(f"  [STRATEGY] Correlation check error (trade proceeds): {e}")
-
-        best["suggested_contracts"] = contracts
-        best["order_type"] = "limit"  # Always maker orders
-        best["quality_score"] = quality_score
-
-        # Adjust size for market quality
-        if quality_score < 0.9:
-            contracts = self.quality.adjust_contracts_for_quality(contracts, market, quality_score)
-            best["suggested_contracts"] = contracts
-
-        # Minimum payout filter — skip dust trades
-        payout_per_contract_cents = 100 - best["price_cents"]
-        total_payout_dollars = (contracts * payout_per_contract_cents) / 100.0
-        if total_payout_dollars < config.MIN_PAYOUT_DOLLARS:
-            print(f"    [STRATEGY] Skipped {ticker}: payout ${total_payout_dollars:.2f} < ${config.MIN_PAYOUT_DOLLARS} minimum (payout_too_small)")
-            return self._skip(f"payout_too_small: ${total_payout_dollars:.2f} < ${config.MIN_PAYOUT_DOLLARS}")
-
-        return best
-
-    # ═══════════════════════════════════════════════════════
-    # WEATHER STRATEGY
-    # ═══════════════════════════════════════════════════════
-
-    def _strategy_weather(self, market, ref_price, spread, volume):
-        """
-        The main money-maker. Steps:
-        1. Parse market to identify city + temperature bucket
-        2. Fetch 143-member ensemble forecast
-        3. Calculate our probability vs market price
-        4. If edge ≥ 8%, get confirmation from independent sources
-        5. Return signal with confirmation multiplier
-        """
+    def _strategy_weather(self, market, ref_price, todays_high=None):
+        """Core weather edge detection."""
         ticker = market.get("ticker", "")
-        # Step 1: Parse market
+
+        # Step 1: Parse bucket
         parsed = self.weather.parse_market_bucket(market)
         if not parsed:
-            return None  # Not a weather market
+            return None
 
         city_code = parsed["city_code"]
         temp_low = parsed["temp_low"]
         temp_high = parsed["temp_high"]
-        target_date = parsed["target_date"]
-
+        target_date = parsed.get("target_date")
         if target_date is None:
             target_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        # Fetch accuracy-based model weights and biases early — used by both
-        # confirmed outcome detection and the main probability calculation.
-        model_weights = self.quant.get_model_weights(city_code)
-        model_biases = self.quant.get_model_bias(city_code)
+        # Step 2: Check confirmed outcome (needs todays_high)
+        if todays_high is not None:
+            confirmed = self._check_confirmed_outcome(
+                market, city_code, target_date, temp_low, temp_high,
+                ref_price, todays_high
+            )
+            if confirmed:
+                return confirmed
 
-        # ─── FAST PATH: CONFIRMED OUTCOME DETECTION ───
-        # If NWS observations already show the outcome is determined,
-        # this is near-risk-free profit. Max position sizing.
-        confirmed_signal = self._check_confirmed_outcome(
-            market, city_code, temp_low, temp_high, target_date, ref_price,
-            model_weights=model_weights, model_biases=model_biases,
-        )
-        if confirmed_signal:
-            return confirmed_signal
-
-        # Need some activity (but Kalshi weather markets are low-volume)
-        volume_24h = market.get("volume_24h", 0) or 0
-        if volume == 0 and volume_24h == 0:
-            if config.LOG_LEVEL == "DEBUG":
-                print(f"    [STRATEGY] {market.get('ticker','')} dead: vol=0, vol24h=0")
-            return None  # Zero activity = truly dead
-
-        # Spread check: only reject if we can actually calculate a real spread
-        # (yes_bid=0 is normal on Kalshi — doesn't mean illiquid)
-        if spread < 99 and spread > 40:
-            if config.LOG_LEVEL == "DEBUG":
-                print(f"    [STRATEGY] {market.get('ticker','')} wide spread: {spread}c")
-            return None  # Genuinely wide spread with real quotes on both sides
-
-        # Step 2: Fetch ensemble distribution with accuracy-based model weighting + bias correction
-        distribution = self.weather.get_temperature_distribution(city_code, target_date, model_weights=model_weights, model_biases=model_biases)
-        if not distribution:
-            print(f"    [STRATEGY] {market.get('ticker','')} no distribution for {city_code} {target_date}")
+        # Dead market check
+        vol24 = market.get("volume_24h", 0) or 0
+        vol = market.get("volume", 0) or 0
+        if vol == 0 and vol24 == 0:
             return None
 
-        # Step 2b: Apply bias correction (learned from past accuracy)
-        distribution = self.intel.apply_bias_to_distribution(distribution, city_code)
-        bias_applied = distribution.get("bias_applied", 0)
+        # Step 3: Fetch ensemble distribution
+        distribution = self.weather.get_temperature_distribution(
+            city_code, target_date
+        )
+        if not distribution:
+            return None
 
-        # Step 2c: Get time-of-day sizing multiplier
-        time_mult, time_reason = self.intel.get_time_multiplier(city_code)
-
-        # Step 3: Calculate our probability for this bucket
+        # Step 4: Calculate bucket probability
         our_prob = self.weather.calculate_bucket_probability(
             distribution, temp_low, temp_high
         )
         if our_prob is None:
-            print(f"    [STRATEGY] {ticker} prob=None for bucket {temp_low}-{temp_high}")
             return None
 
         market_prob = ref_price / 100.0
         raw_edge = our_prob - market_prob  # Positive = underpriced YES
 
-        # Step 3b: Convergence confidence boost (two-pass approach)
-        # When raw edge < MIN_EDGE but all signals converge, boost our_prob
-        convergence_result = None
-        convergence_boost_applied = False
-        early_confirmation = None
-        min_weather_edge = config.MIN_EDGE
-
-        # Diagnostic: log all markets reaching this point
-        if 10 <= ref_price <= 90:
-            print(f"    [CONV-DIAG] {ticker}: prob={our_prob:.0%} mkt={market_prob:.0%} "
-                  f"raw_edge={raw_edge:+.1%} min_edge={min_weather_edge:.0%} "
-                  f"date={target_date} enabled={getattr(config, 'CONVERGENCE_BOOST_ENABLED', False)}")
-
-        if (getattr(config, 'CONVERGENCE_BOOST_ENABLED', False)
-                and abs(raw_edge) < min_weather_edge):
-            # Pass 1: Quick 3-component check (no API calls)
-            prelim = self._preliminary_convergence_score(
-                distribution, city_code, target_date
-            )
-            prelim_threshold = getattr(config, 'CONVERGENCE_MIN_SCORE', 0.75) - 0.10
-            if prelim is None:
-                print(f"    [CONVERGENCE] {ticker}: prelim=None (guards failed: not afternoon for same-day)")
-            elif prelim < prelim_threshold:
-                print(f"    [CONVERGENCE] {ticker}: prelim={prelim:.2f} < {prelim_threshold:.2f} "
-                      f"(model_spread={distribution.get('model_spread', '?')}°F, "
-                      f"std_dev={distribution.get('std_dev', '?')}°F) — skipped")
-            else:
-                print(f"    [CONVERGENCE] {ticker}: prelim={prelim:.2f} >= {prelim_threshold:.2f} — calling confirmer")
-                # Promising — call confirmer early for full 4-component score
-                city_info = CITIES[city_code]
-                early_confirmation = self.confirmer.confirm_signal(
-                    city_info=city_info,
-                    target_date=target_date,
-                    temp_low=temp_low,
-                    temp_high=temp_high,
-                    ensemble_prob=our_prob,
-                    market_price_cents=ref_price,
-                )
-                # Pass 2: Full convergence calculation
-                convergence_result = self._calculate_convergence_boost(
-                    distribution, early_confirmation, city_code, target_date,
-                    our_prob, market_prob
-                )
-                if convergence_result["eligible"]:
-                    our_prob += convergence_result["boost"]
-                    our_prob = min(0.95, max(0.05, our_prob))
-                    convergence_boost_applied = True
-                    print(f"    [CONVERGENCE] {ticker}: BOOST {convergence_result['boost']:+.1%} "
-                          f"→ adj_prob={our_prob:.0%} (was {our_prob - convergence_result['boost']:.0%})")
-                else:
-                    comp = convergence_result.get('components', {})
-                    print(f"    [CONVERGENCE] {ticker}: full score={convergence_result['convergence_score']:.2f} "
-                          f"— {convergence_result.get('reason', '?')} "
-                          f"(src={comp.get('source_agreement', '?')} mod={comp.get('model_convergence', '?')} "
-                          f"ens={comp.get('ensemble_tightness', '?')} obs={comp.get('observation_confirmation', '?')})")
-
-        # Recompute edge with potentially boosted our_prob
-        edge = our_prob - market_prob
-
-        # Need at least MIN_EDGE raw edge (pre-filter before fee-adjusted check)
-        if abs(edge) < min_weather_edge:
-            if config.LOG_LEVEL == "DEBUG" and ref_price >= 10 and ref_price <= 90:
-                print(f"    [STRATEGY] {ticker} edge={edge:+.1%} < {min_weather_edge:.0%} (prob={our_prob:.0%} vs mkt={market_prob:.0%})")
-            return None
-
-        # Fee-adjusted edge: subtract expected Kalshi fee drag
-        # Fees are ~7% of expected profit per contract (taker rate, worst case)
-        if config.FEE_ADJUSTMENT_ENABLED:
-            if edge > 0:
-                win_prob = min(0.95, market_prob + edge)
-                fee_cents = config.KALSHI_FEE_PCT * (100 - ref_price)  # YES profit = 100 - yes_price
-            else:
-                win_prob = min(0.95, (1 - market_prob) + abs(edge))
-                fee_cents = config.KALSHI_FEE_PCT * ref_price  # NO profit = 100 - no_price = yes_price
-            fee_drag = (fee_cents / 100.0) * win_prob
-            net_edge = abs(edge) - fee_drag
-            if net_edge < config.FEE_ADJUSTED_MIN_EDGE:
-                print(f"    [STRATEGY] Fee-adjusted edge {net_edge:.1%} < {config.FEE_ADJUSTED_MIN_EDGE:.0%} "
-                      f"(raw={abs(edge):.1%}, fee_drag={fee_drag:.1%}) — skipping")
-                return None
-
-        # Sanity check: ensemble mean must not strongly contradict signal direction
-        forecast_mean = distribution["forecasted_high_mean"]
-        if edge > 0:  # YES signal — ensemble should support the bucket
-            # For "or below" (temp_low=-100): mean should be below ceiling
-            if temp_low == -100 and forecast_mean > temp_high + 3:
-                print(f"    [STRATEGY] Sanity check: mean {forecast_mean:.1f}°F is {forecast_mean - temp_high:.1f}°F "
-                      f"above bucket ceiling {temp_high}°F — skipping YES")
-                return None
-            # For "or above" (temp_high=200): mean should be above floor
-            if temp_high == 200 and forecast_mean < temp_low - 3:
-                print(f"    [STRATEGY] Sanity check: mean {forecast_mean:.1f}°F is {temp_low - forecast_mean:.1f}°F "
-                      f"below bucket floor {temp_low}°F — skipping YES")
-                return None
-
-        # Step 4: Get confirmation from independent sources
-        # Reuse early confirmation if already fetched for convergence boost
-        city_info = CITIES[city_code]
-        if early_confirmation is not None:
-            confirmation = early_confirmation
+        # Step 5: Determine side and edge
+        if raw_edge > 0:
+            side = "yes"
+            edge = raw_edge
+            ya = market.get("yes_ask", 0) or 0
+            price_cents = ya if ya > 0 else ref_price
         else:
-            confirmation = self.confirmer.confirm_signal(
-                city_info=city_info,
-                target_date=target_date,
-                temp_low=temp_low,
-                temp_high=temp_high,
-                ensemble_prob=our_prob,
-                market_price_cents=ref_price,
-            )
+            side = "no"
+            edge = abs(raw_edge)
+            price_cents = market.get("no_ask", 0) or (100 - ref_price)
 
-        # Print confirmation details
-        self.confirmer.print_vote_details(confirmation)
-
-        # Reject if sources disagree
-        if confirmation["verdict"] == "REJECT":
-            print(f"    [STRATEGY] {ticker} REJECTED by confirmer (edge={edge:+.1%})")
-            return None
-
-        # Step 4b: Statistical significance check
-        stat_test = self.quant.validate_edge_significance(
-            our_prob, market_prob, distribution["total_members"]
+        # Step 6: Fee-adjusted edge
+        fee_adjusted_edge = self._calculate_fee_adjusted_edge(
+            our_prob, market_prob, side
         )
-        if not stat_test["significant"]:
-            print(f"    [QUANT] Edge not statistically significant: {stat_test['reason']}")
+
+        # Determine if next-day
+        city_tz = CITIES.get(city_code, {}).get("timezone", "America/New_York")
+        local_date = datetime.now(ZoneInfo(city_tz)).strftime("%Y-%m-%d")
+        is_next_day = target_date > local_date
+
+        # Step 7: Edge threshold check
+        min_edge = self._get_edge_threshold(is_next_day, is_confirmed=False)
+        if edge < min_edge:
+            return None
+        if fee_adjusted_edge < config.FEE_ADJUSTED_MIN_EDGE:
             return None
 
-        # Step 4c: Regime detection — adjust sizing
-        regime = self.quant.detect_regime(distribution)
-        regime_mult = regime["size_multiplier"]
-        print(f"    [QUANT] Regime: {regime['regime']} ({regime_mult}x) — {regime['reason']}")
-
-        # Step 4d: Seasonal confidence — adjust sizing for city/month/regime
-        forecast_high = distribution.get("forecasted_high_mean")
-        current_month = datetime.now().month
-        seasonal_regime = detect_seasonal_regime(city_code, current_month, forecast_high)
-        seasonal_mult = get_seasonal_multiplier(city_code, current_month, seasonal_regime)
-        print(f"    [SEASONAL] {city_code} month={current_month}: "
-              f"regime={seasonal_regime}, multiplier={seasonal_mult:.2f}")
-
-        # Step 4e: Smart order pricing
-        smart_price = self.quant.calculate_optimal_price(market, "yes" if edge > 0 else "no", abs(edge))
-
-        # Step 5: Build signal
-        if edge > 0:
-            bucket_width = temp_high - temp_low
-
-            # FIX 1: Narrow 1°F buckets for YES — only trade with high edge + strong confirmation
-            if bucket_width <= 1:
-                if edge < 0.15 or confirmation["verdict"] not in ("STRONG", "CONFIRMED_OUTCOME"):
-                    print(f"    [STRATEGY] Skipped YES on 1°F bucket {temp_low}-{temp_high}°F: "
-                          f"edge={edge:.0%} (need 15%), verdict={confirmation['verdict']} (need STRONG+)")
-                    return None
-                print(f"    [STRATEGY] Allowing 1°F bucket {temp_low}-{temp_high}°F: "
-                      f"edge={edge:.0%}, verdict={confirmation['verdict']}")
-
-            # FIX 2: Model disagreement detector — if model families disagree by >4°F, skip
-            model_spread = distribution.get("model_spread", 0)
-            if model_spread > config.MAX_MODEL_DIVERGENCE_F:
-                model_means = distribution.get("model_means", {})
-                print(f"    [STRATEGY] Skipped YES: model families disagree by {model_spread:.1f}°F "
-                      f"({model_means}) — too uncertain (max {config.MAX_MODEL_DIVERGENCE_F}°F)")
-                return None
-
-            # Model convergence boost — when all models agree tightly, increase confidence
-            model_convergence_mult = 1.0
-            if model_spread < config.MODEL_CONVERGENCE_BOOST_F:
-                model_convergence_mult = 1.2
-                print(f"    [STRATEGY] Models converge within {model_spread:.1f}°F — 1.2x confidence boost")
-
-            # FIX 3: Spread-to-bucket ratio guard — if ensemble spread / bucket width > 6, skip
-            ensemble_spread = distribution.get("spread", 0)
-            if bucket_width > 0 and ensemble_spread / bucket_width > 6:
-                print(f"    [STRATEGY] Skipped YES on {temp_low}-{temp_high}°F: "
-                      f"spread/bucket ratio {ensemble_spread:.0f}/{bucket_width:.0f} = "
-                      f"{ensemble_spread/bucket_width:.1f}x (max 6x)")
-                return None
-
-            # FIX 4: Narrow bucket guard — tighter thresholds (was 25%, now 35%)
-            if bucket_width <= 2:
-                if edge < 0.35 or confirmation["agree_count"] < 3:
-                    print(f"    [STRATEGY] Skipped YES on narrow {bucket_width}°F bucket "
-                          f"{temp_low}-{temp_high}°F: edge={edge:.0%} (need 35%), "
-                          f"agree={confirmation['agree_count']}/5 (need 3)")
-                    return None
-
-            # FIX 5: NWS Rounding buffer zone
-            # 5-minute NWS stations have ±1°F+ error from °F→°C→°F conversion.
-            # Settlement uses raw 1-minute readings which can differ from displayed values.
-            rounding_multiplier = 1.0
-            if temp_high < 200 and temp_low > -100:  # Bounded bucket
-                dist_to_low = abs(forecast_mean - temp_low)
-                dist_to_high = abs(forecast_mean - temp_high)
-                nearest_strike_dist = min(dist_to_low, dist_to_high)
-                if nearest_strike_dist <= config.ROUNDING_BUFFER_HARD_F:
-                    print(f"    [STRATEGY] Rounding buffer: forecast {forecast_mean:.1f}°F is "
-                          f"{nearest_strike_dist:.1f}°F from strike — NO TRADE")
-                    return None
-                elif nearest_strike_dist <= config.ROUNDING_BUFFER_SOFT_F:
-                    rounding_multiplier = 0.5
-                    print(f"    [STRATEGY] Rounding buffer: forecast {forecast_mean:.1f}°F is "
-                          f"{nearest_strike_dist:.1f}°F from strike — 50% size reduction")
-            elif temp_low == -100:  # "X or below" — only upper boundary matters
-                dist_to_strike = abs(forecast_mean - temp_high)
-                if dist_to_strike <= config.ROUNDING_BUFFER_HARD_F:
-                    print(f"    [STRATEGY] Rounding buffer: forecast {forecast_mean:.1f}°F is "
-                          f"{dist_to_strike:.1f}°F from strike {temp_high}°F — NO TRADE")
-                    return None
-                elif dist_to_strike <= config.ROUNDING_BUFFER_SOFT_F:
-                    rounding_multiplier = 0.5
-            elif temp_high == 200:  # "X or above" — only lower boundary matters
-                dist_to_strike = abs(forecast_mean - temp_low)
-                if dist_to_strike <= config.ROUNDING_BUFFER_HARD_F:
-                    print(f"    [STRATEGY] Rounding buffer: forecast {forecast_mean:.1f}°F is "
-                          f"{dist_to_strike:.1f}°F from strike {temp_low}°F — NO TRADE")
-                    return None
-                elif dist_to_strike <= config.ROUNDING_BUFFER_SOFT_F:
-                    rounding_multiplier = 0.5
-
-            # Underpriced YES — buy YES
-            price = smart_price if smart_price else (market.get("yes_ask", 0) or ref_price)
-            signal = {
-                "signal": "buy_yes",
-                "side": "yes",
-                "edge": edge,
-                "confidence": min(0.75, distribution["confidence"] * 0.8 + abs(edge)),
-                "price_cents": price,
-                "confirmation_multiplier": confirmation["size_multiplier"] * time_mult * regime_mult * seasonal_mult * rounding_multiplier * model_convergence_mult,
-                "confirmation_verdict": confirmation["verdict"],
-                "predicted_high": distribution["forecasted_high_mean"],
-                "seasonal_regime": seasonal_regime,
-                "seasonal_multiplier": seasonal_mult,
-                "city_code": city_code,
-                "target_date": target_date,
-                "reasoning": (
-                    f"[WEATHER] {city_code} {target_date}: "
-                    f"Ensemble says {our_prob:.0%} for {temp_low}-{temp_high}°F, "
-                    f"market at {market_prob:.0%} ({ref_price}¢). "
-                    f"Edge: +{edge:.0%}. "
-                    f"Confirmed: {confirmation['verdict']} ({confirmation['agree_count']} agree). "
-                    f"{distribution['total_members']} members. "
-                    f"Time: {time_reason} ({time_mult}x). "
-                    f"Seasonal: {seasonal_regime} ({seasonal_mult:.2f}x). "
-                    + (f"Rounding: {rounding_multiplier}x. " if rounding_multiplier < 1.0 else "")
-                    + (f"Convergence: {model_convergence_mult}x. " if model_convergence_mult > 1.0 else "")
-                    + (f"Bias adj: {bias_applied:+.1f}°F. " if bias_applied else "")
-                ),
-                "strategy": "S1-Weather",
-                "model_means": distribution.get("model_means", {}),
-                "model_weights_used": model_weights or {},
-                "model_biases_used": model_biases or {},
-                "convergence_boost": convergence_result if convergence_boost_applied else None,
-            }
-        else:
-            # Overpriced YES — buy NO
-            # Model disagreement check for NO trades — higher threshold than YES.
-            # Models can disagree about WHERE the temp lands but still agree it's
-            # NOT in a specific 2°F bucket. Only block extreme disagreement.
-            model_spread = distribution.get("model_spread", 0)
-            no_divergence_limit = getattr(config, 'MAX_MODEL_DIVERGENCE_NO_F', config.MAX_MODEL_DIVERGENCE_F)
-            if model_spread > no_divergence_limit:
-                model_means = distribution.get("model_means", {})
-                print(f"    [STRATEGY] Skipped NO: model families disagree by {model_spread:.1f}°F "
-                      f"({model_means}) — too uncertain (max {no_divergence_limit}°F)")
-                return None
-
-            # Model convergence boost for NO trades
-            model_convergence_mult = 1.0
-            if model_spread < config.MODEL_CONVERGENCE_BOOST_F:
-                model_convergence_mult = 1.2
-                print(f"    [STRATEGY] Models converge within {model_spread:.1f}°F — 1.2x confidence boost")
-
-            # Forecast-strike separation: don't bet NO when the forecast
-            # is too close to the bucket range (high chance of landing inside).
-            # NWS ±1°F rounding means the effective bucket is wider — a raw temp
-            # just outside the nominal bucket could round INTO it.
-            # Use RAW (pre-bias) mean for separation — bias is a settlement
-            # correction, not forecast location. Winter bias (+3-4°F) was pushing
-            # means INTO buckets and blocking trades with clear ensemble edge.
-            #
-            # Dynamic separation: scales with forecast uncertainty (std_dev).
-            # When models are tight (std_dev=3°F), 2°F floor is sufficient.
-            # When models are spread (std_dev=7°F), require 4.2°F — proportional to risk.
-            forecast_std = distribution.get("std_dev", 5.0)
-            dynamic_separation = max(
-                config.MIN_FORECAST_STRIKE_SEPARATION_F,
-                forecast_std * getattr(config, 'NO_SEPARATION_STD_DEV_MULTIPLIER', 0.6)
-            )
-            forecast_mean = distribution["forecasted_high_mean"]
-            raw_forecast_mean = distribution.get("raw_forecast_mean", forecast_mean)
-            effective_low = temp_low - config.ROUNDING_BUFFER_HARD_F
-            effective_high = temp_high + config.ROUNDING_BUFFER_HARD_F
-            if effective_low <= raw_forecast_mean <= effective_high:
-                separation = 0
-            elif raw_forecast_mean < effective_low:
-                separation = effective_low - raw_forecast_mean
-            else:
-                separation = raw_forecast_mean - effective_high
-            if separation < dynamic_separation:
-                bias_shift = forecast_mean - raw_forecast_mean
-                print(f"    [STRATEGY] Skipped NO on {city_code} {temp_low}-{temp_high}°F "
-                      f"(effective {effective_low}-{effective_high}°F with rounding): "
-                      f"raw_mean {raw_forecast_mean:.1f}°F only {separation:.1f}°F away "
-                      f"(need {dynamic_separation:.1f}°F = max({config.MIN_FORECAST_STRIKE_SEPARATION_F}, "
-                      f"std={forecast_std:.1f}*{getattr(config, 'NO_SEPARATION_STD_DEV_MULTIPLIER', 0.6)}))"
-                      f"{f' [bias={bias_shift:+.1f}°F]' if abs(bias_shift) > 0.1 else ''}")
-                return None
-
-            # CONFIRM-level NO trades need extra separation — only 2/5 sources agree,
-            # NWS abstains. Weak evidence for betting "temp will NOT be in this bucket".
-            if confirmation.get("verdict") == "CONFIRM":
-                confirm_separation = dynamic_separation * 1.5
-                if separation < confirm_separation:
-                    print(f"    [STRATEGY] CONFIRM-level NO on {city_code} {temp_low}-{temp_high}°F: "
-                          f"separation {separation:.1f}°F < {confirm_separation:.1f}°F "
-                          f"(1.5x CONFIRM penalty on {dynamic_separation:.1f}°F threshold) — skipping")
-                    return None
-
-            # Rounding buffer for NO trades (uses expanded boundaries)
-            rounding_multiplier = 1.0
-            if temp_high < 200 and temp_low > -100:  # Bounded bucket
-                dist_to_low = abs(forecast_mean - effective_low)
-                dist_to_high = abs(forecast_mean - effective_high)
-                nearest_strike_dist = min(dist_to_low, dist_to_high)
-                if nearest_strike_dist <= config.ROUNDING_BUFFER_HARD_F:
-                    print(f"    [STRATEGY] Rounding buffer: forecast {forecast_mean:.1f}°F is "
-                          f"{nearest_strike_dist:.1f}°F from effective strike — NO TRADE")
-                    return None
-                elif nearest_strike_dist <= config.ROUNDING_BUFFER_SOFT_F:
-                    rounding_multiplier = 0.5
-
-            no_price = smart_price if smart_price else (market.get("no_ask", 0) or (100 - ref_price))
-
-            # NO-side price ceiling: reject NO positions priced above threshold
-            # High-cost NO = outsized loss risk (MIA B79.5 lost $22 at 68c)
-            if no_price > config.NO_SIDE_MAX_PRICE_CENTS:
-                print(f"    [STRATEGY] Rejected NO on {city_code} {temp_low}-{temp_high}°F: "
-                      f"price {no_price}c exceeds {config.NO_SIDE_MAX_PRICE_CENTS}c ceiling")
-                return None
-
-            signal = {
-                "signal": "buy_no",
-                "side": "no",
-                "edge": abs(edge),
-                "confidence": min(0.75, distribution["confidence"] * 0.8 + abs(edge)),
-                "price_cents": no_price,
-                "confirmation_multiplier": confirmation["size_multiplier"] * time_mult * regime_mult * seasonal_mult * rounding_multiplier * model_convergence_mult,
-                "confirmation_verdict": confirmation["verdict"],
-                "predicted_high": distribution["forecasted_high_mean"],
-                "seasonal_regime": seasonal_regime,
-                "seasonal_multiplier": seasonal_mult,
-                "city_code": city_code,
-                "target_date": target_date,
-                "reasoning": (
-                    f"[WEATHER] {city_code} {target_date}: "
-                    f"Ensemble says {our_prob:.0%} for {temp_low}-{temp_high}°F, "
-                    f"market at {market_prob:.0%} ({ref_price}¢). "
-                    f"Edge: {edge:.0%} (OVERPRICED). "
-                    f"Confirmed: {confirmation['verdict']}. "
-                    f"{distribution['total_members']} members. "
-                    f"Time: {time_reason} ({time_mult}x). "
-                    f"Seasonal: {seasonal_regime} ({seasonal_mult:.2f}x). "
-                    + (f"Rounding: {rounding_multiplier}x. " if rounding_multiplier < 1.0 else "")
-                    + (f"Convergence: {model_convergence_mult}x. " if model_convergence_mult > 1.0 else "")
-                    + (f"Bias adj: {bias_applied:+.1f}°F. " if bias_applied else "")
-                ),
-                "strategy": "S1-Weather",
-                "model_means": distribution.get("model_means", {}),
-                "model_weights_used": model_weights or {},
-                "model_biases_used": model_biases or {},
-                "convergence_boost": convergence_result if convergence_boost_applied else None,
-            }
-
-        return signal
-
-    # ═══════════════════════════════════════════════════════
-    # ARBITRAGE STRATEGY
-    # ═══════════════════════════════════════════════════════
-
-    def _strategy_arbitrage(self, market, yes_ask, no_ask):
-        """
-        If YES ask + NO ask < 98¢, buying both sides guarantees profit.
-        No confirmation needed — this is pure math.
-        BUT: must verify this isn't a phantom quote in a dead market.
-        """
-        if yes_ask <= 0 or no_ask <= 0:
+        # Price guardrails
+        if price_cents < config.LONGSHOT_FLOOR_CENTS:
+            return None
+        if price_cents > config.NEAR_CERTAINTY_CAP_CENTS:
             return None
 
-        total = yes_ask + no_ask
-        if total < 98:
-            gap = 100 - total
-
-            # CRITICAL: Verify liquidity before trusting arbitrage
-            volume_24h = market.get("volume_24h", 0) or 0
-            open_interest = market.get("open_interest", 0) or 0
-            spread_yes = (yes_ask - (market.get("yes_bid", 0) or 0))
-            spread_no = (no_ask - (market.get("no_bid", 0) or 0))
-
-            # If either side has a huge spread or no volume, it's phantom
-            if volume_24h == 0 and (market.get("volume", 0) or 0) == 0:
-                return None  # Zero activity — phantom quotes
-            if spread_yes > 20 or spread_no > 20:
-                return None  # One side is likely a stale quote
-            if gap > 15 and volume_24h < 10:
-                return None  # Too-good-to-be-true + very low volume = phantom
-            edge = gap / 100.0
-
-            if yes_ask <= no_ask:
-                side, price = "yes", yes_ask
-            else:
-                side, price = "no", no_ask
-
-            return {
-                "signal": f"buy_{side}",
-                "side": side,
-                "edge": edge,
-                "confidence": 0.95,
-                "price_cents": price,
-                "confirmation_multiplier": 1.5,  # Max confidence for arb
-                "confirmation_verdict": "ARBITRAGE",
-                "reasoning": (
-                    f"[ARBITRAGE] YES({yes_ask}¢) + NO({no_ask}¢) = {total}¢. "
-                    f"Guaranteed {gap}¢ profit per contract pair."
-                ),
-                "strategy": "S2-Arbitrage",
-            }
-        return None
-
-    # ═══════════════════════════════════════════════════════
-    # S&P 500 STRATEGY
-    # ═══════════════════════════════════════════════════════
-
-    def _strategy_sp500(self, market, ref_price, spread, volume):
-        """
-        S&P 500 daily bracket strategy using VIX-implied volatility.
-        Steps:
-        1. Parse market to identify price bracket + date
-        2. Build VIX-based price distribution
-        3. Calculate our probability vs market price
-        4. If edge >= 6%, get confirmation
-        5. Return signal with market_type: "sp500"
-        """
-        if not self.vol_engine or not self.spx_confirmer:
+        # Model divergence check (side-aware)
+        model_spread = distribution.get("model_spread", 0)
+        if side == "yes" and model_spread > config.MAX_MODEL_DIVERGENCE_YES_F:
+            return None
+        if side == "no" and model_spread > config.MAX_MODEL_DIVERGENCE_NO_F:
             return None
 
-        # Step 1: Parse market
-        parsed = self.vol_engine.parse_market_bracket(market)
-        if not parsed:
-            return None  # Not an S&P 500 bracket market
-
-        price_low = parsed["price_low"]
-        price_high = parsed["price_high"]
-        target_date = parsed["target_date"]
-
-        if target_date is None:
-            from datetime import timezone as tz
-            target_date = datetime.now(tz.utc).strftime("%Y-%m-%d")
-
-        # Need some activity
-        if volume == 0 and (market.get("volume_24h", 0) or 0) == 0:
-            return None
-
-        # Step 2: Get VIX-based distribution
-        distribution = self.vol_engine.get_price_distribution(target_date)
-        if not distribution:
-            return None
-
-        # Step 3: Calculate our probability for this bracket
-        our_prob = self.vol_engine.calculate_bracket_probability(
-            distribution, price_low, price_high
-        )
-        if our_prob is None:
-            return None
-
-        market_prob = ref_price / 100.0
-        edge = our_prob - market_prob
-
-        # Need at least 6% edge for SP500
-        if abs(edge) < config.SP500_MIN_EDGE:
-            return None
-
-        # Step 4: Get confirmation
-        confirmation = self.spx_confirmer.confirm_signal(
-            distribution=distribution,
-            price_low=price_low,
-            price_high=price_high,
-            our_prob=our_prob,
+        # Step 8: Confirm signal
+        city_info = CITIES.get(city_code, {})
+        confirmation = self.confirmer.confirm_signal(
+            city_info=city_info,
+            target_date=target_date,
+            temp_low=temp_low,
+            temp_high=temp_high,
+            ensemble_prob=our_prob,
             market_price_cents=ref_price,
         )
+        verdict = confirmation["verdict"]
+        conf_mult = confirmation["size_multiplier"]
 
-        self.spx_confirmer.print_vote_details(confirmation)
-
-        if confirmation["verdict"] == "REJECT":
+        if verdict == "REJECT":
             return None
 
-        # Step 5: Build signal
-        bracket_desc = f"{price_low:.0f}-{price_high:.0f}" if price_high < 99999 else f"{price_low:.0f}+"
+        # Step 9: NO-side guards
+        if side == "no":
+            passed, reason = self._apply_no_side_guards(
+                distribution, temp_low, temp_high, price_cents, verdict
+            )
+            if not passed:
+                return None
 
-        if edge > 0:
-            signal = {
-                "signal": "buy_yes",
-                "side": "yes",
-                "edge": edge,
-                "confidence": min(0.75, distribution["confidence"] * 0.8 + abs(edge)),
-                "price_cents": market.get("yes_ask", 0) or ref_price,
-                "confirmation_multiplier": confirmation["size_multiplier"],
-                "confirmation_verdict": confirmation["verdict"],
-                "predicted_high": distribution["mean"],
-                "reasoning": (
-                    f"[SP500] {target_date}: "
-                    f"VIX-implied says {our_prob:.0%} for bracket {bracket_desc}, "
-                    f"market at {market_prob:.0%} ({ref_price}c). "
-                    f"Edge: +{edge:.0%}. "
-                    f"VIX={distribution['vix']:.1f}, vol=+/-{distribution['std_dev']:.0f}pts. "
-                    f"Confirmed: {confirmation['verdict']}."
-                ),
-                "strategy": "S3-SP500",
-                "market_type": "sp500",
-            }
-        else:
-            no_price = market.get("no_ask", 0) or (100 - ref_price)
-            signal = {
-                "signal": "buy_no",
-                "side": "no",
-                "edge": abs(edge),
-                "confidence": min(0.75, distribution["confidence"] * 0.8 + abs(edge)),
-                "price_cents": no_price,
-                "confirmation_multiplier": confirmation["size_multiplier"],
-                "confirmation_verdict": confirmation["verdict"],
-                "predicted_high": distribution["mean"],
-                "reasoning": (
-                    f"[SP500] {target_date}: "
-                    f"VIX-implied says {our_prob:.0%} for bracket {bracket_desc}, "
-                    f"market at {market_prob:.0%} ({ref_price}c). "
-                    f"Edge: {edge:.0%} (OVERPRICED). "
-                    f"VIX={distribution['vix']:.1f}. "
-                    f"Confirmed: {confirmation['verdict']}."
-                ),
-                "strategy": "S3-SP500",
-                "market_type": "sp500",
-            }
+        # Rounding buffer (YES and NO)
+        forecast_mean = distribution["forecasted_high_mean"]
+        rounding_mult = self._rounding_buffer_multiplier(
+            forecast_mean, temp_low, temp_high, side
+        )
+        if rounding_mult == 0.0:
+            return None
 
-        return signal
+        # Step 10: Kelly sizing
+        contracts = self._kelly_size(
+            edge, our_prob, price_cents, self.balance_cents,
+            conf_mult * rounding_mult
+        )
+        if contracts <= 0:
+            return None
 
-    # ═══════════════════════════════════════════════════════
+        # Step 11: Reductions
+        if is_next_day:
+            contracts = max(1, int(contracts * config.NEXT_DAY_SIZING_MULTIPLIER))
+        if side == "no" and price_cents >= 50:
+            contracts = max(1, int(contracts * config.NO_SIDE_SIZING_MULTIPLIER))
+
+        # Minimum payout filter
+        payout_per = 100 - price_cents
+        total_payout = (contracts * payout_per) / 100.0
+        if total_payout < config.MIN_PAYOUT_DOLLARS:
+            return None
+
+        # Model convergence boost (sizing only, not edge)
+        if model_spread < config.MODEL_CONVERGENCE_BOOST_F:
+            contracts = max(1, int(contracts * 1.2))
+
+        total_members = distribution.get("total_members", "?")
+        std_dev_val = distribution.get("std_dev")
+
+        return {
+            "signal": "buy",
+            "ticker": ticker,
+            "side": side,
+            "edge": round(edge, 4),
+            "fee_adjusted_edge": round(fee_adjusted_edge, 4),
+            "our_prob": round(our_prob, 4),
+            "market_prob": round(market_prob, 4),
+            "price_cents": price_cents,
+            "suggested_contracts": contracts,
+            "reasoning": (
+                f"[S1] {city_code} {target_date}: "
+                f"ensemble={our_prob:.0%} vs market={market_prob:.0%}, "
+                f"edge={edge:.1%} (fee-adj={fee_adjusted_edge:.1%}). "
+                f"Verdict={verdict}. "
+                f"Mean={forecast_mean:.1f}F, spread={model_spread:.1f}F. "
+                f"{total_members} members."
+            ),
+            "strategy": "S1-Weather",
+            "confirmation_verdict": verdict,
+            "confirmation_multiplier": conf_mult,
+            "city_code": city_code,
+            "target_date": target_date,
+            "close_time": market.get("close_time"),
+            "predicted_high": forecast_mean,
+            "model_spread": model_spread,
+            "std_dev": std_dev_val,
+            "model_means": distribution.get("model_means", {}),
+        }
+
+    # ===========================================================
     # CONFIRMED OUTCOME DETECTION
-    # ═══════════════════════════════════════════════════════
+    # ===========================================================
 
-    def _check_confirmed_outcome(self, market, city_code, temp_low, temp_high, target_date, ref_price, model_weights=None, model_biases=None):
+    def _check_confirmed_outcome(self, market, city_code, target_date,
+                                  temp_low, temp_high, ref_price,
+                                  todays_high):
+        """CASE 1: observed high already exceeded bucket ceiling + 1F rounding.
+        CASE 3: gap too large for bucket -> returns STRONG (not confirmed).
+        CASE 2: DELETED.
         """
-        Check if NWS observations already confirm the outcome is determined.
+        ticker = market.get("ticker", "")
 
-        Cases where we can take max position:
-        1. Today's observed high ALREADY EXCEEDS the bucket upper bound
-           → NO on this bucket is near-guaranteed (high won't un-happen)
-        2. Today's observed high ALREADY EXCEEDS the bucket lower bound
-           AND we're late in the day → YES on higher buckets is dying
-
-        Returns a max-sized signal or None if outcome is not yet confirmed.
-        """
-        # HARD GUARD: target_date MUST come from the ticker, not a default.
-        # If the ticker date couldn't be parsed, we don't know what day this
-        # market is for → never treat it as a confirmed outcome.
+        # Must have a parsed target_date
         if not target_date:
             return None
 
-        # Calculate local hour FIRST — before any case checks
-        # DST-safe via zoneinfo (handles March/November transitions)
+        # Only today's markets
         city_info = CITIES.get(city_code, {})
         tz_name = city_info.get("timezone", "America/New_York")
         local_now = datetime.now(ZoneInfo(tz_name))
         local_hour = local_now.hour
-
-        # HARD GUARD: Only today's markets. Never trade confirmed outcomes
-        # for tomorrow's weather — the temperature hasn't happened yet.
         local_date = local_now.strftime("%Y-%m-%d")
+
         if target_date != local_date:
             return None
-
-        # HARD GUARD: Need enough daytime observations for reliable high.
-        # CASE 1 & 3 use observed high (can only go up), so early detection
-        # is safe — the earlier we confirm, the better the price.
         if local_hour < config.CASE1_MIN_LOCAL_HOUR:
             return None
 
-        todays_high = self.intel.get_todays_high_so_far(city_code)
-        if todays_high is None:
-            return None
-
-        ticker = market.get("ticker", "")
-
-        # ─── CASE 2 DISABLED (recovery mode) ───
-        # CASE 2 (YES on current bucket) has a structural vulnerability:
-        # NWS observations can be stale/rounded, and temp can still rise
-        # OUT of the bucket after detection. Disable until we have enough
-        # capital to absorb occasional CASE 2 failures.
-        # When re-enabling, use fresh=True observation and 6 PM+ time gate.
-        _CASE2_ENABLED = getattr(config, 'CASE2_ENABLED', False)
-
-        # CASE 1: High already ABOVE the bucket's upper bound
-        # If observed high is 86°F and bucket is 83-84°F,
-        # the daily high will be >= 86 (it can only go up), so NO on 83-84 wins.
-        # NWS rounding buffer: displayed temps can be ±1°F off from raw readings,
-        # so require the observed high to exceed the boundary by the buffer amount.
+        # ---- CASE 1: High already ABOVE bucket upper bound ----
+        # If observed high > temp_high + 1F rounding, the daily high is above
+        # this bucket. Buy NO on this bucket (temp was above, not in it).
         if todays_high > temp_high + config.ROUNDING_BUFFER_HARD_F:
-            # NO side is near-guaranteed — the high already exceeded this bucket
-            no_price = market.get("no_ask", 0) or (100 - ref_price)
-            if no_price <= 0 or no_price >= 95:
-                return None  # No reasonable ask, or already priced in
-
-            # NO-side price ceiling — even confirmed outcomes shouldn't pay 60c+ for NO
-            if no_price > config.NO_SIDE_MAX_PRICE_CENTS:
-                print(f"    [CASE1] NO @ {no_price}¢ exceeds ceiling {config.NO_SIDE_MAX_PRICE_CENTS}¢ — skip")
-                return None
-
-            edge = (100 - no_price) / 100.0  # Guaranteed profit per dollar
-            if edge < 0.05:
-                return None  # Not enough margin to bother
-
-            # Confirmed outcome: 25% of bankroll (larger than normal trades)
-            # Also capped by daily loss limit — even a false confirmed can't exceed it
-            bankroll_cents = getattr(self, 'balance_cents', None) or config.MAX_TOTAL_EXPOSURE_CENTS
-            max_bet_cents = int(bankroll_cents * config.CONFIRMED_OUTCOME_POSITION_PCT)
-            max_bet_cents = min(max_bet_cents, config.DAILY_LOSS_LIMIT_CENTS)
-            contracts = min(max(1, int(max_bet_cents / no_price)), config.MAX_CONTRACTS_PER_TICKER)
-
-            print(f"    [CONFIRMED] {city_code} high already {todays_high}°F > bucket {temp_low}-{temp_high}°F")
-            print(f"    [CONFIRMED] NO @ {no_price}¢ is near-guaranteed → {contracts} contracts (${contracts * no_price / 100:.2f})")
-
-            return {
-                "signal": "buy_no",
-                "side": "no",
-                "edge": edge,
-                "confidence": 0.99,
-                "price_cents": no_price,
-                "confirmation_multiplier": 1.0,  # Already at max via contract count
-                "confirmation_verdict": "CONFIRMED_OUTCOME",
-                "predicted_high": todays_high,
-                "suggested_contracts": contracts,
-                "ticker": ticker,
-                "order_type": "limit",
-                "quality_score": 1.0,
-                "seasonal_regime": "confirmed",
-                "seasonal_multiplier": 1.0,
-                "city_code": city_code,
-                "target_date": target_date,
-                "model_biases_used": {},
-                "reasoning": (
-                    f"[CONFIRMED] {city_code}: NWS observed high {todays_high}°F already exceeds "
-                    f"bucket {temp_low}-{temp_high}°F. NO @ {no_price}¢ is near-guaranteed. "
-                    f"Max position: {contracts} contracts."
-                ),
-                "strategy": "S1-Weather",
-            }
-
-        # local_hour and offset already calculated at method entry
-
-        # CASE 2: High is currently INSIDE the bucket → YES likely
-        # Riskier than CASE 1 because temp can still rise out of the bucket.
-        # Guards: later time gate, midpoint buffer for narrow buckets, reduced sizing.
-        # RECOVERY MODE: CASE 2 is disabled by default (CASE2_ENABLED=False in config).
-        bucket_width = temp_high - temp_low
-        is_narrow = bucket_width <= config.CASE2_NARROW_BUCKET_WIDTH
-        min_hour = config.CASE2_NARROW_MIN_LOCAL_HOUR if is_narrow else config.CASE2_MIN_LOCAL_HOUR
-
-        # Midpoint buffer: for narrow buckets, observed high must be in the lower
-        # half of the bucket to leave room for further temperature rise.
-        bucket_midpoint = (temp_low + temp_high) / 2.0
-        has_buffer = (not is_narrow) or (todays_high < bucket_midpoint)
-
-        if _CASE2_ENABLED and local_hour >= min_hour and temp_low <= todays_high <= temp_high and has_buffer:
-            # Ensemble sanity check: if models predict mean above bucket ceiling,
-            # the temperature is likely to rise out of the bucket
-            case2_vetoed = False
-            try:
-                dist = self.weather.get_temperature_distribution(
-                    city_code, target_date, model_weights=model_weights, model_biases=model_biases)
-                if dist:
-                    forecast_mean = dist.get("forecasted_high_mean", 0)
-                    forecast_max = dist.get("forecasted_high_max", 0)
-                    if forecast_mean > temp_high + 2:
-                        print(f"    [CASE2] Ensemble veto: mean {forecast_mean:.1f}°F > bucket ceiling "
-                              f"{temp_high}°F + 2°F — temp likely to rise out of bucket")
-                        case2_vetoed = True
-                    elif forecast_max > temp_high + 5 and forecast_mean > temp_high:
-                        print(f"    [CASE2] Ensemble veto: max member {forecast_max:.1f}°F and mean "
-                              f"{forecast_mean:.1f}°F above bucket ceiling {temp_high}°F")
-                        case2_vetoed = True
-                else:
-                    # No distribution available — cannot verify, block CASE 2
-                    print(f"    [CASE2 BLOCKED] No ensemble data for {city_code} — cannot verify, skipping")
-                    case2_vetoed = True
-            except Exception as e:
-                # Ensemble unavailable — block CASE 2 rather than firing blind
-                print(f"    [CASE2 BLOCKED] Ensemble fetch failed ({e}) — cannot verify, skipping")
-                case2_vetoed = True
-
-            if not case2_vetoed:
-                yes_ask = market.get("yes_ask", 0) or ref_price
-                if yes_ask <= 0 or yes_ask >= 95:
-                    return None  # Already priced in or no reasonable ask
-
-                edge = 1.0 - (yes_ask / 100.0)
-                if edge < 0.05:
-                    return None
-
-                # CASE 2 is NOT a confirmed outcome — temp can still rise out of bucket.
-                # Route through normal pipeline as STRONG signal.
-                print(f"    [CASE2] {city_code} high {todays_high}°F is IN bucket {temp_low}-{temp_high}°F (mid={bucket_midpoint})")
-                print(f"    [CASE2] YES @ {yes_ask}¢ — routing through normal pipeline (STRONG, {local_hour}:00 local)")
-
-                return {
-                    "signal": "buy_yes",
-                    "side": "yes",
-                    "edge": edge,
-                    "confidence": 0.85,
-                    "price_cents": yes_ask,
-                    "confirmation_multiplier": 1.0,
-                    "confirmation_verdict": "STRONG",
-                    "predicted_high": todays_high,
-                    "ticker": ticker,
-                    "order_type": "limit",
-                    "quality_score": 1.0,
-                    "seasonal_regime": "case2_in_bucket",
-                    "seasonal_multiplier": 1.0,
-                    "city_code": city_code,
-                    "target_date": target_date,
-                    "model_biases_used": model_biases or {},
-                    "reasoning": (
-                        f"[CASE2] {city_code}: NWS observed high {todays_high}°F is inside "
-                        f"bucket {temp_low}-{temp_high}°F at {local_hour}:00 local. YES @ {yes_ask}¢. "
-                        f"STRONG signal (not confirmed — temp can still rise out of bucket)."
-                    ),
-                    "strategy": "S1-Weather",
-                }
-
-        # CASE 3: High already BELOW the bucket's lower bound — graduated time thresholds
-        # A confirmed outcome requires the daily peak to have ALREADY OCCURRED:
-        #   1) Cold front moved through → high was early morning, now cooling
-        #   2) Afternoon peak has passed → temp declining from diurnal max
-        # Before 2 PM, temperature is normally still RISING, so a gap doesn't mean
-        # "unreachable" — it just means "hasn't warmed up yet." Must detect cooling.
-        # NWS rounding buffer: displayed high could be 1°F+ below actual raw reading
-        temp_gap = temp_low - todays_high - config.ROUNDING_BUFFER_HARD_F
-
-        # COOLING GATE: Before 2 PM local, require evidence that the daily peak
-        # has already occurred (current temp declining from today's high).
-        # Without this, CASE 3 fires on normal morning temps that will rise 15°F+.
-        case3_cooling_ok = True
-        if local_hour < config.CASE3_COOLING_REQUIRED_BEFORE_HOUR:
-            trend = self.intel.get_temperature_trend(city_code)
-            if trend is None:
-                print(f"    [CASE3] {city_code} @ {local_hour}:00: no trend data, blocking pre-afternoon CASE 3")
-                case3_cooling_ok = False
-            elif not trend["cooling"]:
-                print(f"    [CASE3] {city_code} @ {local_hour}:00: temp NOT cooling "
-                      f"(high={trend['high']}°F, latest={trend['latest']}°F, drop={trend['drop']:.0f}°F < 3°F) "
-                      f"— peak not yet reached, blocking CASE 3")
-                case3_cooling_ok = False
-            else:
-                print(f"    [CASE3] {city_code} @ {local_hour}:00: cooling detected "
-                      f"(high={trend['high']}°F, latest={trend['latest']}°F, drop={trend['drop']:.0f}°F) "
-                      f"— cold front likely, proceeding with gap check")
-
-        case3_triggered = False
-        if case3_cooling_ok:
-            for min_hour, min_gap in sorted(config.CASE3_GAP_THRESHOLDS.items(), reverse=True):
-                if local_hour >= min_hour and temp_gap > min_gap:
-                    case3_triggered = True
-                    print(f"    [CASE3] {city_code} gap check: obs_high={todays_high}°F, "
-                          f"bucket_floor={temp_low}°F, gap={temp_gap:.0f}°F > {min_gap}°F @ {local_hour}:00 local → triggered")
-                    break
-            if not case3_triggered and temp_gap > 0:
-                # Log near-misses for debugging
-                applicable_gap = None
-                for min_hour, min_gap in sorted(config.CASE3_GAP_THRESHOLDS.items(), reverse=True):
-                    if local_hour >= min_hour:
-                        applicable_gap = min_gap
-                        break
-                if applicable_gap is not None:
-                    print(f"    [CASE3] {city_code} gap check: obs_high={todays_high}°F, "
-                          f"bucket_floor={temp_low}°F, gap={temp_gap:.0f}°F <= {applicable_gap}°F @ {local_hour}:00 → NOT triggered")
-
-        # ENSEMBLE SANITY CHECK: The gap thresholds above are static and don't
-        # account for warm/cold fronts. Cross-reference the ensemble forecast —
-        # if models predict the high could reach the bucket, DON'T confirm.
-        # The ensemble captures weather patterns the observation gap cannot.
-        # MANDATORY: If ensemble data is unavailable, CASE 3 does NOT fire.
-        # On fresh restart or API failure, skipping the veto caused false
-        # confirmed outcomes (ATL B53.5 Feb 24: ensemble predicted 53°F but
-        # veto was silently skipped → lost trade).
-        if case3_triggered:
-            try:
-                dist = self.weather.get_temperature_distribution(city_code, target_date, model_weights=model_weights, model_biases=model_biases)
-                if dist:
-                    forecast_mean = dist.get("forecasted_high_mean", 0)
-                    forecast_max = dist.get("forecasted_high_max", 0)
-                    # Veto if ensemble mean is within N°F of the bucket floor.
-                    # Tighter for 3PM+ (less time for temp to defy ensemble).
-                    veto_gap = config.CASE3_ENSEMBLE_VETO_GAP_LATE if local_hour >= 15 else config.CASE3_ENSEMBLE_VETO_GAP_DEFAULT
-                    if forecast_mean >= temp_low - veto_gap:
-                        print(f"    [CASE3 VETO] Ensemble mean {forecast_mean:.1f}°F is within {veto_gap}°F "
-                              f"of bucket floor {temp_low}°F — warm front possible, NOT confirmed")
-                        case3_triggered = False
-                    elif forecast_max >= temp_low:
-                        print(f"    [CASE3 VETO] Ensemble max {forecast_max:.1f}°F reaches bucket "
-                              f"floor {temp_low}°F — NOT confirmed")
-                        case3_triggered = False
-                    else:
-                        print(f"    [CASE3] Ensemble confirms: mean={forecast_mean:.1f}°F, max={forecast_max:.1f}°F "
-                              f"< bucket floor {temp_low}°F (veto_gap={veto_gap}°F)")
-                else:
-                    # No distribution available — cannot verify, block CASE 3
-                    print(f"    [CASE3 BLOCKED] No ensemble data for {city_code} — cannot verify, skipping")
-                    case3_triggered = False
-            except Exception as e:
-                # Ensemble unavailable — block CASE 3 rather than firing blind
-                print(f"    [CASE3 BLOCKED] Ensemble fetch failed ({e}) — cannot verify, skipping")
-                case3_triggered = False
-
-        if case3_triggered:
             no_price = market.get("no_ask", 0) or (100 - ref_price)
             if no_price <= 0 or no_price >= 95:
                 return None
-
-            # NO-side price ceiling
-            if no_price > config.NO_SIDE_MAX_PRICE_CENTS:
-                print(f"    [CASE3] NO @ {no_price}¢ exceeds ceiling {config.NO_SIDE_MAX_PRICE_CENTS}¢ — skip")
-                return None
+            # CASE1 bypasses NO_SIDE_MAX_PRICE_CENTS (near-guaranteed outcome)
 
             edge = (100 - no_price) / 100.0
-            if edge < 0.05:
+            if edge < config.CONFIRMED_MIN_EDGE:
                 return None
 
-            # CASE 3 is NOT a confirmed outcome — the temperature can still rise.
-            # It's a high-confidence forecast signal. Return it as STRONG so it
-            # flows through normal sizing (Kelly), scorecard, and risk checks.
-            # No max sizing, no risk cap bypasses.
-            print(f"    [CASE3] {city_code} high only {todays_high}°F at {local_hour}:00, "
-                  f"bucket {temp_low}-{temp_high}°F likely unreachable (gap: {temp_gap:.0f}°F)")
-            print(f"    [CASE3] NO @ {no_price}¢, edge={edge:.0%} — routing through normal pipeline (STRONG)")
+            # Confirmed outcome sizing: CONFIRMED_POSITION_PCT of bankroll
+            max_bet = int(self.balance_cents * config.CONFIRMED_POSITION_PCT)
+            max_bet = min(max_bet, config.DAILY_LOSS_LIMIT_CENTS)
+            contracts = min(
+                max(1, int(max_bet / no_price)),
+                config.MAX_CONTRACTS_PER_TICKER
+            )
+
+            print(f"  [CASE1] {city_code} high={todays_high}F > "
+                  f"bucket {temp_low}-{temp_high}F + 1F rounding")
+            print(f"  [CASE1] NO @ {no_price}c -> {contracts} contracts")
 
             return {
-                "signal": "buy_no",
-                "side": "no",
-                "edge": edge,
-                "confidence": 0.90,
-                "price_cents": no_price,
-                "confirmation_multiplier": 1.5,  # STRONG confirmation boost
-                "confirmation_verdict": "STRONG",
-                "predicted_high": todays_high,
+                "signal": "buy",
                 "ticker": ticker,
-                "order_type": "limit",
-                "quality_score": 1.0,
-                "seasonal_regime": "case3_gap",
-                "seasonal_multiplier": 1.0,
-                "city_code": city_code,
-                "target_date": target_date,
-                "model_biases_used": model_biases or {},
+                "side": "no",
+                "edge": round(edge, 4),
+                "fee_adjusted_edge": round(edge * 0.93, 4),
+                "our_prob": 0.99,
+                "market_prob": round(no_price / 100.0, 4),
+                "price_cents": no_price,
+                "suggested_contracts": contracts,
                 "reasoning": (
-                    f"[CASE3] {city_code}: {local_hour}:00 local, high only {todays_high}°F, "
-                    f"bucket {temp_low}-{temp_high}°F likely unreachable (gap: {temp_gap:.0f}°F). "
-                    f"NO @ {no_price}¢. STRONG signal (not confirmed — temp can still rise)."
+                    f"[CASE1] {city_code}: observed high {todays_high}F exceeds "
+                    f"bucket {temp_low}-{temp_high}F. NO @ {no_price}c "
+                    f"near-guaranteed. {contracts} contracts."
                 ),
                 "strategy": "S1-Weather",
+                "confirmation_verdict": "CONFIRMED_OUTCOME",
+                "confirmation_multiplier": 1.0,
+                "city_code": city_code,
+                "target_date": target_date,
+                "close_time": market.get("close_time"),
+                "predicted_high": todays_high,
+                "model_spread": None,
+                "std_dev": None,
             }
+
+        # ---- CASE 3: Gap too large for bucket -> STRONG ----
+        # NWS rounding: reduce gap by 1F (real temp could be higher)
+        temp_gap = temp_low - todays_high - config.ROUNDING_BUFFER_HARD_F
+
+        # Cooling gate: before 2 PM, require evidence peak has passed.
+        # Without trade_intelligence dependency, skip CASE 3 pre-afternoon.
+        case3_ok = True
+        if local_hour < config.CASE3_COOLING_REQUIRED_BEFORE_HOUR:
+            case3_ok = False
+
+        if case3_ok:
+            case3_triggered = False
+            for min_hour, min_gap in sorted(
+                config.CASE3_GAP_THRESHOLDS.items(), reverse=True
+            ):
+                if local_hour >= min_hour and temp_gap > min_gap:
+                    case3_triggered = True
+                    break
+
+            if case3_triggered:
+                # Ensemble veto: check models don't predict reaching bucket
+                dist = self.weather.get_temperature_distribution(
+                    city_code, target_date
+                )
+                if dist:
+                    f_mean = dist.get("forecasted_high_mean", 0)
+                    veto_gap = (config.CASE3_ENSEMBLE_VETO_GAP_LATE
+                                if local_hour >= 15
+                                else config.CASE3_ENSEMBLE_VETO_GAP_DEFAULT)
+                    if f_mean >= temp_low - veto_gap:
+                        case3_triggered = False
+                else:
+                    case3_triggered = False  # No ensemble = blocked
+
+            if case3_triggered:
+                no_price = market.get("no_ask", 0) or (100 - ref_price)
+                if no_price <= 0 or no_price >= 95:
+                    return None
+                if no_price > config.NO_SIDE_MAX_PRICE_CENTS:
+                    return None
+
+                edge = (100 - no_price) / 100.0
+                if edge < config.CONFIRMED_MIN_EDGE:
+                    return None
+
+                case3_contracts = self._kelly_size(
+                    edge, 0.90, no_price, self.balance_cents, 1.0
+                )
+
+                print(f"  [CASE3] {city_code} high={todays_high}F, "
+                      f"bucket {temp_low}-{temp_high}F, "
+                      f"gap={temp_gap:.0f}F -> STRONG")
+
+                return {
+                    "signal": "buy",
+                    "ticker": ticker,
+                    "side": "no",
+                    "edge": round(edge, 4),
+                    "fee_adjusted_edge": round(edge * 0.93, 4),
+                    "our_prob": 0.90,  # matches Kelly sizing probability
+                    "market_prob": round(no_price / 100.0, 4),
+                    "price_cents": no_price,
+                    "suggested_contracts": case3_contracts,
+                    "reasoning": (
+                        f"[CASE3] {city_code}: high only {todays_high}F "
+                        f"at {local_hour}:00, bucket {temp_low}-{temp_high}F "
+                        f"unreachable (gap={temp_gap:.0f}F). "
+                        f"NO @ {no_price}c. STRONG (not confirmed)."
+                    ),
+                    "strategy": "S1-Weather",
+                    "confirmation_verdict": "STRONG",
+                    "confirmation_multiplier": 1.0,
+                    "city_code": city_code,
+                    "target_date": target_date,
+                    "close_time": market.get("close_time"),
+                    "predicted_high": todays_high,
+                    "model_spread": None,
+                    "std_dev": None,
+                }
 
         return None
 
-    # ═══════════════════════════════════════════════════════
-    # TIME-BASED EDGE THRESHOLDS
-    # ═══════════════════════════════════════════════════════
+    # ===========================================================
+    # S2: SPREAD ARBITRAGE
+    # ===========================================================
 
-    def _get_et_hour(self):
-        """Get current hour in Eastern Time (DST-aware)."""
-        return datetime.now(ZoneInfo("America/New_York")).hour
-
-    # ═══════════════════════════════════════════════════════
-    # CONVERGENCE CONFIDENCE BOOST
-    # ═══════════════════════════════════════════════════════
-
-    def _observation_score(self, city_code, target_date, distribution):
-        """
-        How well do real-time observations match the forecast trajectory?
-        Returns 0.0-1.0. Returns 0.0 if guards fail (not afternoon, no obs).
-        """
-        city_info = CITIES.get(city_code, {})
-        tz_name = city_info.get("timezone", "America/New_York")
-        local_hour = datetime.now(ZoneInfo(tz_name)).hour
-
-        if local_hour < getattr(config, 'CONVERGENCE_MIN_LOCAL_HOUR', 12):
-            return 0.0
-
-        trend = self.intel.get_temperature_trend(city_code)
-        if trend is None:
-            return 0.0
-
-        forecast_mean = distribution.get("forecasted_high_mean", 0)
-        observed_high = trend["high"]
-        obs_forecast_gap = abs(observed_high - forecast_mean)
-
-        if obs_forecast_gap <= 2.0:
-            obs_score = 1.0
-        elif obs_forecast_gap <= 4.0:
-            obs_score = 0.6
-        elif obs_forecast_gap <= 6.0:
-            obs_score = 0.3
-        else:
-            obs_score = 0.0
-
-        # Bonus: cooling confirmed (peak passed) after 2 PM → trajectory locked
-        if trend["cooling"] and local_hour >= 14:
-            obs_score = min(1.0, obs_score + 0.2)
-
-        return obs_score
-
-    def _preliminary_convergence_score(self, distribution, city_code, target_date):
-        """
-        Quick 3-component convergence score (no confirmer API call).
-        Returns float or None if guards fail.
-        """
-        city_info = CITIES.get(city_code, {})
-        tz_name = city_info.get("timezone", "America/New_York")
-        local_now = datetime.now(ZoneInfo(tz_name))
-
-        # Guard: afternoon only (for same-day). Next-day allowed anytime.
-        is_same_day = target_date == local_now.strftime("%Y-%m-%d")
-        if is_same_day and local_now.hour < getattr(config, 'CONVERGENCE_MIN_LOCAL_HOUR', 12):
+    def _strategy_arbitrage(self, market, yes_ask, no_ask):
+        """YES_ask + NO_ask < 98c = guaranteed profit."""
+        if yes_ask <= 0 or no_ask <= 0:
             return None
 
-        # Component 1: Model family convergence
-        model_spread = distribution.get("model_spread", 99.0)
-        model_score = max(0.0, min(1.0, (5.0 - model_spread) / 3.5))
+        total = yes_ask + no_ask
+        if total >= 98:
+            return None
 
-        # Component 2: Ensemble tightness
-        std_dev = distribution.get("std_dev", 99.0)
-        ensemble_score = max(0.0, min(1.0, (5.0 - std_dev) / 3.5))
+        gap = 100 - total
+        if gap < config.ARB_MIN_SPREAD_CENTS:
+            return None
 
-        # Component 3: Observation confirmation (0 for next-day — no obs yet)
-        obs_score = self._observation_score(city_code, target_date, distribution)
+        # Liquidity sanity: reject phantom quotes
+        vol24 = market.get("volume_24h", 0) or 0
+        vol = market.get("volume", 0) or 0
+        if vol == 0 and vol24 == 0:
+            return None
 
-        if is_same_day:
-            # Same-day: all 3 components
-            prelim = model_score * 0.33 + ensemble_score * 0.33 + obs_score * 0.34
+        yes_bid = market.get("yes_bid", 0) or 0
+        no_bid = market.get("no_bid", 0) or 0
+        if (yes_ask - yes_bid) > 20 or (no_ask - no_bid) > 20:
+            return None
+        if gap > 15 and vol24 < 10:
+            return None
+
+        edge = gap / 100.0
+        if yes_ask <= no_ask:
+            side, price = "yes", yes_ask
         else:
-            # Next-day: reweight to model + ensemble only (obs unavailable)
-            prelim = model_score * 0.50 + ensemble_score * 0.50
+            side, price = "no", no_ask
 
-        return prelim
+        ticker = market.get("ticker", "")
+        contracts = self._kelly_size(
+            edge, 0.95, price, self.balance_cents, 1.0, is_arb=True
+        )
 
-    def _calculate_convergence_boost(self, distribution, confirmation, city_code,
-                                      target_date, our_prob, market_prob):
-        """
-        Full 4-component convergence score and probability boost calculation.
-        Returns dict with eligible, boost, convergence_score, components, reason.
-        """
-        result = {"eligible": False, "boost": 0.0, "convergence_score": 0.0,
-                  "components": {}, "reason": ""}
-
-        city_info = CITIES.get(city_code, {})
-        tz_name = city_info.get("timezone", "America/New_York")
-        local_now = datetime.now(ZoneInfo(tz_name))
-
-        is_same_day = target_date == local_now.strftime("%Y-%m-%d")
-
-        # Guard: afternoon only (same-day). Next-day allowed anytime.
-        if is_same_day and local_now.hour < getattr(config, 'CONVERGENCE_MIN_LOCAL_HOUR', 12):
-            result["reason"] = "too_early"
-            return result
-        # Guard: block only if sources actively disagree (not just abstain)
-        disagree = confirmation.get("disagree_count", 0)
-        if disagree >= 2:
-            result["reason"] = f"rejected: {disagree} sources disagree"
-            return result
-        # Guard: observations required for same-day only
-        if is_same_day:
-            if self._observation_score(city_code, target_date, distribution) == 0.0:
-                trend = self.intel.get_temperature_trend(city_code)
-                if trend is None:
-                    result["reason"] = "no_observations"
-                    return result
-
-        # Component 1: Source agreement (penalize low participation)
-        agree = confirmation.get("agree_count", 0)
-        disagree = confirmation.get("disagree_count", 0)
-        total_voted = agree + disagree
-        if total_voted == 0:
-            source_score = 0.0
-        else:
-            agreement_ratio = agree / total_voted
-            # Participation penalty: 1 voter = 0.5x, 2 = 0.7x, 3+ = 1.0x
-            participation = min(1.0, 0.3 + total_voted * 0.233)
-            source_score = agreement_ratio * participation
-
-        # Component 2: Model family convergence
-        model_spread = distribution.get("model_spread", 99.0)
-        model_score = max(0.0, min(1.0, (5.0 - model_spread) / 3.5))
-
-        # Component 3: Ensemble tightness
-        std_dev = distribution.get("std_dev", 99.0)
-        ensemble_score = max(0.0, min(1.0, (5.0 - std_dev) / 3.5))
-
-        # Component 4: Observation confirmation (0 for next-day)
-        obs_score = self._observation_score(city_code, target_date, distribution)
-
-        if is_same_day:
-            # Same-day: all 4 components
-            score = (source_score * 0.30 + model_score * 0.25 +
-                     ensemble_score * 0.25 + obs_score * 0.20)
-        else:
-            # Next-day: reweight — no obs, lean heavier on source agreement + models
-            score = (source_score * 0.40 + model_score * 0.30 +
-                     ensemble_score * 0.30)
-
-        result["convergence_score"] = round(score, 3)
-        result["components"] = {
-            "source_agreement": round(source_score, 3),
-            "model_convergence": round(model_score, 3),
-            "ensemble_tightness": round(ensemble_score, 3),
-            "observation_confirmation": round(obs_score, 3),
+        return {
+            "signal": "buy",
+            "ticker": ticker,
+            "side": side,
+            "edge": round(edge, 4),
+            "fee_adjusted_edge": round(edge, 4),
+            "our_prob": 0.95,
+            "market_prob": round(price / 100.0, 4),
+            "price_cents": price,
+            "suggested_contracts": contracts,
+            "reasoning": (
+                f"[ARB] YES({yes_ask}c) + NO({no_ask}c) = {total}c. "
+                f"Guaranteed {gap}c profit per pair."
+            ),
+            "strategy": "S2-Arbitrage",
+            "confirmation_verdict": "STRONG",
+            "confirmation_multiplier": 1.0,
+            "city_code": "",
+            "target_date": "",
+            "close_time": market.get("close_time"),
+            "predicted_high": None,
+            "model_spread": None,
+            "std_dev": None,
         }
 
-        min_score = getattr(config, 'CONVERGENCE_MIN_SCORE', 0.75)
-        if score < min_score:
-            result["reason"] = f"score {score:.2f} < {min_score}"
-            return result
+    # ===========================================================
+    # NO-SIDE GUARDS
+    # ===========================================================
 
-        # Graduated boost: linear from MIN_BOOST at threshold to MAX_BOOST at 1.0
-        min_boost = getattr(config, 'CONVERGENCE_MIN_BOOST_PCT', 0.06)
-        max_boost = getattr(config, 'CONVERGENCE_MAX_BOOST_PCT', 0.12)
-        score_range = 1.0 - min_score
-        if score_range > 0:
-            boost_fraction = min(1.0, (score - min_score) / score_range)
+    def _apply_no_side_guards(self, distribution, temp_low, temp_high,
+                                price_cents, confirmation_verdict):
+        """Consolidated NO-side guards. Returns (passed, reason).
+
+        1. Dynamic separation: max(3.0F, std_dev * 0.8)
+           - NO-side expands bucket by +/-1F for NWS rounding
+           - CONFIRM gets 1.5x penalty
+        2. Price cap: NO > 50c = reject
+        3. Model divergence already checked in caller
+        """
+        # Price cap
+        if price_cents > config.NO_SIDE_MAX_PRICE_CENTS:
+            return False, (f"NO price {price_cents}c > "
+                           f"{config.NO_SIDE_MAX_PRICE_CENTS}c cap")
+
+        # Dynamic separation from expanded bucket
+        std_dev = distribution.get("std_dev", 5.0)
+        dynamic_sep = max(
+            config.NO_SEPARATION_FLOOR_F,
+            std_dev * config.NO_SEPARATION_STD_DEV_MULT
+        )
+
+        # Expand bucket boundaries by rounding buffer for NO
+        eff_low = temp_low - config.ROUNDING_BUFFER_HARD_F
+        eff_high = temp_high + config.ROUNDING_BUFFER_HARD_F
+
+        # Use raw (pre-bias) forecast mean for separation
+        raw_mean = distribution.get("raw_forecast_mean",
+                                     distribution["forecasted_high_mean"])
+
+        if eff_low <= raw_mean <= eff_high:
+            separation = 0.0
+        elif raw_mean < eff_low:
+            separation = eff_low - raw_mean
         else:
-            boost_fraction = 1.0
-        boost = min_boost + boost_fraction * (max_boost - min_boost)
+            separation = raw_mean - eff_high
 
-        # Direction: boost toward the signal the ensemble favors
-        raw_edge = our_prob - market_prob
-        if raw_edge < 0:
-            boost = -boost  # NO side — reduce our_prob to increase NO edge
+        if separation < dynamic_sep:
+            return False, (
+                f"separation {separation:.1f}F < {dynamic_sep:.1f}F "
+                f"(std={std_dev:.1f}F)"
+            )
 
-        result["eligible"] = True
-        result["boost"] = round(boost, 4)
-        result["raw_edge"] = round(raw_edge, 4)
-        result["is_next_day"] = not is_same_day
-        result["reason"] = "convergence_boost_applied"
+        # CONFIRM-level penalty
+        if confirmation_verdict == "CONFIRM":
+            confirm_sep = dynamic_sep * config.CONFIRM_NO_SEPARATION_PENALTY
+            if separation < confirm_sep:
+                return False, (
+                    f"CONFIRM separation {separation:.1f}F < "
+                    f"{confirm_sep:.1f}F (1.5x penalty)"
+                )
 
-        print(f"    [CONVERGENCE] Score={score:.2f} "
-              f"(src={source_score:.2f} mod={model_score:.2f} "
-              f"ens={ensemble_score:.2f} obs={obs_score:.2f}) "
-              f"-> boost={boost:+.1%}")
-        return result
+        return True, ""
 
-    def _get_edge_period(self):
-        """Return human-readable label for current edge period."""
-        h = self._get_et_hour()
-        if h < 6:
-            return "overnight"
-        elif h < 12:
-            return "morning"
-        elif h < 16:
-            return "afternoon"
+    # ===========================================================
+    # ROUNDING BUFFER
+    # ===========================================================
+
+    def _rounding_buffer_multiplier(self, forecast_mean, temp_low, temp_high,
+                                     side):
+        """NWS rounding buffer. Returns sizing multiplier (0.0 = no trade)."""
+        if side == "no":
+            eff_low = temp_low - config.ROUNDING_BUFFER_HARD_F
+            eff_high = temp_high + config.ROUNDING_BUFFER_HARD_F
         else:
-            return "evening"
+            eff_low = temp_low
+            eff_high = temp_high
 
-    def _get_time_adjusted_edge_threshold(self, signal):
-        """
-        Require higher edge in the morning to preserve capital for
-        afternoon confirmed outcomes and arbitrage.
-
-        Confirmed outcomes and arbitrage bypass this entirely.
-        Normal forecast-based trades must clear a higher bar early.
-
-        MORNING  (6 AM-12 PM ET): 9% — moderate selectivity
-        AFTERNOON (12 PM+ ET):    7% (MIN_EDGE) — confirmed outcomes + arbitrage
-        OVERNIGHT (12-6 AM ET):   10% — thin liquidity, be selective
-        """
-        # Arbitrage and confirmed outcomes always pass at base threshold
-        strategy = signal.get("strategy", "")
-        if strategy == "S2-Arbitrage":
-            return config.MIN_EDGE
-        if signal.get("confirmation_verdict") == "CONFIRMED_OUTCOME":
-            return 0.0  # Always take confirmed outcomes
-
-        h = self._get_et_hour()
-        if h < 6:
-            base_threshold = 0.10   # Overnight: 10% — thin liquidity, be selective (was 12%)
-        elif h < 12:
-            base_threshold = 0.09   # Morning: 9% — moderate selectivity (was 12%)
+        # Find distance to nearest strike
+        if temp_high >= 200:
+            nearest = abs(forecast_mean - eff_low)
+        elif temp_low <= -100:
+            nearest = abs(forecast_mean - eff_high)
         else:
-            base_threshold = config.MIN_EDGE  # Afternoon/evening: base 7%
+            nearest = min(abs(forecast_mean - eff_low),
+                          abs(forecast_mean - eff_high))
 
-        # Next-day guard: evening trades for tomorrow carry 12-18h uncertainty.
-        # Require 1.5x base threshold to compensate for forecast degradation.
-        target_date = signal.get("target_date")
-        city_code = signal.get("city_code")
-        if target_date and city_code:
-            tz_name = CITIES.get(city_code, {}).get("timezone", "America/New_York")
-            local_date = datetime.now(ZoneInfo(tz_name)).strftime("%Y-%m-%d")
-            if target_date > local_date:
-                next_day_threshold = config.MIN_EDGE * getattr(config, 'NEXT_DAY_EDGE_MULTIPLIER', 1.5)
-                base_threshold = max(base_threshold, next_day_threshold)
-                print(f"    [STRATEGY] Next-day market ({target_date} > {local_date}): "
-                      f"edge threshold raised to {base_threshold:.0%}")
+        if nearest <= config.ROUNDING_BUFFER_HARD_F:
+            return 0.0
+        elif nearest <= config.ROUNDING_BUFFER_SOFT_F:
+            return 0.5
+        return 1.0
 
-        return base_threshold
+    # ===========================================================
+    # EDGE THRESHOLD
+    # ===========================================================
 
-    # ═══════════════════════════════════════════════════════
-    # POSITION SIZING (Quarter-Kelly)
-    # ═══════════════════════════════════════════════════════
+    def _get_edge_threshold(self, is_next_day, is_confirmed):
+        """Minimum raw edge threshold.
 
-    def _kelly_size(self, edge, confidence, price_cents):
+        Confirmed: 5%
+        Morning (before noon ET): 12%
+        Afternoon: 10% (MIN_EDGE)
+        Next-day: 15% (1.5x)
         """
-        Quarter-Kelly position sizing.
-        Accounts for the binary nature of prediction markets.
+        if is_confirmed:
+            return config.CONFIRMED_MIN_EDGE
 
-        Uses actual Kalshi balance when available for dynamic sizing.
-        Per-position cap = MAX_POSITION_PCT (20%) of bankroll.
-        No hard contract count cap — size is governed by percentage of capital.
+        et_hour = datetime.now(ZoneInfo("America/New_York")).hour
+
+        if is_next_day:
+            return config.MIN_EDGE * config.NEXT_DAY_EDGE_MULTIPLIER
+
+        if et_hour < 12:
+            return 0.12
+        return config.MIN_EDGE
+
+    # ===========================================================
+    # FEE-ADJUSTED EDGE
+    # ===========================================================
+
+    def _calculate_fee_adjusted_edge(self, our_prob, market_prob, side):
+        """Edge after Kalshi 7% fee drag. Side-aware.
+
+        YES profit = (100 - price) per contract.
+        NO profit = price per contract (yes_price cents).
         """
-        if edge <= 0 or confidence <= 0 or price_cents <= 0:
+        raw_edge = abs(our_prob - market_prob)
+        price = market_prob  # market_prob = price / 100
+
+        if side == "yes":
+            fee_drag = config.KALSHI_FEE_PCT * (1.0 - price) * our_prob
+        else:
+            fee_drag = config.KALSHI_FEE_PCT * price * (1.0 - our_prob)
+
+        return max(0.0, raw_edge - fee_drag)
+
+    # ===========================================================
+    # QUARTER-KELLY SIZING
+    # ===========================================================
+
+    def _kelly_size(self, edge, our_prob, price_cents, balance_cents,
+                     confirmation_multiplier, is_confirmed=False,
+                     is_arb=False):
+        """Quarter-Kelly position sizing for binary markets.
+
+        kelly = (win_prob * payout - loss_prob * cost) / payout
+        fraction = kelly / 4 * confirmation_multiplier
+
+        Caps: MAX_POSITION_PCT (5%), CONFIRMED (10%), ARB (15%).
+        Minimum: 1 contract.
+        """
+        if edge <= 0 or price_cents <= 0 or balance_cents <= 0:
+            return 1
+        if balance_cents < 500:  # Below $5 -- not enough to trade safely
             return 0
 
-        prob_win = min(0.95, (price_cents / 100.0) + edge)
-        payout = 100 - price_cents  # Profit if correct
-        loss = price_cents  # Loss if wrong
+        prob_win = min(0.95, our_prob)
+        payout = 100 - price_cents
+        cost = price_cents
 
-        if loss == 0:
+        if payout <= 0:
+            return 1
+
+        kelly = ((prob_win * payout) - ((1.0 - prob_win) * cost)) / payout
+        if kelly <= 0:
+            return 1
+
+        fraction = kelly / 4.0 * confirmation_multiplier
+        bet_cents = fraction * balance_cents
+
+        if is_arb:
+            max_pct = config.ARB_POSITION_PCT
+        elif is_confirmed:
+            max_pct = config.CONFIRMED_POSITION_PCT
+        else:
+            max_pct = config.MAX_POSITION_PCT
+
+        max_bet = balance_cents * max_pct
+        bet_cents = min(bet_cents, max_bet)
+        bet_cents = min(bet_cents, config.MAX_PER_TICKER_CENTS)
+
+        contracts = int(bet_cents / price_cents)
+        if contracts <= 0:
             return 0
-
-        kelly = ((prob_win * payout) - ((1 - prob_win) * loss)) / payout
-        quarter_kelly = kelly / 4.0
-
-        if quarter_kelly <= 0:
-            return 0
-
-        # Use actual balance if available, fall back to exposure cap
-        bankroll_cents = getattr(self, 'balance_cents', None) or config.MAX_TOTAL_EXPOSURE_CENTS
-        bet_cents = quarter_kelly * bankroll_cents
-
-        # Cap at per-position max (20% of bankroll) and auto-trade limit
-        max_per_position = int(bankroll_cents * config.MAX_POSITION_PCT)
-        bet_cents = min(bet_cents, max_per_position, config.MAX_AUTO_TRADE_CENTS)
-
-        contracts = max(1, int(bet_cents / price_cents))
         contracts = min(contracts, config.MAX_CONTRACTS_PER_TICKER)
-
-        # NO-side sizing reduction: buying NO at high prices (≥50c) risks
-        # outsized losses — 83% WR but net negative P&L in production data.
-        # Reduced from 0.70 to 0.40: caps max NO loss to ~$2.80 instead of $22.
-        if getattr(self, '_current_side', None) == 'no' and price_cents >= 50:
-            contracts = max(1, int(contracts * config.NO_SIDE_SIZING_MULTIPLIER))
 
         return contracts
 
-    # ═══════════════════════════════════════════════════════
+    # ===========================================================
     # UTILITY
-    # ═══════════════════════════════════════════════════════
+    # ===========================================================
 
-    def _skip(self, reason):
+    def _skip(self, reason, ticker=""):
+        """Return a skip signal."""
         return {
-            "signal": "skip", "edge": 0, "confidence": 0,
-            "reasoning": reason, "suggested_contracts": 0,
-            "price_cents": 0, "side": "", "ticker": "",
-            "strategy": "none", "confirmation_multiplier": 1.0,
+            "signal": "skip",
+            "ticker": ticker,
+            "side": "",
+            "edge": 0.0,
+            "fee_adjusted_edge": 0.0,
+            "our_prob": 0.0,
+            "market_prob": 0.0,
+            "price_cents": 0,
+            "suggested_contracts": 0,
+            "reasoning": reason,
+            "strategy": "none",
+            "confirmation_verdict": "",
+            "confirmation_multiplier": 1.0,
+            "city_code": "",
+            "target_date": "",
+            "close_time": None,
+            "predicted_high": None,
+            "model_spread": None,
+            "std_dev": None,
         }
-
-    def get_strategy_summary(self):
-        # Build active market list
-        active = [k for k, v in config.MARKET_TYPES.items() if v]
-        lines = [
-            "",
-            "  Active Strategies:",
-            "  ═══════════════════════════════════════════════════════════",
-            f"  Markets: {', '.join(active).upper()}",
-            "",
-        ]
-
-        if config.MARKET_TYPES.get("weather"):
-            lines += [
-                "  S1: WEATHER ENSEMBLE EDGE (primary)",
-                "      → 143 ensemble members (GFS+ECMWF+ICON+GEM)",
-                "      → 4-source confirmation voting before every trade",
-                "      → Statistical significance test (z-test, p<0.10)",
-                "      → Regime detection (stable/transitional/volatile)",
-                "      → Seasonal confidence sizing (city+month+anomaly)",
-                "      → Bias correction (learns from past accuracy)",
-                "      → Quarter-Kelly x all multipliers",
-                "      → Limit orders only (maker strategy)",
-                "",
-            ]
-
-        lines += [
-            "  S2: SPREAD ARBITRAGE (secondary)",
-            "      → Detects YES+NO < 98c (guaranteed profit)",
-            "      → Auto-executes when found",
-            "",
-        ]
-
-        if config.MARKET_TYPES.get("sp500"):
-            lines += [
-                "  S3: S&P 500 VIX-IMPLIED BRACKETS",
-                "      → VIX-based normal distribution for price probabilities",
-                "      → 3-check confirmation (momentum, vol ratio, historical)",
-                "      → Intraday vol adjustment as market day progresses",
-                "      → yfinance data (free, no API key)",
-                "      → Quarter-Kelly sizing",
-                "",
-            ]
-
-        lines += [
-            "  Intelligence Layer:",
-            "      → Exit strategy (take profit / cut losses / edge reversal)",
-            "      → Settlement P&L tracking with bias learning",
-            "      → Dynamic model weighting per city/season",
-            "  ═══════════════════════════════════════════════════════════",
-            "",
-        ]
-        return "\n".join(lines)

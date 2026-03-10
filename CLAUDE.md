@@ -4,79 +4,77 @@
 
 - **Plan mode** for ANY non-trivial task (3+ steps). STOP and re-plan if something goes sideways.
 - **Subagents** liberally to keep main context clean. One task per subagent.
-- **Self-improvement loop**: After ANY correction, update `tasks/lessons.md`.
 - **Verify before done**: Prove it works. Run tests, check logs, demonstrate correctness.
 - **Simplicity first**: Minimal changes. Find root causes. Senior developer standards.
-- **Task management**: Plan in `tasks/todo.md`, track progress, capture lessons in `tasks/lessons.md`.
 
 ## Git & Deployment
 
-- **Working branch:** `master` — **Production branch:** `main` (Railway auto-deploys)
+- **Working branch:** `master` -- **Production branch:** `main` (Railway auto-deploys)
 - **Deploy:** `git checkout main && git merge master && git push && git checkout master`
-- "Push to Railway" or "deploy" = merge `master` → `main` and push. Never force-push `main`.
+- "Push to Railway" or "deploy" = merge `master` -> `main` and push. Never force-push `main`.
 
 ## Running the Bot
 
-`python kalshi_bot.py` — No build step, no tests, no linter. Config in `config.py`.
+`python kalshi_bot.py` -- No build step, no tests, no linter. Config in `config.py`.
 
-**Levels:** `DRY_RUN=True` (analysis only) → `ENVIRONMENT="demo"` (practice) → `ENVIRONMENT="production"` (real money)
+**Levels:** `DRY_RUN=True` (analysis only) -> `ENVIRONMENT="demo"` (practice) -> `ENVIRONMENT="production"` (real money)
 
 ## Dependencies
 
-Core: `requests`, `cryptography`, `numpy`, `scipy`, `pandas`, `yfinance` (`requirements.txt`).
-APIs (free, no keys): Open-Meteo (ensemble forecasts), NWS (settlement source), yfinance (SPY/VIX).
+Core: `requests`, `cryptography`, `numpy`, `scipy` (`requirements.txt`).
+APIs (free, no keys): Open-Meteo (ensemble forecasts), NWS (settlement source).
 Kalshi API: RSA key-pair auth via `API_KEY_ID` + `PRIVATE_KEY_PATH` in `config.py`.
 
-## Architecture
+## Architecture (v4.0 -- Rebuilt March 2026)
 
-Multi-market prediction bot for Kalshi. Continuous loop (2min, 1min peak 12-5 PM ET). Scans weather markets, detects mispricing, places limit orders.
+Weather + arbitrage trading bot for Kalshi. ~4,000 lines across 11 files (down from 15K/18 files).
+Continuous loop (2min, 1min peak 12-5 PM ET). Scans weather markets, detects mispricing, places limit orders.
 
 ```
-market_scanner.py → strategy.py → confirmer → trade_scorecard.py → risk_manager.py → maker_strategy.py → kalshi_client.py
-   (discover)       (evaluate)    (validate)   (8-criteria gate)    (safety check)    (maker pricing)     (execute)
+market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py -> maker_strategy.py -> kalshi_client.py
+   (discover)        (evaluate + confirm + size)                  (10 safety checks)  (limit pricing)     (execute)
 ```
 
-**Edge-priority execution:** Two-phase scan — evaluate all markets, sort by edge descending, execute highest first.
+**Edge-priority execution:** Evaluate all markets, sort by edge descending, execute highest first.
 
-### Modules
+### Modules (11 files)
 
-| Module | Role |
-|--------|------|
-| `kalshi_bot.py` | Entry point, main loop, exit/settlement tracking. Dashboard starts before restart loop. |
-| `kalshi_client.py` | Kalshi API wrapper, RSA-PSS auth, dual environment |
-| `config.py` | All parameters. Values in cents. |
-| `market_scanner.py` | Queries Kalshi for weather series + S&P brackets |
-| `strategy.py` | S1 Weather Edge, S2 Spread Arbitrage, S3 SP500 Brackets |
-| `weather_engine.py` | 143 ensemble members (GFS 31, ECMWF 51, ICON 40, GEM 21) via Open-Meteo |
-| `signal_confirmer.py` | 5-source voting. STRONG (3+ agree + NWS agrees), CONFIRM (2+, NWS abstains), REJECT. WEAK = hard reject. NWS DISAGREE = hard REJECT. |
-| `risk_manager.py` | 19 safety layers. State in `risk_state.json`. |
-| `trade_intelligence.py` | Exit logic, bias learning, observation tracking, settlement P&L |
-| `quant_analytics.py` | Backtesting, per-model accuracy weights + bias, regime detection |
-| `trade_scorecard.py` | 8-criteria recursive eval (max 3 iterations). Confirmed outcomes + arb bypass. |
-| `maker_strategy.py` | Limit orders at fair_value - spread_buffer. State in `maker_orders.json`. |
-| `dashboard.py` | Web dashboard (BaseHTTPRequestHandler). `/api/health`, `/api/state`, `/api/force-exit` |
-| `self_improver.py` | Weekly param tuning (Sun 11 PM ET). Overrides in `config_overrides.json` (7-day expiry). |
-| `seasonal_confidence.py` | Monthly sizing multipliers per city |
-| `market_quality.py` | Liquidity filter, probability guardrails |
-| `trade_analyzer.py` | End-of-day post-mortem |
+| Module | Lines | Role |
+|--------|-------|------|
+| `kalshi_bot.py` | ~430 | Entry point, main loop, observation fetching, exit execution |
+| `kalshi_client.py` | ~300 | Kalshi API wrapper, RSA-PSS auth, dual environment |
+| `config.py` | ~170 | ~70 parameters (down from ~450). Values in cents. |
+| `market_scanner.py` | ~130 | Queries Kalshi for weather series (20 cities) |
+| `strategy.py` | ~700 | S1 Weather Edge + S2 Arbitrage. CASE 1/3 confirmed outcomes. Quarter-Kelly sizing. |
+| `weather_engine.py` | ~750 | 143 ensemble members (GFS 31, ECMWF 51, ICON 40, GEM 21) via Open-Meteo |
+| `signal_confirmer.py` | ~265 | 5-source voting. STRONG/CONFIRM/REJECT (no WEAK). NWS veto power. |
+| `risk_manager.py` | ~340 | 10 safety checks + SIZE-DOWN logic + settlement methods. State in `risk_state.json`. |
+| `trade_reviewer.py` | ~540 | Daily learning: per-city bias, model accuracy, NWS actual lookups, pattern analysis. State in `learning_state.json`. |
+| `trade_intelligence.py` | ~760 | Exit logic, settlement P&L sync (single writer), NWS observations |
+| `maker_strategy.py` | ~260 | Limit orders at fair_value - spread_buffer. State in `maker_orders.json`. |
+| `dashboard.py` | ~780 | Web dashboard. `/api/health`, `/api/state`, `/api/force-exit` |
 
-### State Files (JSON in STATE_DIR, `/data` on Railway)
+### Deleted Modules (v3 -> v4)
+`trade_scorecard.py`, `self_improver.py`, `quant_analytics.py`, `seasonal_confidence.py`,
+`trade_analyzer.py`, `volatility_engine.py`, `spx_confirmer.py`, `market_quality.py`
 
-`trade_history.json`, `risk_state.json`, `pnl_history.json`, `maker_orders.json`, `scan_log.json`, `model_accuracy.json`, `forecast_log.json`, `config_overrides.json`, `bot_status.json`, `backtest_results.json`, `edge_attribution.json`, `pending_trades.json`, `daily_reports.json`, `trade_analysis.json`, `bias_history.json`, `seasonal_weights.json`, `improvement_log.json`
+### State Files (7, down from 17)
+
+`trade_history.json`, `risk_state.json`, `pnl_history.json`, `bot_status.json`, `maker_orders.json`, `scan_log.json`, `learning_state.json`
 
 ### Key Design Decisions
 
-- **Quarter-Kelly sizing** (Kelly/4 × confirmation level)
-- **Maker strategy** — limit orders, not market orders
-- **NWS settlement** — Weather markets settle on NWS Daily Climate Reports, not model forecasts
-- **NWS rounding** — ±1°F DOS-era conversion error. Buffer: ±1°F = no trade, ±2°F = 50% size. **NO-side expands bucket by ±1°F before separation check.** Dynamic separation: `max(2°F, std_dev*0.6)`. CONFIRM gets 1.5x penalty.
-- **Fee-adjusted edge** — 7% fee drag deducted before min edge check. Side-aware formula.
-- **Only CASE 1 = CONFIRMED_OUTCOME** — temp can't un-happen. CASE 2/3 = STRONG (normal risk checks).
-- **CASE 2 disabled** (recovery mode). Returns STRONG when re-enabled.
-- **Thesis-based exits** — exit on loss confirmation/thesis broken, NOT edge erosion. Hold winners to settlement.
-- **Only high-urgency exits auto-execute.** Medium urgency = manual review.
-- **Single-writer P&L** — Only `_sync_pnl_from_kalshi()` writes `pnl_history.json`. No exceptions.
-- **Duplicate order detection** — checks `risk.state["positions"]` + `trade_log` resting orders. Uses `order_status` field (not `status`).
+- **Quarter-Kelly sizing** (Kelly/4 x confirmation multiplier)
+- **Maker strategy** -- limit orders, not market orders
+- **NWS settlement** -- Weather markets settle on NWS Daily Climate Reports
+- **NWS rounding** -- +/-1F DOS-era conversion error. Buffer: +/-1F = no trade, +/-2F = 50% size.
+- **NO-side separation** -- Dynamic: `max(3.0F, std_dev * 0.8)` from expanded boundary. CONFIRM gets 1.5x penalty.
+- **Fee-adjusted edge** -- 7% fee drag. Side-aware formula.
+- **Only CASE 1 = CONFIRMED_OUTCOME** -- temp exceeded bucket, can't un-happen. CASE 2 DELETED. CASE 3 = STRONG.
+- **Binary exits** -- HOLD or EXIT. No PARE/HEDGE/TAKE_PROFIT.
+- **Single-writer P&L** -- Only `sync_pnl_from_kalshi()` writes `pnl_history.json`. No exceptions.
+- **Size-down, not reject** -- When caps are exceeded, risk manager reduces contracts to fit instead of blocking.
+- **Kill switch** -- Daily loss = stop for day (auto-resume). 5 consecutive = 4h pause. No Sharpe-based shutdown.
 
 ## NWS Station Mappings (20 Cities)
 
@@ -95,102 +93,83 @@ market_scanner.py → strategy.py → confirmer → trade_scorecard.py → risk_
 
 **Houston = KHOU (Hobby), NOT KIAH.** Mappings in `weather_engine.py` CITIES dict.
 
-## Risk Parameters — RECOVERY MODE
+## Risk Parameters (v4.0)
 
 **IMPORTANT: Any changes to risk parameters MUST be reflected here.**
 
-**RECOVERY MODE (Feb 2026):** Bankroll ~$48. Tightened params. Exit when bankroll > $80.
-
-All values in `config.py`. Cents = 100 per $1.00.
+Bankroll ~$48. All values in `config.py`. Cents = 100 per $1.00. `BALANCE_FALLBACK_CENTS=4800` used when API unavailable.
 
 ### Core Limits
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `MIN_EDGE` | 7% | Lowered from 10% for high-freq small-edge strategy. Morning: 9%, overnight: 10%. |
-| `FEE_ADJUSTED_MIN_EDGE` | 3% | After 7% fee drag. Lowered from 5% to enable more volume. |
-| `MIN_PAYOUT_DOLLARS` | $0.25 | Was $1.00 — lowered for $48 bankroll where 1-contract NO trades are normal |
-| `DAILY_LOSS_LIMIT_CENTS` | $6.00 | 15% of bankroll |
-| `MAX_DAILY_FORECAST_TRADES` | 5/day | Confirmed outcomes exempt |
+| `MIN_EDGE` | 10% | Morning (before noon): 12%. Next-day: 15%. |
+| `CONFIRMED_MIN_EDGE` | 5% | CASE 1 confirmed outcomes |
+| `FEE_ADJUSTED_MIN_EDGE` | 3% | After 7% fee drag |
+| `MIN_PAYOUT_DOLLARS` | $0.25 | Minimum expected payout per trade |
+| `DAILY_LOSS_LIMIT_CENTS` | 600 ($6) | ~15% of bankroll |
 | `CONSECUTIVE_LOSS_PAUSE` | 3 losses / 60 min | |
-| `KILL_SWITCH_CONSECUTIVE_LOSSES` | 2 | Enters observation mode |
+| `KILL_SWITCH_CONSEC_LOSSES` | 5 | 4-hour pause, then auto-resume |
 
 ### Position Sizing & Exposure
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `MAX_POSITION_PCT` | 20% bankroll | Caps contracts down |
-| `CONFIRMED_OUTCOME_POSITION_PCT` | 25% bankroll | CASE 1 only |
-| `MAX_TOTAL_EXPOSURE_PCT` | 60% bankroll | Confirmed outcomes bypass |
-| `MAX_PER_CITY_PCT` | 15% bankroll | Confirmed outcomes bypass |
-| `MAX_PER_TICKER_CENTS` | $8.00 | Enforced always |
-| `MAX_CONTRACTS_PER_TICKER` | 15 | Enforced always |
-| `MAX_OPEN_POSITIONS` | 6 | Confirmed outcomes bypass |
-| `MAX_CORRELATED_POSITIONS` | 2 (3 for confirmed) | Separate caps for normal vs CASE 1 |
-| `MAX_DAILY_CITY_SPEND_CENTS` | $12.00 | Cumulative daily per-city (distinct from instantaneous MAX_PER_CITY_PCT). Confirmed outcomes bypass. |
+| `MAX_POSITION_PCT` | 5% | Normal forecasts |
+| `CONFIRMED_POSITION_PCT` | 10% | CASE 1 only |
+| `ARB_POSITION_PCT` | 15% | Near risk-free arbitrage |
+| `ARB_MIN_SPREAD_CENTS` | 7 | Min gap for arb trades (covers 7% fee) |
+| `MAX_TOTAL_EXPOSURE_PCT` | 40% | Confirmed bypass |
+| `MAX_PER_CITY_PCT` | 10% | Confirmed bypass |
+| `MAX_PER_TICKER_CENTS` | 400 ($4) | Always enforced |
+| `MAX_CONTRACTS_PER_TICKER` | 5 | Always enforced |
+| `MAX_OPEN_POSITIONS` | 3 | Confirmed/arb bypass |
+| `MAX_CORRELATED_POSITIONS` | 2 (3 confirmed) | Per city |
 | `LIQUIDITY_RESERVE_PCT` | 20% | |
-| `TRADE_COOLDOWN` | 120 sec | Matches 2min scan interval. Same-cycle exempt. |
-| `SETTLEMENT_PROXIMITY_HOURS` | 2 hrs | No new positions. 20% edge overrides. |
-| Quarter-Kelly | Kelly/4 × confirmation | |
+| `TRADE_COOLDOWN` | 120 sec | Same-cycle exempt |
 
 ### Strategy Guards
-- **Rounding buffer**: ±1°F = no trade, ±2°F = 50% size. **NO-side uses rounding-expanded boundaries** (bucket ± 1°F) for separation check. Uses **raw (pre-bias) forecast mean** for separation to avoid winter bias blocking valid trades.
-- **NO-side dynamic separation**: `max(2.0°F, std_dev * 0.6)` from expanded boundary. Scales with forecast uncertainty — tight models need 2°F, spread models need 3-4°F+. **CONFIRM-level NO gets 1.5x penalty** (requires 50% more separation than STRONG). Prevents close-call losses where forecast is within typical 3-5°F error of bucket.
-- **Model divergence**: YES >6°F = skip, NO >8°F = skip (was 12°F — large spread invalidates separation check). <2°F = 1.2x boost.
-- **Longshot floor**: 5¢. **Near-certainty cap**: 88¢.
-- **NO ceiling**: 55¢ (`NO_SIDE_MAX_PRICE_CENTS`, was 60¢). **NO sizing**: ≥50¢ gets 40% normal.
-- **Per-city per-model bias correction**: Learned from `quant_analytics.get_model_bias()` (5+ dp). Defaults: DEN +4°F, Gulf +3°F, desert +2°F.
-- **Next-day guard**: 1.5x edge threshold, 50% sizing. Confirmed outcomes exempt.
-- **Same-cycle cooldown exempt**. 6-hour same-ticker re-entry cooldown (CASE 1 exempt only — CASE 3 returns STRONG, not CONFIRMED_OUTCOME).
-- **Bias streak**: 3+ days same direction → immediate adjustment.
-- **Convergence confidence boost**: When sources agree, models tight, and (same-day) obs confirm forecast, boost `our_prob` by 6-12% to create synthetic edge. Score ≥0.75 required. Same-day: 4 components (source 30%, model 25%, ensemble 25%, obs 20%), afternoon only, 65% sizing. Next-day: 3 components reweighted (source 40%, model 30%, ensemble 30%), ~33% sizing (0.65 * 0.50). Two-pass: preliminary check avoids unnecessary API calls. Only activates when raw edge < MIN_EDGE (no double-dip).
+- **Rounding buffer**: +/-1F = no trade, +/-2F = 50% size
+- **NO-side separation**: `max(3.0F, std_dev * 0.8)`. CONFIRM gets 1.5x penalty.
+- **Model divergence**: YES >6F = skip, NO >8F = skip. <2F = 1.2x boost.
+- **Longshot floor**: 5c. **Near-certainty cap**: 88c. **NO ceiling**: 50c (CASE1 bypasses).
+- **NO sizing**: >=50c gets 40% normal sizing.
+- **Next-day**: 1.5x edge threshold, 50% sizing.
+- **Warm city bias defaults**: DEN +4F, Gulf/SE +3F, Desert +2F (hardcoded in weather_engine.py)
 
-### Confirmed Outcome Rules
-- **CASE 1** (high exceeded bucket): `CONFIRMED_OUTCOME`. Min 10 AM local. Rounding: `todays_high > temp_high + 1°F` (obs must exceed strike by 1°F to confirm).
-- **CASE 2** (YES on current bucket): **DISABLED** (`CASE2_ENABLED=False`). Returns STRONG when re-enabled. Ensemble veto: `mean > ceiling+2°F` = block. **No ensemble = blocked.**
-- **CASE 3** (gap too large for bucket): Returns STRONG. Gap reduced by 1°F (real temp could be higher than NWS display).
-  - **Cooling gate (MANDATORY before 2 PM):** `latest_temp <= todays_high - 3°F` (evidence peak has passed). Uses `get_temperature_trend()`. Without cooling evidence, CASE 3 blocked.
-  - **Graduated gaps:** 10AM:15°F, 11AM:12°F, 12PM:8°F, 1PM:7°F, 2PM:6°F, 3PM:4°F, 4PM+:2°F (`CASE3_GAP_THRESHOLDS`)
-  - **Ensemble veto (MANDATORY):** 3PM+: mean within 3°F of bucket floor = veto. Earlier: 5°F. **No ensemble = blocked.**
-- **Confirmed bypass (CASE 1 only)**: Bypasses total/city/daily-city-spend/position caps. Still respects: daily loss, per-ticker, contracts, correlated (cap=3), cooldown.
-- **SP500 convention**: Uses `city_code="SP500"` in risk manager for per-market exposure tracking. New market types must follow this pattern.
+### Confirmed Outcomes
+- **CASE 1** (high exceeded bucket): CONFIRMED_OUTCOME. Min 10 AM local. `obs_high > temp_high + 1F`.
+- **CASE 2**: DELETED from codebase.
+- **CASE 3** (gap too large): Returns STRONG (not confirmed). `confirmation_multiplier=1.0`. Cooling gate before 2 PM. Ensemble veto. Graduated gaps.
 
-### Exit Logic (Thesis-First)
-| Priority | Trigger | Action |
-|----------|---------|--------|
-| 1 | Obs confirms loss / approaching bucket | EXIT (high urgency) |
-| 2 | Rounding buffer (±1°F after 2 PM) | EXIT |
-| 3 | NWS REJECT | EXIT unless model says >65% win (thesis override) |
-| 4 | Ensemble floor (<15% YES / >85% NO) | EXIT |
-| 5 | Thesis valid (>50% win) | HOLD |
-| 6-8 | Weakening/uncertain/broken | PARE / Take profit / EXIT |
-
-### Scorecard (8 criteria, all must pass)
-`data_integrity`, `forecast_convergence` (50%), `edge_magnitude` (4%), `timing_window` (0.5x), `liquidity` (bypassed for weather maker), `portfolio_correlation` (40%), `position_sizing` (20%), `adversarial_check` (<2 warnings). Confirmed outcomes + arb bypass entirely.
+### Exit Logic (Binary: HOLD or EXIT)
+| Trigger | Action |
+|---------|--------|
+| Obs confirms loss / approaching bucket | EXIT (high) |
+| Rounding buffer after 2 PM | EXIT (high) |
+| Thesis valid | HOLD to settlement |
 
 ### Maker Strategy
-Limit orders at `fair_value - 2¢`. Dynamic: high edge → 1¢, low edge → 3¢. Stale cancel 30min. Adverse selection pause on 3+ fills in 10min.
+Limit orders at `fair_value - 2c`. Dynamic: high edge -> 1c, low edge -> 3c. Stale cleanup every cycle (cancel >30min). NaN guard on ensemble data.
 
-### Resting Orders
-- Fill check: `order.status == "executed"` or `remaining_count == 0`. Else "resting".
-- Pending orders tracked in risk manager via `add_pending_order()`/`clear_pending_order()`.
-- Auto-cancel: buy 25min, exit/hedge 30min.
-
-### Self-Improver (Phase 4 — Live)
-Weekly (Sun 11 PM). Safe params: MIN_EDGE, MAKER_SPREAD_BUFFER_CENTS, MAX_MODEL_DIVERGENCE_F, NEXT_DAY_SIZING_MULTIPLIER, ROUNDING_BUFFER_SOFT_F, PRE_SETTLEMENT_SIZING_MULT, NO_SIDE_SIZING_MULTIPLIER, NO_SIDE_MAX_PRICE_CENTS, NO_SEPARATION_STD_DEV_MULTIPLIER. Max 3 changes/week, 25% max change, 5% improvement required. Never touches risk limits or kill switch.
-
-### Dashboard Force-Exit
-`POST /api/force-exit` — `{"ticker": "KXHIGH..."}` or `{"ticker": "all"}`. Uses shared KalshiClient via `set_kalshi_client()`. Price floor: `yes_price: 1` or `no_price: 1`.
-
-### Model Accuracy Flow
-`strategy.py` fetches weights+biases → `weather_engine.get_temperature_distribution()` applies per-model bias correction then accuracy weights in `_build_distribution()`. On settlement: `trade_intelligence._update_model_accuracy_from_settlement()` → `quant_analytics.record_model_accuracy()` → `model_accuracy.json`. Daily: `log_daily_forecasts()` logs all 20 cities → `reconcile_forecast_log()` records accuracy (builds data 10x faster than settlements alone).
-
-### Infrastructure Invariants (landmines if refactoring)
-- **Dashboard outside restart loop**: `start_dashboard_server()` in `__main__` block, NOT inside `main()`. Prevents port binding crash loop.
-- **Python 3.12 import alias**: `import traceback as _tb` inside `main()` to avoid shadowing global `traceback`.
-- **Timezone-aware everywhere**: `datetime.now(timezone.utc)`, `_parse_ts()` helper handles mixed naive/aware.
-- **Cache key split**: `get_latest_observation()` uses `latest_{station}`, `_fetch_todays_observations()` uses `obs_{station}`. Different formats.
-- **Open-Meteo model names**: `gfs_seamless`, `ecmwf_ifs025`, `icon_seamless_eps`, `gem_global`. Silently renamed Feb 24 — returns None on wrong names (zero trades, no error logged).
-
-## Future Roadmap
-- **Phase 2**: Becker dataset integration (400M+ trades, calibration surface, optimal timing)
-- **Phase 3**: Empirical Kelly with Monte Carlo (replace quarter-Kelly)
-- **Phase 4**: DONE (self_improver.py)
+### Infrastructure Invariants
+- **Dashboard outside restart loop**: `start_dashboard_server()` in `__main__` block, NOT inside `main()`.
+- **Python 3.12**: `import traceback as _tb` to avoid shadowing.
+- **Timezone-aware**: `datetime.now(timezone.utc)`, `ZoneInfo(tz_name)`.
+- **Open-Meteo model names**: `gfs_seamless`, `ecmwf_ifs025`, `icon_seamless_eps`, `gem_global`.
+- **Open-Meteo confirmer URLs**: `/v1/forecast` (GFS), `/v1/ecmwf`, `/v1/dwd-icon`, `/v1/gem`.
+- **Single-writer P&L**: Only `sync_pnl_from_kalshi()` writes `pnl_history.json`.
+- **Single-writer learning**: Only `trade_reviewer._save_state()` writes `learning_state.json`.
+- **Learning = informational only**: Learned biases/weights are NOT auto-applied. Displayed in dashboard + daily report.
+- **Learning NWS lookup**: `trade_reviewer._get_actual_temp()` fetches actual highs from NWS (cached, 7-day limit). Enables bias/accuracy learning.
+- **CITIES dict field**: `nws_station` (NOT `station`). Used for observation fetching.
+- **Daily reset at 6 AM ET**: Risk counters reset at 6 AM Eastern, not UTC midnight.
+- **Balance cache**: Risk manager caches balance for 60s to avoid excessive API calls.
+- **Pending order overwrite**: `add_pending_order()` subtracts old cost before adding new. Prevents exposure drift.
+- **Settlement reconciliation**: `check_settlements()` called every cycle in main loop (STEP 1b). Updates risk_state (record_win/loss, release_exposure). Saves trade_log after marking settled.
+- **Exit fill check**: `_execute_exit()` only closes position in risk_state after confirmed fill (`status==executed` or `remaining_count==0`). Resting exits stay tracked.
+- **Observed highs ET date**: `_fetch_observed_highs()` uses ET date (not UTC) for NWS observation queries. West Coast evening fix.
+- **is_confirmed propagation**: `order_signal` includes `is_confirmed` and `is_arb` flags so maker tracks bypass privileges after fill.
+- **Stale order cleanup**: Runs every cycle (not just when MAX_OPEN_ORDERS reached). Prevents stale orders blocking exposure capacity.
+- **NaN/Inf guard**: `weather_engine._fetch_ensemble()` filters NaN/Inf from Open-Meteo API responses before building distribution.
+- **Ensemble fetch logging**: Failed API calls logged with model name and error (was silently swallowed).
+- **Sell P&L fix**: `sync_pnl_from_kalshi()` correctly treats sell proceeds as revenue (was adding to cost). Position direction corrected for unpaired sells.
+- **Reviewer dedup**: `_learn_forecast_bias()` and `_learn_model_accuracy()` rebuild from scratch each night (was appending to existing, duplicating errors).

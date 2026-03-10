@@ -215,7 +215,7 @@ class KalshiClient:
         query = "&".join(params)
         return self._request("GET", f"/portfolio/positions?{query}", authenticated=True)
 
-    def create_order(self, ticker, side, count, type="market",
+    def create_order(self, ticker, side, count, action="buy", type="market",
                      yes_price=None, no_price=None):
         """
         Place an order on Kalshi.
@@ -224,13 +224,14 @@ class KalshiClient:
             ticker: Market ticker (e.g., "HIGHNY-26FEB12-T40")
             side: "yes" or "no"
             count: Number of contracts
+            action: "buy" or "sell"
             type: "market" or "limit"
             yes_price: Price in cents for limit orders (1-99)
             no_price: Price in cents for limit orders (1-99)
         """
         order_data = {
             "ticker": ticker,
-            "action": "buy",
+            "action": action,
             "side": side,
             "count": count,
             "type": type,
@@ -266,6 +267,13 @@ class KalshiClient:
     def cancel_order(self, order_id):
         """Cancel a pending order."""
         return self._request("DELETE", f"/portfolio/orders/{order_id}", authenticated=True)
+
+    def get_order(self, order_id):
+        """Get details of a specific order by ID."""
+        result = self._request("GET", "/portfolio/orders/%s" % order_id, authenticated=True)
+        if result and "order" in result:
+            return result["order"]
+        return result
 
     def get_orders(self, ticker=None, status=None):
         """Get your orders."""

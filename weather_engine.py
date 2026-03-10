@@ -1,5 +1,5 @@
 """
-WEATHER FORECAST ENGINE v3.0
+WEATHER FORECAST ENGINE v4.0
 ================================
 Fetches ensemble forecasts from multiple weather models via Open-Meteo API.
 Builds probability distributions across temperature buckets.
@@ -311,8 +311,12 @@ class WeatherEngine:
                 target_month = None
 
         is_winter = target_month in (12, 1, 2) if target_month else False
-        warm_cities = getattr(config, 'WARM_CITIES', set())
-        per_city_defaults = getattr(config, 'WINTER_WARM_CITY_BIAS', {})
+        # Hardcoded warm city bias defaults (replaces config dependency)
+        _WARM_CITY_BIAS = {
+            "DEN": 4.0, "HOU": 3.0, "NOLA": 3.0, "MIA": 3.0,
+            "ATL": 3.0, "AUS": 3.0, "DAL": 3.0, "SATX": 3.0, "OKC": 3.0,
+            "PHX": 2.0, "LV": 2.0,
+        }
 
         all_highs = []
         all_weights = []
@@ -336,9 +340,9 @@ class WeatherEngine:
                 learned_bias = model_biases[quant_key]
                 correction = -learned_bias
                 print(f"  [WEATHER] {family_name}: learned bias {learned_bias:+.1f}°F → correction {correction:+.1f}°F")
-            elif is_winter and city_code in warm_cities:
+            elif is_winter and city_code in _WARM_CITY_BIAS:
                 # Fall back to per-city default (no learned data yet)
-                correction = per_city_defaults.get(city_code, 0.0)
+                correction = _WARM_CITY_BIAS.get(city_code, 0.0)
                 if correction > 0:
                     print(f"  [WEATHER] {family_name}: default winter bias +{correction:.1f}°F for {city_code}")
 
@@ -506,10 +510,14 @@ class WeatherEngine:
                 if daytime_temps:
                     member_highs.append(round(max(daytime_temps), 1))
 
+            # Filter out NaN/Inf values from API data
+            import math
+            member_highs = [h for h in member_highs
+                           if h is not None and not math.isnan(h) and not math.isinf(h)]
             return member_highs if member_highs else None
 
         except Exception as e:
-            # Silently fail — we have multiple sources
+            print("  [WEATHER] %s fetch failed for %s: %s" % (model, city.get("name", "?"), e))
             return None
 
     # ═══════════════════════════════════════════════════════
