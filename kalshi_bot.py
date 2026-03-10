@@ -13,7 +13,7 @@ import os
 import sys
 import time
 import traceback as _tb
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
 import config
@@ -254,8 +254,9 @@ def main():
                     _save_trade_log(signal, order)
 
             # --- STEP 8: Write status ---
+            scan_interval = config.PEAK_SCAN_INTERVAL if config.PEAK_SCAN_START_ET <= hour_et <= config.PEAK_SCAN_END_ET else config.SCAN_INTERVAL
             _write_bot_status(cycle, risk, intel, maker,
-                            len(buy_signals), trades_this_cycle)
+                            len(buy_signals), trades_this_cycle, next_scan_seconds=scan_interval)
             _save_scan_log(weather_markets, buy_signals, trades_this_cycle)
 
             # --- STEP 9: Daily learning review ---
@@ -427,7 +428,7 @@ def _save_trade_log(signal, order):
         print("  [BOT] Error saving trade log: %s" % e)
 
 
-def _write_bot_status(cycle, risk, intel, maker, signals_count, trades_count):
+def _write_bot_status(cycle, risk, intel, maker, signals_count, trades_count, next_scan_seconds=120):
     """Write bot_status.json for dashboard."""
     try:
         rs = risk.get_state_summary()
@@ -457,6 +458,7 @@ def _write_bot_status(cycle, risk, intel, maker, signals_count, trades_count):
             "open_orders": maker.get_open_order_count(),
             "signals_found": signals_count,
             "trades_placed": trades_count,
+            "next_scan": (datetime.now(timezone.utc) + timedelta(seconds=next_scan_seconds)).isoformat(),
         }
         config.atomic_json_save(config.BOT_STATUS_FILE, status)
     except Exception:
