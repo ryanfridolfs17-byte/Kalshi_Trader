@@ -227,7 +227,8 @@ class WeatherEngine:
     # MAIN ENTRY: Get probability distribution for a city
     # ═══════════════════════════════════════════════════════
 
-    def get_temperature_distribution(self, city_code, target_date=None, model_weights=None, model_biases=None):
+    def get_temperature_distribution(self, city_code, target_date=None, model_weights=None,
+                                     model_biases=None, city_bias_f=0.0):
         """
         Fetch all ensemble members and build a probability distribution
         of high temperatures for the given city and date.
@@ -251,7 +252,11 @@ class WeatherEngine:
 
         # Check cache — models update every 6 hours, so 5-min cache is plenty.
         # At 2-min scan interval this saves ~60% of Open-Meteo API calls.
-        cache_key = f"{city_code}_{target_date}"
+        weights_key = ""
+        if model_weights:
+            weights_key = "_" + "_".join("%s:%s" % (k, model_weights[k]) for k in sorted(model_weights))
+        bias_key = "_cb%.2f" % float(city_bias_f or 0.0)
+        cache_key = f"{city_code}_{target_date}{weights_key}{bias_key}"
         if cache_key in self._cache:
             cached = self._cache[cache_key]
             age = (datetime.now() - cached["fetched_at"]).total_seconds()
@@ -347,7 +352,8 @@ class WeatherEngine:
                     print(f"  [WEATHER] {family_name}: default winter bias +{correction:.1f}°F for {city_code}")
 
             # Apply correction and build all_highs/all_weights
-            corrected_highs = [t + correction for t in highs] if correction != 0 else highs
+            total_correction = correction + float(city_bias_f or 0.0)
+            corrected_highs = [t + total_correction for t in highs] if total_correction != 0 else highs
             corrected_family_highs[family_name] = corrected_highs
             all_highs.extend(corrected_highs)
             raw_uncorrected_highs.extend(highs)

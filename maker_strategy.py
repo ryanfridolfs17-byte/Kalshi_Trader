@@ -127,15 +127,29 @@ class MakerStrategy:
                     "ticker": ticker,
                     "side": side,
                     "price_cents": limit_price,
-                    "contracts": contracts,
+                    "requested_contracts": contracts,
+                    "remaining_contracts": contracts,
+                    "filled_contracts": 0,
                     "placed_at": datetime.now(timezone.utc).isoformat(),
                     "order_status": order.get("status", "resting"),
+                    "action": "buy",
+                    "city_code": signal.get("city_code", ""),
+                    "is_confirmed": signal.get("is_confirmed", False),
+                    "is_arb": signal.get("is_arb", False),
+                    "edge": signal.get("edge", 0),
+                    "our_prob": signal.get("our_prob", 0),
+                    "strategy": signal.get("strategy", ""),
+                    "confirmation_verdict": signal.get("confirmation_verdict", ""),
+                    "predicted_high": signal.get("predicted_high"),
+                    "model_means": signal.get("model_means", {}),
+                    "model_spread": signal.get("model_spread"),
+                    "target_date": signal.get("target_date", ""),
                 }
                 self._save_open_orders()
 
                 # Track in risk manager
                 if self.risk:
-                    self.risk.add_pending_order(ticker, {
+                    self.risk.add_pending_order({
                         "ticker": ticker,
                         "city_code": signal.get("city_code", ""),
                         "side": side,
@@ -157,6 +171,67 @@ class MakerStrategy:
 
         return None
 
+    def place_exit_order(self, position, limit_price=1):
+        """Place a tracked sell order for an open position."""
+        if not self.client:
+            return None
+
+        ticker = position.get("ticker", "")
+        side = position.get("side", "yes")
+        contracts = int(position.get("contracts", 0) or 0)
+        if not ticker or contracts <= 0:
+            return None
+
+        if self.has_open_exit(ticker):
+            return None
+
+        if config.DRY_RUN:
+            return {
+                "order_id": "dry_exit_%s_%d" % (ticker, int(time.time())),
+                "ticker": ticker,
+                "side": side,
+                "action": "sell",
+                "price_cents": limit_price,
+                "contracts": contracts,
+                "status": "dry_run",
+            }
+
+        try:
+            if side == "yes":
+                result = self.client.sell_order(
+                    ticker=ticker, side="yes", count=contracts,
+                    type="limit", yes_price=limit_price
+                )
+            else:
+                result = self.client.sell_order(
+                    ticker=ticker, side="no", count=contracts,
+                    type="limit", no_price=limit_price
+                )
+
+            if result and result.get("order"):
+                order = result["order"]
+                order_id = order.get("order_id", "")
+                self.open_orders[order_id] = {
+                    "order_id": order_id,
+                    "ticker": ticker,
+                    "side": side,
+                    "price_cents": limit_price,
+                    "requested_contracts": contracts,
+                    "remaining_contracts": contracts,
+                    "filled_contracts": 0,
+                    "placed_at": datetime.now(timezone.utc).isoformat(),
+                    "order_status": order.get("status", "resting"),
+                    "action": "sell",
+                }
+                self._save_open_orders()
+                if self.risk:
+                    self.risk.mark_exit_pending(ticker, order_id)
+                return order
+        except Exception as e:
+            print("  [MAKER] Exit order failed: %s" % e)
+
+        return None
+
     def check_fills(self):
         """
         Check status of all open orders. Returns list of filled orders.
@@ -164,8 +239,12 @@ class MakerStrategy:
         if not self.client:
             return []
 
+        if self.open_orders:
+            self._cleanup_stale_orders()
+
         filled = []
         to_remove = []
+        changed = False
 
         for order_id, info in list(self.open_orders.items()):
             try:
@@ -174,17 +253,43 @@ class MakerStrategy:
                     continue
 
                 status = order.get("order_status", order.get("status", ""))
-                remaining = order.get("remaining_count", info.get("contracts", 1))
+                prev_remaining = info.get("remaining_contracts", info.get("requested_contracts", 1))
+                remaining = order.get("remaining_count")
+                if remaining is None:
+                    remaining = 0 if status in ("executed", "filled") else prev_remaining
+                remaining = int(remaining)
+
+                if remaining < prev_remaining:
+                    new_contracts = prev_remaining - remaining
+                    fill_info = dict(info)
+                    fill_info["contracts"] = new_contracts
+                    fill_info["cost_cents"] = info.get("price_cents", 0) * new_contracts
+                    fill_info["order_status"] = status or "partially_filled"
+                    filled.append(fill_info)
+                    info["filled_contracts"] = int(info.get("filled_contracts", 0) or 0) + new_contracts
+                    info["remaining_contracts"] = remaining
+                    changed = True
+                    ticker = info.get("ticker", "?")
+                    print("  [MAKER] FILL: %s %s x%d @ %dc" % (
+                        info.get("action", "buy").upper(),
+                        ticker,
+                        new_contracts,
+                        info.get("price_cents", 0),
+                    ))
+
+                info["order_status"] = status or info.get("order_status", "")
 
                 if status == "executed" or remaining == 0:
-                    filled.append(info)
                     to_remove.append(order_id)
-                    ticker = info.get("ticker", "?")
-                    print("  [MAKER] FILLED: %s @ %dc" % (ticker, info.get("price_cents", 0)))
+                    if info.get("action") == "sell" and self.risk:
+                        self.risk.clear_exit_pending(info.get("ticker", ""), order_id)
                 elif status in ("canceled", "cancelled"):
                     to_remove.append(order_id)
                     if self.risk:
-                        self.risk.clear_pending_order(info.get("ticker", ""))
+                        if info.get("action") == "sell":
+                            self.risk.clear_exit_pending(info.get("ticker", ""), order_id)
+                        else:
+                            self.risk.clear_pending_order(order_id=order_id)
 
             except Exception:
                 continue
@@ -192,8 +297,9 @@ class MakerStrategy:
         for oid in to_remove:
             if oid in self.open_orders:
                 del self.open_orders[oid]
+                changed = True
 
-        if to_remove:
+        if changed:
             self._save_open_orders()
 
         return filled
@@ -206,7 +312,10 @@ class MakerStrategy:
             self.client.cancel_order(order_id)
             info = self.open_orders.pop(order_id, {})
             if info and self.risk:
-                self.risk.clear_pending_order(info.get("ticker", ""))
+                if info.get("action") == "sell":
+                    self.risk.clear_exit_pending(info.get("ticker", ""), order_id)
+                else:
+                    self.risk.clear_pending_order(order_id=order_id)
             self._save_open_orders()
             return True
         except Exception as e:
@@ -243,11 +352,27 @@ class MakerStrategy:
     def get_open_order_count(self):
         return len(self.open_orders)
 
+    def has_open_exit(self, ticker):
+        return any(
+            info.get("ticker") == ticker and info.get("action") == "sell"
+            for info in self.open_orders.values()
+        )
+
     def _load_open_orders(self):
         try:
             if os.path.exists(config.MAKER_ORDERS_FILE):
                 with open(config.MAKER_ORDERS_FILE, "r") as f:
-                    return json.load(f)
+                    data = json.load(f)
+                    normalized = {}
+                    for order_id, info in data.items():
+                        requested = int(info.get("requested_contracts", info.get("contracts", 1)) or 1)
+                        remaining = int(info.get("remaining_contracts", requested) or requested)
+                        info["requested_contracts"] = requested
+                        info["remaining_contracts"] = remaining
+                        info["filled_contracts"] = int(info.get("filled_contracts", requested - remaining) or 0)
+                        info["action"] = info.get("action", "buy")
+                        normalized[order_id] = info
+                    return normalized
         except Exception:
             pass
         return {}

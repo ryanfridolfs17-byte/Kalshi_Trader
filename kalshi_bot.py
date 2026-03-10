@@ -20,7 +20,7 @@ import config
 from kalshi_client import KalshiClient
 from market_scanner import MarketScanner
 from strategy import Strategy
-from risk_manager import RiskManager
+from risk_manager_v2 import RiskManager
 from trade_intelligence import TradeIntelligence
 from maker_strategy import MakerStrategy
 from trade_reviewer import TradeReviewer
@@ -40,11 +40,11 @@ def main():
     # Initialize components
     client = KalshiClient()
     scanner = MarketScanner(kalshi_client=client)
-    strategy = Strategy(kalshi_client=client)
+    reviewer = TradeReviewer()
+    strategy = Strategy(kalshi_client=client, reviewer=reviewer)
     risk = RiskManager(kalshi_client=client)
     intel = TradeIntelligence(kalshi_client=client, weather_engine=strategy.weather)
     maker = MakerStrategy(kalshi_client=client, risk_manager=risk)
-    reviewer = TradeReviewer()
 
     # Pass client to dashboard if running
     try:
@@ -86,22 +86,6 @@ def main():
                 pnl_total = pnl_summary.get("total_profit_cents", 0)
                 print("  [BOT] P&L sync: %d trades, %dc total" % (pnl_trades, pnl_total))
 
-            # --- STEP 1b-pre: Close exit_pending positions whose markets settled ---
-            for tk, pos in list(risk.get_positions().items()):
-                if pos.get("order_status") == "exit_pending":
-                    # Check if market settled (position will be handled by check_settlements)
-                    # Or if enough time passed (>30 min), force-close tracking
-                    import time as _time_mod
-                    pos_ts = pos.get("timestamp", "")
-                    try:
-                        pos_dt = datetime.fromisoformat(pos_ts.replace("Z", "+00:00"))
-                        age_min = (datetime.now(timezone.utc) - pos_dt).total_seconds() / 60
-                        if age_min > 30:
-                            print("  [EXIT] Stale exit_pending: %s (%.0f min) -- releasing" % (tk, age_min))
-                            risk.close_position(tk)
-                    except Exception:
-                        pass
-
             # --- STEP 1b: Reconcile settlements with risk state ---
             try:
                 trade_log = _load_trade_log()
@@ -118,21 +102,17 @@ def main():
                 for f in filled:
                     ticker = f.get("ticker", "?")
                     print("  [BOT] Order filled: %s" % ticker)
-                    risk.record_trade({
-                        "ticker": ticker,
-                        "city_code": f.get("city_code", ""),
-                        "side": f.get("side", "yes"),
-                        "price_cents": f.get("price_cents", 0),
-                        "contracts": f.get("contracts", 1),
-                        "cost_cents": f.get("price_cents", 0) * f.get("contracts", 1),
-                        "order_id": f.get("order_id", ""),
-                        "order_status": "executed",
-                        "is_confirmed": f.get("is_confirmed", False),
-                        "is_arb": f.get("is_arb", False),
-                    })
+                    risk.record_fill(f)
+                    if f.get("action", "buy") == "buy":
+                        f["signal"] = "buy"
+                        reviewer.capture_forecast_snapshot(f)
+                        _save_trade_log(f)
 
             # --- STEP 3: Evaluate exits for open positions ---
-            positions_dict = risk.get_positions()
+            positions_dict = {
+                tk: pos for tk, pos in risk.get_positions().items()
+                if pos.get("order_status", "executed") == "executed"
+            }
             if positions_dict:
                 # Convert to list format for check_exits
                 positions_list = list(positions_dict.values())
@@ -143,7 +123,7 @@ def main():
                         ticker = ex.get("ticker", "")
                         reason = ex.get("reason", "")
                         print("  [EXIT] HIGH: %s - %s" % (ticker, reason))
-                        _execute_exit(client, risk, ticker, positions_dict.get(ticker, {}))
+                        _execute_exit(maker, risk, ticker, positions_dict.get(ticker, {}))
 
             # --- STEP 4: Scan weather markets ---
             weather_markets = scanner.scan_weather_markets()
@@ -154,7 +134,7 @@ def main():
                 continue
 
             # --- STEP 5: Fetch today's observed highs per city ---
-            obs_highs = _fetch_observed_highs(weather_markets)
+            obs_highs = _fetch_observed_highs(weather_markets, intel)
 
             # --- STEP 6: Evaluate all markets for edge ---
             buy_signals = []
@@ -250,8 +230,6 @@ def main():
                 order = maker.place_order(order_signal, limit_price=limit_price)
                 if order:
                     trades_this_cycle += 1
-                    reviewer.capture_forecast_snapshot(signal)
-                    _save_trade_log(signal, order)
 
             # --- STEP 8: Write status ---
             scan_interval = config.PEAK_SCAN_INTERVAL if config.PEAK_SCAN_START_ET <= hour_et <= config.PEAK_SCAN_END_ET else config.SCAN_INTERVAL
@@ -296,11 +274,8 @@ def _load_trade_log():
     return []
 
 
-def _fetch_observed_highs(markets):
+def _fetch_observed_highs(markets, intel=None):
     """Fetch today's observed high for each city with markets."""
-    import requests
-    from weather_engine import CITIES
-
     cities_seen = set()
     obs_highs = {}
 
@@ -309,38 +284,13 @@ def _fetch_observed_highs(markets):
         if city_code in cities_seen:
             continue
         cities_seen.add(city_code)
-        city_info = CITIES.get(city_code)
-        if not city_info:
-            continue
-
-        station = city_info.get("nws_station", "")
-        if not station:
+        if not intel:
             continue
 
         try:
-            url = "https://api.weather.gov/stations/%s/observations" % station
-            headers = {"User-Agent": "KalshiBot/4.0", "Accept": "application/geo+json"}
-            resp = requests.get(url, headers=headers, timeout=15)
-            if resp.status_code != 200:
-                continue
-
-            features = resp.json().get("features", [])
-            today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
-            max_temp = None
-
-            for f in features:
-                props = f.get("properties", {})
-                ts = props.get("timestamp", "")
-                if today not in ts:
-                    continue
-                temp_c = props.get("temperature", {}).get("value")
-                if temp_c is not None:
-                    temp_f = round(temp_c * 9 / 5 + 32)
-                    if max_temp is None or temp_f > max_temp:
-                        max_temp = temp_f
-
+            max_temp = intel.get_todays_high(city_code)
             if max_temp is not None:
-                obs_highs[city_code] = max_temp
+                obs_highs[city_code] = int(max_temp)
         except Exception:
             continue
 
@@ -351,51 +301,23 @@ def _fetch_observed_highs(markets):
     return obs_highs
 
 
-def _execute_exit(client, risk, ticker, position):
+def _execute_exit(maker, risk, ticker, position):
     """Execute an exit order for a position."""
-    if not client or config.DRY_RUN:
+    if not maker or config.DRY_RUN:
         print("  [EXIT] DRY RUN: Would exit %s" % ticker)
         risk.close_position(ticker)
         return
 
-    side = position.get("side", "yes")
-    contracts = position.get("contracts", 1)
-
     try:
-        if side == "yes":
-            params = {
-                "ticker": ticker, "action": "sell", "side": "yes",
-                "type": "limit", "yes_price": 1, "count": contracts,
-            }
-        else:
-            params = {
-                "ticker": ticker, "action": "sell", "side": "no",
-                "type": "limit", "no_price": 1, "count": contracts,
-            }
-        result = client.create_order(**params)
-        if result:
-            order = result.get("order", result) if isinstance(result, dict) else {}
-            status = order.get("status", order.get("order_status", ""))
-            remaining = order.get("remaining_count")
-            if status == "executed" or remaining == 0:
-                print("  [EXIT] Exit filled for %s" % ticker)
-                risk.close_position(ticker)
-            else:
-                print("  [EXIT] Exit order resting for %s (will close on fill)" % ticker)
-                # Track resting exit so check_fills picks it up later
-                order_id = order.get("order_id", "")
-                if order_id and hasattr(risk, '_exit_resting'):
-                    pass  # Already tracked
-                # Mark position as "exiting" so it gets closed on next fill check
-                if ticker in risk.state.get("positions", {}):
-                    risk.state["positions"][ticker]["order_status"] = "exit_pending"
-                    risk._save_state()
+        order = maker.place_exit_order(position, limit_price=1)
+        if order:
+            print("  [EXIT] Exit order submitted for %s" % ticker)
     except Exception as e:
         print("  [EXIT] Error exiting %s: %s" % (ticker, e))
 
 
-def _save_trade_log(signal, order):
-    """Append trade to trade_history.json."""
+def _save_trade_log(fill_info):
+    """Append an executed buy fill to trade_history.json."""
     try:
         history = []
         if os.path.exists(config.TRADE_LOG_FILE):
@@ -403,21 +325,23 @@ def _save_trade_log(signal, order):
                 history = json.load(f)
 
         entry = {
-            "ticker": signal.get("ticker", ""),
-            "city_code": signal.get("city_code", ""),
-            "side": signal.get("side", ""),
-            "price_cents": signal.get("price_cents", 0),
-            "contracts": signal.get("suggested_contracts", 1),
-            "cost_cents": signal.get("limit_price", signal.get("price_cents", 0)) * signal.get("suggested_contracts", 1),
-            "edge": signal.get("edge", 0),
-            "our_prob": signal.get("our_prob", 0),
-            "strategy": signal.get("strategy", ""),
-            "confirmation_verdict": signal.get("confirmation_verdict", ""),
-            "order_id": order.get("order_id", "") if isinstance(order, dict) else "",
-            "predicted_high": signal.get("predicted_high"),
-            "model_means": signal.get("model_means", {}),
-            "model_spread": signal.get("model_spread"),
-            "target_date": signal.get("target_date", ""),
+            "entry_type": "buy_fill",
+            "status": "executed",
+            "ticker": fill_info.get("ticker", ""),
+            "city_code": fill_info.get("city_code", ""),
+            "side": fill_info.get("side", ""),
+            "price_cents": fill_info.get("price_cents", 0),
+            "contracts": fill_info.get("contracts", 1),
+            "cost_cents": fill_info.get("cost_cents", 0),
+            "edge": fill_info.get("edge", 0),
+            "our_prob": fill_info.get("our_prob", 0),
+            "strategy": fill_info.get("strategy", ""),
+            "confirmation_verdict": fill_info.get("confirmation_verdict", ""),
+            "order_id": fill_info.get("order_id", ""),
+            "predicted_high": fill_info.get("predicted_high"),
+            "model_means": fill_info.get("model_means", {}),
+            "model_spread": fill_info.get("model_spread"),
+            "target_date": fill_info.get("target_date", ""),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         history.append(entry)

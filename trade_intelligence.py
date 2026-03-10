@@ -187,6 +187,9 @@ class TradeIntelligence:
         for trade in trade_log:
             if trade.get("settled"):
                 continue
+            entry_type = trade.get("entry_type", "")
+            if entry_type and entry_type != "buy_fill":
+                continue
             ticker = trade.get("ticker", "")
             if not ticker:
                 continue
@@ -463,6 +466,9 @@ class TradeIntelligence:
         for trade in trade_log:
             t_ticker = trade.get("ticker", "")
             if not t_ticker or trade.get("settled"):
+                continue
+            entry_type = trade.get("entry_type", "")
+            if entry_type and entry_type != "buy_fill":
                 continue
             status = trade.get("status", "")
             if any(x in status for x in

@@ -28,10 +28,11 @@ import config
 class Strategy:
     """Edge detection engine. Weather ensemble (S1) + Arbitrage (S2)."""
 
-    def __init__(self, kalshi_client=None):
+    def __init__(self, kalshi_client=None, reviewer=None):
         self.client = kalshi_client
         self.weather = WeatherEngine()
         self.confirmer = SignalConfirmer()
+        self.reviewer = reviewer
         self.balance_cents = 4000  # Default $40, updated by caller
 
     # ===========================================================
@@ -77,12 +78,13 @@ class Strategy:
             return signal
 
         # --- Try arbitrage ---
-        arb = self._strategy_arbitrage(market, yes_ask, no_ask)
-        if arb and arb["signal"] == "buy":
-            _t = arb["ticker"]
-            _e = arb["edge"]
-            print(f"  [SIGNAL] {_t} ARB edge={_e:.1%}")
-            return arb
+        if getattr(config, "ENABLE_ARBITRAGE_STRATEGY", False):
+            arb = self._strategy_arbitrage(market, yes_ask, no_ask)
+            if arb and arb["signal"] == "buy":
+                _t = arb["ticker"]
+                _e = arb["edge"]
+                print(f"  [SIGNAL] {_t} ARB edge={_e:.1%}")
+                return arb
 
         return self._skip(f"No signal for {ticker}", ticker)
 
@@ -122,8 +124,12 @@ class Strategy:
             return None
 
         # Step 3: Fetch ensemble distribution
+        model_weights, city_bias_correction = self._get_learning_adjustments(city_code)
         distribution = self.weather.get_temperature_distribution(
-            city_code, target_date
+            city_code,
+            target_date,
+            model_weights=model_weights,
+            city_bias_f=city_bias_correction,
         )
         if not distribution:
             return None
@@ -135,23 +141,34 @@ class Strategy:
         if our_prob is None:
             return None
 
-        market_prob = ref_price / 100.0
-        raw_edge = our_prob - market_prob  # Positive = underpriced YES
+        yes_price = market.get("yes_ask", 0) or ref_price
+        no_price = market.get("no_ask", 0) or max(1, 100 - yes_price)
+        yes_market_prob = yes_price / 100.0
+        no_market_prob = no_price / 100.0
 
-        # Step 5: Determine side and edge
-        if raw_edge > 0:
+        yes_edge = our_prob - yes_market_prob
+        no_prob = 1.0 - our_prob
+        no_edge = no_prob - no_market_prob
+
+        if yes_edge <= 0 and no_edge <= 0:
+            return None
+
+        if yes_edge >= no_edge:
             side = "yes"
-            edge = raw_edge
-            ya = market.get("yes_ask", 0) or 0
-            price_cents = ya if ya > 0 else ref_price
+            edge = yes_edge
+            price_cents = yes_price
+            market_prob = yes_market_prob
+            win_prob = our_prob
         else:
             side = "no"
-            edge = abs(raw_edge)
-            price_cents = market.get("no_ask", 0) or (100 - ref_price)
+            edge = no_edge
+            price_cents = no_price
+            market_prob = no_market_prob
+            win_prob = no_prob
 
         # Step 6: Fee-adjusted edge
         fee_adjusted_edge = self._calculate_fee_adjusted_edge(
-            our_prob, market_prob, side
+            win_prob, market_prob
         )
 
         # Determine if next-day
@@ -213,7 +230,7 @@ class Strategy:
 
         # Step 10: Kelly sizing
         contracts = self._kelly_size(
-            edge, our_prob, price_cents, self.balance_cents,
+            edge, win_prob, price_cents, self.balance_cents,
             conf_mult * rounding_mult
         )
         if contracts <= 0:
@@ -250,7 +267,7 @@ class Strategy:
             "suggested_contracts": contracts,
             "reasoning": (
                 f"[S1] {city_code} {target_date}: "
-                f"ensemble={our_prob:.0%} vs market={market_prob:.0%}, "
+                f"ensemble={win_prob:.0%} vs market={market_prob:.0%}, "
                 f"edge={edge:.1%} (fee-adj={fee_adjusted_edge:.1%}). "
                 f"Verdict={verdict}. "
                 f"Mean={forecast_mean:.1f}F, spread={model_spread:.1f}F. "
@@ -369,8 +386,12 @@ class Strategy:
 
             if case3_triggered:
                 # Ensemble veto: check models don't predict reaching bucket
+                model_weights, city_bias_correction = self._get_learning_adjustments(city_code)
                 dist = self.weather.get_temperature_distribution(
-                    city_code, target_date
+                    city_code,
+                    target_date,
+                    model_weights=model_weights,
+                    city_bias_f=city_bias_correction,
                 )
                 if dist:
                     f_mean = dist.get("forecasted_high_mean", 0)
@@ -435,66 +456,8 @@ class Strategy:
     # ===========================================================
 
     def _strategy_arbitrage(self, market, yes_ask, no_ask):
-        """YES_ask + NO_ask < 98c = guaranteed profit."""
-        if yes_ask <= 0 or no_ask <= 0:
-            return None
-
-        total = yes_ask + no_ask
-        if total >= 98:
-            return None
-
-        gap = 100 - total
-        if gap < config.ARB_MIN_SPREAD_CENTS:
-            return None
-
-        # Liquidity sanity: reject phantom quotes
-        vol24 = market.get("volume_24h", 0) or 0
-        vol = market.get("volume", 0) or 0
-        if vol == 0 and vol24 == 0:
-            return None
-
-        yes_bid = market.get("yes_bid", 0) or 0
-        no_bid = market.get("no_bid", 0) or 0
-        if (yes_ask - yes_bid) > 20 or (no_ask - no_bid) > 20:
-            return None
-        if gap > 15 and vol24 < 10:
-            return None
-
-        edge = gap / 100.0
-        if yes_ask <= no_ask:
-            side, price = "yes", yes_ask
-        else:
-            side, price = "no", no_ask
-
-        ticker = market.get("ticker", "")
-        contracts = self._kelly_size(
-            edge, 0.95, price, self.balance_cents, 1.0, is_arb=True
-        )
-
-        return {
-            "signal": "buy",
-            "ticker": ticker,
-            "side": side,
-            "edge": round(edge, 4),
-            "fee_adjusted_edge": round(edge, 4),
-            "our_prob": 0.95,
-            "market_prob": round(price / 100.0, 4),
-            "price_cents": price,
-            "suggested_contracts": contracts,
-            "reasoning": (
-                f"[ARB] YES({yes_ask}c) + NO({no_ask}c) = {total}c. "
-                f"Guaranteed {gap}c profit per pair."
-            ),
-            "strategy": "S2-Arbitrage",
-            "confirmation_verdict": "STRONG",
-            "confirmation_multiplier": 1.0,
-            "city_code": "",
-            "target_date": "",
-            "close_time": market.get("close_time"),
-            "predicted_high": None,
-            "model_spread": None,
-            "std_dev": None,
-        }
+        """Arbitrage is disabled until both legs are executed and tracked as a pair."""
+        return None
 
     # ===========================================================
     # NO-SIDE GUARDS
@@ -611,27 +574,17 @@ class Strategy:
     # FEE-ADJUSTED EDGE
     # ===========================================================
 
-    def _calculate_fee_adjusted_edge(self, our_prob, market_prob, side):
-        """Edge after Kalshi 7% fee drag. Side-aware.
-
-        YES profit = (100 - price) per contract.
-        NO profit = price per contract (yes_price cents).
-        """
-        raw_edge = abs(our_prob - market_prob)
-        price = market_prob  # market_prob = price / 100
-
-        if side == "yes":
-            fee_drag = config.KALSHI_FEE_PCT * (1.0 - price) * our_prob
-        else:
-            fee_drag = config.KALSHI_FEE_PCT * price * (1.0 - our_prob)
-
+    def _calculate_fee_adjusted_edge(self, win_prob, market_prob):
+        """Edge after a simple fee drag approximation on the actual contract price."""
+        raw_edge = max(0.0, win_prob - market_prob)
+        fee_drag = config.KALSHI_FEE_PCT * (1.0 - market_prob) * win_prob
         return max(0.0, raw_edge - fee_drag)
 
     # ===========================================================
     # QUARTER-KELLY SIZING
     # ===========================================================
 
-    def _kelly_size(self, edge, our_prob, price_cents, balance_cents,
+    def _kelly_size(self, edge, win_prob, price_cents, balance_cents,
                      confirmation_multiplier, is_confirmed=False,
                      is_arb=False):
         """Quarter-Kelly position sizing for binary markets.
@@ -643,20 +596,20 @@ class Strategy:
         Minimum: 1 contract.
         """
         if edge <= 0 or price_cents <= 0 or balance_cents <= 0:
-            return 1
+            return 0
         if balance_cents < 500:  # Below $5 -- not enough to trade safely
             return 0
 
-        prob_win = min(0.95, our_prob)
+        prob_win = min(0.99, max(0.01, win_prob))
         payout = 100 - price_cents
         cost = price_cents
 
         if payout <= 0:
-            return 1
+            return 0
 
         kelly = ((prob_win * payout) - ((1.0 - prob_win) * cost)) / payout
         if kelly <= 0:
-            return 1
+            return 0
 
         fraction = kelly / 4.0 * confirmation_multiplier
         bet_cents = fraction * balance_cents
@@ -678,6 +631,34 @@ class Strategy:
         contracts = min(contracts, config.MAX_CONTRACTS_PER_TICKER)
 
         return contracts
+
+    def _get_learning_adjustments(self, city_code):
+        """Return reviewer-driven model weights and city bias correction."""
+        if not self.reviewer:
+            return None, 0.0
+
+        model_data = self.reviewer.get_model_weights().get(city_code, {})
+        model_key_map = {
+            "GFS": "gfs_ensemble",
+            "ECMWF": "ecmwf_ifs",
+            "ICON": "icon_eps",
+            "GEM": "gem_ensemble",
+        }
+
+        weights = {}
+        for model_name, payload in model_data.items():
+            quant_key = model_key_map.get(model_name)
+            if not quant_key:
+                continue
+            weight = payload.get("weight") if isinstance(payload, dict) else None
+            if weight is not None:
+                weights[quant_key] = weight
+
+        bias_payload = self.reviewer.get_city_biases().get(city_code, {})
+        city_bias = bias_payload.get("bias", 0.0) if isinstance(bias_payload, dict) else 0.0
+        city_bias_correction = -float(city_bias or 0.0)
+
+        return weights or None, city_bias_correction
 
     # ===========================================================
     # UTILITY
