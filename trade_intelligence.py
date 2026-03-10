@@ -706,6 +706,45 @@ class TradeIntelligence:
     # P&L DISPLAY
     # =====================================================
 
+    def get_convergence_score(self, city_code):
+        """Compute convergence score for a city.
+
+        Returns 0.0-1.0 indicating how well observations track forecasts.
+        Higher scores mean models + observations agree -- late-day confidence.
+        Only meaningful after 2 PM local (returns 0.0 before that).
+        """
+        cities = self._get_cities()
+        if not cities or city_code not in cities:
+            return 0.0
+        tz_name = cities[city_code].get("timezone", "America/New_York")
+        local_now = datetime.now(ZoneInfo(tz_name))
+        local_hour = local_now.hour
+        if local_hour < 14:
+            return 0.0
+
+        obs_high = self.get_todays_high(city_code)
+        if obs_high is None:
+            return 0.0
+
+        if not self.weather:
+            return 0.0
+        target_date = local_now.strftime("%Y-%m-%d")
+        distribution = self.weather.get_temperature_distribution(city_code, target_date)
+        if not distribution:
+            return 0.0
+
+        forecast_mean = distribution.get("forecasted_high_mean", 0)
+        tracking_error = abs(obs_high - forecast_mean)
+        model_spread = distribution.get("model_spread", 5.0)
+
+        score = max(0.0, 1.0 - (tracking_error / 5.0)) * max(0.0, 1.0 - (model_spread / 8.0))
+        score *= min(1.0, (local_hour - 13) / 5.0)
+        score = min(1.0, score)
+
+        if score > 0.5:
+            print("  [CONVERGENCE] %s score=%.2f (track_err=%.1fF, spread=%.1fF)" % (city_code, score, tracking_error, model_spread))
+        return score
+
     def print_pnl(self):
         "Print P&L summary to console."
         d = self.pnl_data

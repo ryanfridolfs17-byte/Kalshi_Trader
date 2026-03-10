@@ -380,6 +380,23 @@ class WeatherEngine:
         else:
             result["model_spread"] = 0.0
 
+        # ─── CLOUD COVER / PRECIPITATION BIAS ───
+        cloud_data = self._fetch_cloud_cover(city_code, target_date)
+        cloud_adj = 0.0
+        precip_adj = 0.0
+        if cloud_data:
+            if cloud_data["cloud_cover_pct"] > config.CLOUD_COVER_THRESHOLD_PCT:
+                cloud_adj = config.CLOUD_COVER_TEMP_BIAS_F
+                print(f"  [WEATHER] {city_code}: cloud cover {cloud_data['cloud_cover_pct']:.0f}% > {config.CLOUD_COVER_THRESHOLD_PCT}% → bias {cloud_adj:+.1f}°F")
+            if cloud_data["precipitation_mm"] > config.PRECIP_THRESHOLD_MM:
+                precip_adj = config.PRECIP_TEMP_BIAS_F
+                print(f"  [WEATHER] {city_code}: precip {cloud_data['precipitation_mm']:.1f}mm > {config.PRECIP_THRESHOLD_MM}mm → bias {precip_adj:+.1f}°F")
+            total_weather_adj = cloud_adj + precip_adj
+            if total_weather_adj != 0:
+                result["forecasted_high_mean"] = round(result["forecasted_high_mean"] + total_weather_adj, 1)
+        result["cloud_cover_adj_f"] = cloud_adj
+        result["precip_adj_f"] = precip_adj
+
         # Cache it
         self._cache[cache_key] = {
             "data": result,
@@ -524,6 +541,43 @@ class WeatherEngine:
 
         except Exception as e:
             print("  [WEATHER] %s fetch failed for %s: %s" % (model, city.get("name", "?"), e))
+            return None
+
+    def _fetch_cloud_cover(self, city_code, target_date):
+        """
+        Fetch daily cloud cover and precipitation from Open-Meteo.
+        Used to apply temperature bias (clouds/rain suppress highs).
+
+        Returns {"cloud_cover_pct": float, "precipitation_mm": float} or None.
+        """
+        city = CITIES.get(city_code)
+        if not city:
+            return None
+
+        try:
+            url = (
+                f"https://api.open-meteo.com/v1/forecast"
+                f"?latitude={city['lat']}&longitude={city['lon']}"
+                f"&daily=cloud_cover_mean,precipitation_sum"
+                f"&timezone=auto"
+                f"&start_date={target_date}&end_date={target_date}"
+            )
+            resp = requests.get(url, timeout=10)
+            if resp.status_code != 200:
+                return None
+
+            data = resp.json()
+            daily = data.get("daily", {})
+            cloud_vals = daily.get("cloud_cover_mean", [])
+            precip_vals = daily.get("precipitation_sum", [])
+
+            cloud_cover = cloud_vals[0] if cloud_vals and cloud_vals[0] is not None else 0.0
+            precip = precip_vals[0] if precip_vals and precip_vals[0] is not None else 0.0
+
+            return {"cloud_cover_pct": float(cloud_cover), "precipitation_mm": float(precip)}
+
+        except Exception as e:
+            print(f"  [WEATHER] Cloud cover fetch error for {city_code}: {e}")
             return None
 
     # ═══════════════════════════════════════════════════════
@@ -741,6 +795,74 @@ class WeatherEngine:
             prob = in_range / n
 
         return prob
+
+
+    def update_distribution_with_observation(self, distribution, obs_high, local_hour):
+        """
+        Bayesian update: shift the forecast distribution toward the observed high.
+        Later in the day -> more weight on observation (temp is closer to final).
+
+        Args:
+            distribution: dict from get_temperature_distribution()
+            obs_high: current observed high temp (Fahrenheit)
+            local_hour: local hour (0-23) for the city
+
+        Returns:
+            Updated distribution dict (modified in place and returned).
+        """
+        if distribution is None or obs_high is None or local_hour < 10:
+            return distribution
+
+        forecast_mean = distribution.get('forecasted_high_mean')
+        if forecast_mean is None:
+            return distribution
+
+        # Later in day = more weight on observation (max 0.8 at 6 PM)
+        obs_weight = min(0.8, local_hour / 18.0)
+        shift = (obs_high - forecast_mean) * obs_weight
+
+        raw_highs = distribution.get('raw_highs')
+        raw_weights = distribution.get('raw_weights')
+
+        if raw_highs and len(raw_highs) > 1:
+            # If obs is above forecast mean, truncate temps below obs
+            # (temp already reached obs_high, can't un-happen for daily high)
+            if obs_high > forecast_mean:
+                adjusted = []
+                adj_weights = []
+                for i, t in enumerate(raw_highs):
+                    if t >= obs_high:
+                        adjusted.append(t + shift)
+                    else:
+                        # Lift below-obs temps up to at least obs_high
+                        adjusted.append(max(obs_high, t + shift))
+                    if raw_weights and i < len(raw_weights):
+                        adj_weights.append(raw_weights[i])
+                    else:
+                        adj_weights.append(1.0)
+            else:
+                # Obs below forecast -- just shift everything
+                adjusted = [t + shift for t in raw_highs]
+                adj_weights = raw_weights if raw_weights else [1.0] * len(adjusted)
+
+            # Recompute mean and std_dev from adjusted temps
+            import math
+            total_w = sum(adj_weights)
+            if total_w > 0:
+                new_mean = sum(t * w for t, w in zip(adjusted, adj_weights)) / total_w
+                variance = sum(w * (t - new_mean) ** 2 for t, w in zip(adjusted, adj_weights)) / total_w
+                new_std = math.sqrt(variance)
+                distribution['forecasted_high_mean'] = round(new_mean, 1)
+                distribution['std_dev'] = round(new_std, 1)
+                distribution['raw_highs'] = sorted(adjusted)
+                distribution['raw_weights'] = [w for _, w in sorted(zip(adjusted, adj_weights))]
+        else:
+            # No raw temps available -- just shift the mean
+            distribution['forecasted_high_mean'] = round(forecast_mean + shift, 1)
+
+        distribution['obs_adjusted'] = True
+        distribution['obs_shift_f'] = round(shift, 2)
+        return distribution
 
     # ═══════════════════════════════════════════════════════
     # STATUS: Print current state

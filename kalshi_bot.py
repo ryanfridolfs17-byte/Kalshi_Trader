@@ -128,6 +128,9 @@ def main():
                 # Enrich positions with live data for dashboard
                 _review_positions(client, strategy, positions_dict, risk)
 
+            # --- STEP 3b: Portfolio rebalancing ---
+            _check_rebalancing(client, strategy, risk, maker, cycle)
+
             # --- STEP 4: Scan weather markets ---
             weather_markets = scanner.scan_weather_markets()
             if not weather_markets:
@@ -230,7 +233,12 @@ def main():
                 order_signal["is_arb"] = is_arb
                 signal["limit_price"] = limit_price  # For trade log accuracy
 
-                order = maker.place_order(order_signal, limit_price=limit_price)
+                # Taker mode for confirmed outcomes with strong edge
+                if is_confirmed and edge > getattr(config, 'TAKER_MODE_MIN_EDGE', 0.15):
+                    print("  [TRADE] TAKER MODE: confirmed %s edge=%.1f%%" % (ticker, edge * 100))
+                    order = maker.place_market_order(order_signal)
+                else:
+                    order = maker.place_order(order_signal, limit_price=limit_price)
                 if order:
                     trades_this_cycle += 1
 
@@ -264,6 +272,72 @@ def main():
             print("  [BOT] ERROR in cycle %d: %s" % (cycle, e))
             _tb.print_exc()
             time.sleep(30)
+
+
+def _check_rebalancing(client, strategy, risk, maker, cycle):
+    """Every N cycles, check if low-edge positions should be exited for higher-edge opportunities."""
+    interval = getattr(config, 'REBALANCE_INTERVAL_CYCLES', 15)
+    if cycle % interval != 0:
+        return
+    
+    positions = risk.get_positions()
+    if len(positions) < config.MAX_OPEN_POSITIONS:
+        return  # Still have capacity, no need to rebalance
+    
+    # Compute current edge for each position
+    pos_edges = []
+    weather = getattr(strategy, 'weather', None)
+    for tk, pos in positions.items():
+        if pos.get("order_status") == "exit_pending":
+            continue
+        city_code = pos.get("city_code", "")
+        side = pos.get("side", "")
+        entry_price = pos.get("price_cents", 0)
+        if not city_code or not weather:
+            continue
+        try:
+            mkt_dict = {"ticker": tk, "title": "", "subtitle": "", "event_ticker": tk}
+            parsed = weather.parse_market_bucket(mkt_dict)
+            if not parsed:
+                continue
+            target_date = parsed.get("target_date")
+            dist = weather.get_temperature_distribution(city_code, target_date=target_date)
+            if not dist:
+                continue
+            prob = weather.calculate_bucket_probability(dist, parsed["temp_low"], parsed["temp_high"])
+            if prob is None:
+                continue
+            # Get live market price
+            mkt = client.get_market(tk)
+            if mkt and "market" in mkt:
+                mkt = mkt["market"]
+            if not mkt:
+                continue
+            if side == "yes":
+                cur_price = mkt.get("yes_bid", 0) or 0
+                cur_edge = prob - (cur_price / 100.0)
+            else:
+                cur_price = mkt.get("no_bid", 0) or 0
+                cur_edge = (1 - prob) - (cur_price / 100.0)
+            pos_edges.append((tk, cur_edge, pos))
+        except Exception:
+            continue
+    
+    if not pos_edges:
+        return
+    
+    # Find the weakest position
+    pos_edges.sort(key=lambda x: x[1])
+    weakest_tk, weakest_edge, weakest_pos = pos_edges[0]
+    
+    max_old_edge = getattr(config, 'REBALANCE_MAX_OLD_EDGE', 0.03)
+    if weakest_edge > max_old_edge:
+        return  # All positions still have decent edge
+    
+    print("  [REBALANCE] Weakest position: %s edge=%.1f%% (threshold %.1f%%)" % (
+        weakest_tk, weakest_edge * 100, max_old_edge * 100))
+    print("  [REBALANCE] Exiting %s to free capacity" % weakest_tk)
+    _execute_exit(maker, risk, weakest_tk, weakest_pos)
 
 
 def _load_trade_log():

@@ -182,10 +182,17 @@ class Strategy:
         if not is_next_day and local_hour < 6:
             return None
 
+        # Convergence score (same-day afternoon only)
+        convergence_score = 0.0
+        if not is_next_day and local_hour >= 14 and todays_high is not None:
+            convergence_score = self._compute_convergence_score(
+                city_code, todays_high, distribution, local_hour)
+
         # Step 7: Edge threshold check
         min_edge = self._get_edge_threshold(
             is_next_day, is_confirmed=False,
-            local_hour=local_hour if not is_next_day else None)
+            local_hour=local_hour if not is_next_day else None,
+            convergence_score=convergence_score)
         if edge < min_edge:
             return None
         if fee_adjusted_edge < config.FEE_ADJUSTED_MIN_EDGE:
@@ -239,10 +246,14 @@ class Strategy:
         # Step 10: Kelly sizing
         contracts = self._kelly_size(
             edge, win_prob, price_cents, self.balance_cents,
-            conf_mult * rounding_mult
+            conf_mult * rounding_mult, model_spread=model_spread
         )
         if contracts <= 0:
             return None
+
+        # Convergence sizing boost
+        if convergence_score > config.CONVERGENCE_SCORE_THRESHOLD:
+            contracts = max(1, int(contracts * (1.0 + config.CONVERGENCE_SIZING_BOOST * convergence_score)))
 
         # Step 11: Reductions
         if is_next_day:
@@ -558,16 +569,25 @@ class Strategy:
     # EDGE THRESHOLD
     # ===========================================================
 
-    def _get_edge_threshold(self, is_next_day, is_confirmed, local_hour=None):
+    def _get_edge_threshold(self, is_next_day, is_confirmed, local_hour=None,
+                            convergence_score=0.0):
         """Minimum raw edge threshold.
 
         Confirmed: 5%
+        Convergence (score > 0.7, afternoon, same-day): 5%
         Same-day before 9 AM local: 15% (stale forecast penalty)
         Morning (before noon ET): 12%
         Afternoon: 10% (MIN_EDGE)
         Next-day: 15% (1.5x)
         """
         if is_confirmed:
+            return config.CONFIRMED_MIN_EDGE
+
+        # Convergence confidence: high score = sources agree, lower threshold
+        if (convergence_score > config.CONVERGENCE_SCORE_THRESHOLD
+                and not is_next_day
+                and local_hour is not None
+                and local_hour >= 14):
             return config.CONFIRMED_MIN_EDGE
 
         et_hour = datetime.now(ZoneInfo("America/New_York")).hour
@@ -599,18 +619,22 @@ class Strategy:
 
     def _kelly_size(self, edge, win_prob, price_cents, balance_cents,
                      confirmation_multiplier, is_confirmed=False,
-                     is_arb=False):
-        """Quarter-Kelly position sizing for binary markets.
+                     is_arb=False, model_spread=None):
+        """Graduated Kelly position sizing for binary markets.
 
-        kelly = (win_prob * payout - loss_prob * cost) / payout
-        fraction = kelly / 4 * confirmation_multiplier
+        Graduated divisor based on edge magnitude:
+          Edge 5-10%:  Kelly/6 (conservative on thin edges)
+          Edge 10-20%: Kelly/4 (standard)
+          Edge 20%+:   Kelly/3 (aggressive on fat edges)
+
+        Dispersion multiplier: scales down when models disagree.
+          dispersion_mult = 1.0 / (1.0 + model_spread / 5.0)
 
         Caps: MAX_POSITION_PCT (5%), CONFIRMED (10%), ARB (15%).
-        Minimum: 1 contract.
         """
         if edge <= 0 or price_cents <= 0 or balance_cents <= 0:
             return 0
-        if balance_cents < 500:  # Below $5 -- not enough to trade safely
+        if balance_cents < 500:  # Below  -- not enough to trade safely
             return 0
 
         prob_win = min(0.99, max(0.01, win_prob))
@@ -624,7 +648,21 @@ class Strategy:
         if kelly <= 0:
             return 0
 
-        fraction = kelly / 4.0 * confirmation_multiplier
+        # Graduated Kelly divisor based on edge magnitude
+        if edge >= 0.20:
+            divisor = 3.0
+        elif edge >= 0.10:
+            divisor = 4.0
+        else:
+            divisor = 6.0
+
+        fraction = kelly / divisor * confirmation_multiplier
+
+        # Dispersion multiplier: high model disagreement = lower sizing
+        if model_spread is not None and model_spread > 0:
+            dispersion_mult = 1.0 / (1.0 + model_spread / 5.0)
+            fraction *= dispersion_mult
+
         bet_cents = fraction * balance_cents
 
         if is_arb:
@@ -676,6 +714,24 @@ class Strategy:
     # ===========================================================
     # UTILITY
     # ===========================================================
+
+    def _compute_convergence_score(self, city_code, obs_high, distribution, local_hour):
+        """Compute convergence score from observations vs forecast.
+
+        Returns 0.0-1.0. Higher = obs tracking forecast closely + models agree.
+        Used for late-day confidence trades when everything converges.
+        """
+        if obs_high is None or not distribution or local_hour < 14:
+            return 0.0
+        forecast_mean = distribution.get("forecasted_high_mean", 0)
+        model_spread = distribution.get("model_spread", 5.0)
+        tracking_error = abs(obs_high - forecast_mean)
+        score = max(0.0, 1.0 - (tracking_error / 5.0)) * max(0.0, 1.0 - (model_spread / 8.0))
+        score *= min(1.0, (local_hour - 13) / 5.0)
+        score = min(1.0, score)
+        if score > 0.5:
+            print("  [CONVERGENCE] %s score=%.2f" % (city_code, score))
+        return score
 
     def _skip(self, reason, ticker=""):
         """Return a skip signal."""

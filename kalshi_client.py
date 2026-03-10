@@ -195,6 +195,27 @@ class KalshiClient:
         """Get the order book (all buy/sell offers) for a market."""
         return self._request("GET", f"/markets/{ticker}/orderbook")
 
+    def get_book_imbalance(self, ticker):
+        """Compute order book imbalance (OBI).
+        OBI = (bid_depth - ask_depth) / (bid_depth + ask_depth)
+        Returns float in [-1, 1] or 0.0 on error.
+        OBI > 0.5 = buy pressure, OBI < -0.5 = sell pressure."""
+        try:
+            book = self.get_orderbook(ticker)
+            if not book:
+                return 0.0
+            yes_bids = book.get("yes", [])
+            no_bids = book.get("no", [])
+            # For yes side: yes bids are buy orders, calculate depth
+            bid_depth = sum(level[1] for level in yes_bids if len(level) >= 2) if yes_bids else 0
+            ask_depth = sum(level[1] for level in no_bids if len(level) >= 2) if no_bids else 0
+            total = bid_depth + ask_depth
+            if total == 0:
+                return 0.0
+            return (bid_depth - ask_depth) / total
+        except Exception:
+            return 0.0
+
     # =========================================================
     # AUTHENTICATED ENDPOINTS (need API key)
     # =========================================================
