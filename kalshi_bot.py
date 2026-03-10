@@ -125,6 +125,15 @@ def main():
                         print("  [EXIT] HIGH: %s - %s" % (ticker, reason))
                         _execute_exit(maker, risk, ticker, positions_dict.get(ticker, {}))
 
+                # Stamp positions as reviewed (for dashboard stale alert)
+                now_iso = datetime.now(timezone.utc).isoformat()
+                for tk in positions_dict:
+                    if tk in risk.state["positions"]:
+                        risk.state["positions"][tk]["last_review"] = {
+                            "reviewed_at": now_iso,
+                        }
+                risk._save_state()
+
             # --- STEP 4: Scan weather markets ---
             weather_markets = scanner.scan_weather_markets()
             if not weather_markets:
