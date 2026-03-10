@@ -149,6 +149,35 @@ class TradeIntelligence:
                         })
                         continue
 
+                # Early approaching for threshold markets (10 AM - 1 PM)
+                # Threshold markets (T-format) have temp_high >= 200.
+                # NO loses everything at threshold -- need earlier detection.
+                if obs_high is not None and 10 <= now_hour < 13 and temp_high >= 200:
+                    gap_to_threshold = temp_low - obs_high
+                    if 0 < gap_to_threshold <= 5:
+                        exits.append({
+                            "ticker": ticker, "action": "sell", "urgency": "high",
+                            "side": side,
+                            "reason": (f"Early approaching threshold: high {obs_high:.0f}F "
+                                       f"only {gap_to_threshold:.0f}F below {temp_low}F "
+                                       f"(10AM-1PM window)"),
+                        })
+                        continue
+
+                # Forecast divergence: obs exceeds our entry forecast mean
+                # If observations already disprove our thesis, exit early.
+                if obs_high is not None and now_hour >= 10:
+                    forecast_mean = self._get_forecast_mean_for_ticker(ticker)
+                    if forecast_mean is not None and obs_high > forecast_mean + 2:
+                        exits.append({
+                            "ticker": ticker, "action": "sell", "urgency": "high",
+                            "side": side,
+                            "reason": (f"Forecast divergence: obs high {obs_high:.0f}F "
+                                       f"exceeds forecast mean {forecast_mean:.1f}F by "
+                                       f"{obs_high - forecast_mean:.0f}F -- thesis wrong"),
+                        })
+                        continue
+
             # --- EXIT RULE 2: Rounding buffer after 2 PM ---
             if 14 <= now_hour < 19 and obs_high is not None:
                 buf = config.ROUNDING_BUFFER_HARD_F
@@ -170,6 +199,22 @@ class TradeIntelligence:
                     continue
 
         return exits
+
+    def _get_forecast_mean_for_ticker(self, ticker):
+        """Look up the entry-time forecast mean for a ticker from learning state."""
+        try:
+            learning = {}
+            if os.path.exists(config.LEARNING_STATE_FILE):
+                with open(config.LEARNING_STATE_FILE, "r", encoding="utf-8") as f:
+                    learning = json.load(f)
+            snapshots = learning.get("forecast_snapshots", [])
+            # Find the earliest snapshot for this ticker (entry-time forecast)
+            for snap in snapshots:
+                if snap.get("ticker") == ticker:
+                    return snap.get("forecast_mean")
+        except Exception:
+            pass
+        return None
 
     # =====================================================
     # SETTLEMENT TRACKING
@@ -541,7 +586,7 @@ class TradeIntelligence:
         if not station:
             return None
         cache_key = f"latest_{station}"
-        cached = self._get_cached(cache_key, max_age_sec=300)
+        cached = self._get_cached(cache_key, max_age_sec=120)
         if cached is not None:
             return cached
         try:
@@ -568,7 +613,7 @@ class TradeIntelligence:
         if not cities or city_code not in cities:
             return None
         cache_key = f"obs_{station}"
-        cached = self._get_cached(cache_key, max_age_sec=300)
+        cached = self._get_cached(cache_key, max_age_sec=120)
         if cached is not None:
             return cached
         try:
@@ -753,7 +798,7 @@ class TradeIntelligence:
             pass
         return None
 
-    def _get_cached(self, key, max_age_sec=300):
+    def _get_cached(self, key, max_age_sec=120):
         "Return cached value if fresh enough, else None."
         if key in self._obs_cache:
             entry = self._obs_cache[key]

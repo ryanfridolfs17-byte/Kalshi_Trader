@@ -173,11 +173,19 @@ class Strategy:
 
         # Determine if next-day
         city_tz = CITIES.get(city_code, {}).get("timezone", "America/New_York")
-        local_date = datetime.now(ZoneInfo(city_tz)).strftime("%Y-%m-%d")
+        local_now = datetime.now(ZoneInfo(city_tz))
+        local_date = local_now.strftime("%Y-%m-%d")
+        local_hour = local_now.hour
         is_next_day = target_date > local_date
 
+        # Block same-day trades before 6 AM local -- overnight forecasts are stale
+        if not is_next_day and local_hour < 6:
+            return None
+
         # Step 7: Edge threshold check
-        min_edge = self._get_edge_threshold(is_next_day, is_confirmed=False)
+        min_edge = self._get_edge_threshold(
+            is_next_day, is_confirmed=False,
+            local_hour=local_hour if not is_next_day else None)
         if edge < min_edge:
             return None
         if fee_adjusted_edge < config.FEE_ADJUSTED_MIN_EDGE:
@@ -550,10 +558,11 @@ class Strategy:
     # EDGE THRESHOLD
     # ===========================================================
 
-    def _get_edge_threshold(self, is_next_day, is_confirmed):
+    def _get_edge_threshold(self, is_next_day, is_confirmed, local_hour=None):
         """Minimum raw edge threshold.
 
         Confirmed: 5%
+        Same-day before 9 AM local: 15% (stale forecast penalty)
         Morning (before noon ET): 12%
         Afternoon: 10% (MIN_EDGE)
         Next-day: 15% (1.5x)
@@ -564,6 +573,10 @@ class Strategy:
         et_hour = datetime.now(ZoneInfo("America/New_York")).hour
 
         if is_next_day:
+            return config.MIN_EDGE * config.NEXT_DAY_EDGE_MULTIPLIER
+
+        # Same-day early morning: stale forecast penalty (same as next-day)
+        if local_hour is not None and local_hour < 9:
             return config.MIN_EDGE * config.NEXT_DAY_EDGE_MULTIPLIER
 
         if et_hour < 12:
