@@ -133,6 +133,8 @@ Bankroll ~$48. All values in `config.py`. Cents = 100 per $1.00. `BALANCE_FALLBA
 - **Longshot floor**: 5c. **Near-certainty cap**: 88c. **NO ceiling**: 50c (CASE1 bypasses).
 - **NO sizing**: >=50c gets 40% normal sizing.
 - **Next-day**: 1.5x edge threshold, 50% sizing.
+- **Same-day before 6 AM local**: BLOCKED. Overnight forecasts are stale.
+- **Same-day 6-9 AM local**: 1.5x edge threshold (same as next-day). Stale forecast penalty.
 - **Warm city bias defaults**: DEN +4F, Gulf/SE +3F, Desert +2F (hardcoded in weather_engine.py)
 
 ### Confirmed Outcomes
@@ -143,7 +145,9 @@ Bankroll ~$48. All values in `config.py`. Cents = 100 per $1.00. `BALANCE_FALLBA
 ### Exit Logic (Binary: HOLD or EXIT)
 | Trigger | Action |
 |---------|--------|
-| Obs confirms loss / approaching bucket | EXIT (high) |
+| Obs confirms loss / approaching bucket (1-7 PM) | EXIT (high) |
+| Threshold market approaching within 5F (10 AM-1 PM) | EXIT (high) |
+| Forecast divergence: obs high > forecast mean + 2F (10 AM+) | EXIT (high) |
 | Rounding buffer after 2 PM | EXIT (high) |
 | Thesis valid | HOLD to settlement |
 
@@ -162,6 +166,7 @@ Limit orders at `fair_value - 2c`. Dynamic: high edge -> 1c, low edge -> 3c. Sta
 - **Learning NWS lookup**: `trade_reviewer._get_actual_temp()` fetches actual highs from NWS (cached, 7-day limit). Enables bias/accuracy learning.
 - **CITIES dict field**: `nws_station` (NOT `station`). Used for observation fetching.
 - **Daily reset at 6 AM ET**: Risk counters reset at 6 AM Eastern, not UTC midnight.
+- **NWS observation cache**: 2-minute TTL (matches cycle interval). Used for exits and CASE 1.
 - **Balance cache**: Risk manager caches balance for 60s to avoid excessive API calls.
 - **Pending order overwrite**: `add_pending_order()` subtracts old cost before adding new. Prevents exposure drift.
 - **Settlement reconciliation**: `check_settlements()` called every cycle in main loop (STEP 1b). Updates risk_state (record_win/loss, release_exposure). Saves trade_log after marking settled.
