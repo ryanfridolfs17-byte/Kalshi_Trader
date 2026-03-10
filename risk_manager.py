@@ -211,6 +211,32 @@ class RiskManager:
             self.state["consecutive_losses"] = 0
         self._save_state()
 
+    def release_exposure(self, ticker, cost_cents=0, city_code=""):
+        """Remove position and release exposure. Called by trade_intelligence."""
+        if ticker in self.state["positions"]:
+            stored_cost = self.state["positions"][ticker].get("cost_cents", 0)
+            del self.state["positions"][ticker]
+            self.state["total_exposure_cents"] = max(
+                0, self.state["total_exposure_cents"] - stored_cost
+            )
+        elif cost_cents > 0:
+            self.state["total_exposure_cents"] = max(
+                0, self.state["total_exposure_cents"] - cost_cents
+            )
+        self._save_state()
+
+    def record_win(self, profit_cents):
+        """Record a win: update daily P&L, reset consecutive losses."""
+        self.state["daily_pnl_cents"] += profit_cents
+        self.state["consecutive_losses"] = 0
+        self._save_state()
+
+    def record_loss(self, cost_cents):
+        """Record a loss: update daily P&L, increment consecutive losses."""
+        self.state["daily_pnl_cents"] -= cost_cents
+        self.state["consecutive_losses"] += 1
+        self._save_state()
+
     def close_position(self, ticker):
         """Remove a position from tracking."""
         if ticker in self.state["positions"]:
@@ -224,6 +250,12 @@ class RiskManager:
     def add_pending_order(self, ticker, order_info):
         """Track a pending/resting order. Adds to exposure tracking."""
         cost = order_info.get("cost_cents", 0)
+        # Subtract old cost if overwriting existing position
+        if ticker in self.state["positions"]:
+            old_cost = self.state["positions"][ticker].get("cost_cents", 0)
+            self.state["total_exposure_cents"] = max(
+                0, self.state["total_exposure_cents"] - old_cost
+            )
         self.state["positions"][ticker] = order_info
         self.state["total_exposure_cents"] += cost
         self._save_state()
@@ -278,7 +310,7 @@ class RiskManager:
                 pass
         if self._cached_balance:
             return self._cached_balance
-        return config.TOTAL_DEPOSITS_CENTS
+        return getattr(config, "BALANCE_FALLBACK_CENTS", 4800)
 
     def _check_daily_reset(self):
         """Reset daily counters at 6 AM ET (approximate trading day start)."""

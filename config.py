@@ -86,7 +86,7 @@ KILL_SWITCH_PAUSE_HOURS = 4
 # === EDGE & PRICING ===
 MIN_EDGE = 0.10
 CONFIRMED_MIN_EDGE = 0.05
-ARB_MIN_SPREAD_CENTS = 2
+ARB_MIN_SPREAD_CENTS = 7
 KALSHI_FEE_PCT = 0.07
 FEE_ADJUSTED_MIN_EDGE = 0.03
 LONGSHOT_FLOOR_CENTS = 5
@@ -124,6 +124,7 @@ ADVERSE_SELECTION_PAUSE_MINUTES = 60
 
 # === ACCOUNT ===
 TOTAL_DEPOSITS_CENTS = 10000
+BALANCE_FALLBACK_CENTS = 4800  # Conservative fallback when API unavailable (~$48 bankroll)
 SETTLEMENT_HOUR_ET = 10
 
 # === STATE PERSISTENCE ===
@@ -136,6 +137,7 @@ PNL_HISTORY_FILE = os.path.join(STATE_DIR, "pnl_history.json")
 BOT_STATUS_FILE = os.path.join(STATE_DIR, "bot_status.json")
 MAKER_ORDERS_FILE = os.path.join(STATE_DIR, "maker_orders.json")
 SCAN_LOG_FILE = os.path.join(STATE_DIR, "scan_log.json")
+LEARNING_STATE_FILE = os.path.join(STATE_DIR, "learning_state.json")
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 

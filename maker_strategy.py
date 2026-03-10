@@ -73,12 +73,14 @@ class MakerStrategy:
         side = signal.get("side", "yes")
         contracts = signal.get("contracts", 1)
 
+        # Clean up stale orders every cycle (not just when maxed out)
+        if self.open_orders:
+            self._cleanup_stale_orders()
+
         # Check open order count
         if len(self.open_orders) >= config.MAX_OPEN_ORDERS:
-            self._cleanup_stale_orders()
-            if len(self.open_orders) >= config.MAX_OPEN_ORDERS:
-                print("  [MAKER] Max open orders (%d) reached" % config.MAX_OPEN_ORDERS)
-                return None
+            print("  [MAKER] Max open orders (%d) reached" % config.MAX_OPEN_ORDERS)
+            return None
 
         if config.DRY_RUN:
             order = {

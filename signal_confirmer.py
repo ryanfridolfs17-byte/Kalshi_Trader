@@ -186,7 +186,7 @@ class SignalConfirmer:
 
         Returns predicted daily high in deg F (int) or None.
         """
-        station = city_info.get("station", "")
+        station = city_info.get("nws_station", "")
         cache_key = f"nws_point_{station}_{target_date}"
         cached = self._cache.get(cache_key)
         if cached:
@@ -255,9 +255,7 @@ class SignalConfirmer:
                 return "DISAGREE"
         else:  # NO signal
             if in_bucket:
-                if dist_to_edge <= gray_zone:
-                    return "ABSTAIN"
-                return "DISAGREE"
+                return "DISAGREE"  # In-bucket contradicts NO thesis
             else:
                 if dist_to_edge <= gray_zone:
                     return "ABSTAIN"

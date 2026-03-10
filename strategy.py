@@ -216,6 +216,8 @@ class Strategy:
             edge, our_prob, price_cents, self.balance_cents,
             conf_mult * rounding_mult
         )
+        if contracts <= 0:
+            return None
 
         # Step 11: Reductions
         if is_next_day:
@@ -263,6 +265,7 @@ class Strategy:
             "predicted_high": forecast_mean,
             "model_spread": model_spread,
             "std_dev": std_dev_val,
+            "model_means": distribution.get("model_means", {}),
         }
 
     # ===========================================================
@@ -301,8 +304,7 @@ class Strategy:
             no_price = market.get("no_ask", 0) or (100 - ref_price)
             if no_price <= 0 or no_price >= 95:
                 return None
-            if no_price > config.NO_SIDE_MAX_PRICE_CENTS:
-                return None
+            # CASE1 bypasses NO_SIDE_MAX_PRICE_CENTS (near-guaranteed outcome)
 
             edge = (100 - no_price) / 100.0
             if edge < config.CONFIRMED_MIN_EDGE:
@@ -417,7 +419,7 @@ class Strategy:
                     ),
                     "strategy": "S1-Weather",
                     "confirmation_verdict": "STRONG",
-                    "confirmation_multiplier": 1.5,
+                    "confirmation_multiplier": 1.0,
                     "city_code": city_code,
                     "target_date": target_date,
                     "close_time": market.get("close_time"),
@@ -485,7 +487,7 @@ class Strategy:
             ),
             "strategy": "S2-Arbitrage",
             "confirmation_verdict": "STRONG",
-            "confirmation_multiplier": 1.5,
+            "confirmation_multiplier": 1.0,
             "city_code": "",
             "target_date": "",
             "close_time": market.get("close_time"),
@@ -642,6 +644,8 @@ class Strategy:
         """
         if edge <= 0 or price_cents <= 0 or balance_cents <= 0:
             return 1
+        if balance_cents < 500:  # Below $5 -- not enough to trade safely
+            return 0
 
         prob_win = min(0.95, our_prob)
         payout = 100 - price_cents
@@ -668,7 +672,9 @@ class Strategy:
         bet_cents = min(bet_cents, max_bet)
         bet_cents = min(bet_cents, config.MAX_PER_TICKER_CENTS)
 
-        contracts = max(1, int(bet_cents / price_cents))
+        contracts = int(bet_cents / price_cents)
+        if contracts <= 0:
+            return 0
         contracts = min(contracts, config.MAX_CONTRACTS_PER_TICKER)
 
         return contracts

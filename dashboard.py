@@ -27,13 +27,9 @@ STATE_FILES = {
     "risk": config.RISK_STATE_FILE,
     "pnl": config.PNL_HISTORY_FILE,
     "bot_status": config.BOT_STATUS_FILE,
-    "pending": config.PENDING_TRADES_FILE,
-    "reports": config.DAILY_REPORTS_FILE,
-    "backtest": config.BACKTEST_RESULTS_FILE,
-    "attribution": config.EDGE_ATTRIBUTION_FILE,
-    "analysis": config.TRADE_ANALYSIS_FILE,
     "scan_log": config.SCAN_LOG_FILE,
-    "forecast_log": config.FORECAST_LOG_FILE,
+    "maker": config.MAKER_ORDERS_FILE,
+    "learning": config.LEARNING_STATE_FILE,
 }
 
 DASHBOARD_PORT = int(os.environ.get("PORT", 8050))
@@ -49,6 +45,16 @@ def set_kalshi_client(client):
     """Store a reference to the KalshiClient for force-exit endpoint."""
     global _kalshi_client
     _kalshi_client = client
+
+
+# Shared TradeReviewer instance — set by kalshi_bot.py after initialization
+_trade_reviewer = None
+
+
+def set_trade_reviewer(reviewer):
+    """Store a reference to the TradeReviewer for learning endpoint."""
+    global _trade_reviewer
+    _trade_reviewer = reviewer
 
 
 def _read_json(path, default=None):
@@ -150,7 +156,7 @@ def _check_alerts(bot_status, risk_state, pending):
         try:
             created = datetime.fromisoformat(ts)
             age_min = (datetime.now() - created).total_seconds() / 60
-            if age_min > config.PENDING_ALERT_MINUTES:
+            if age_min > getattr(config, "PENDING_ALERT_MINUTES", 30):
                 tid = trade.get("id", "?")
                 _alert_once(f"pending_{tid}",
                     f"Pending trade waiting {age_min:.0f} min",
@@ -289,6 +295,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             else:
                 result = _kalshi_client.get_fills(limit=200)
                 self._send_json(result or {"error": "API call failed"})
+
+        elif path == "/api/learning":
+            if _trade_reviewer is None:
+                self._send_json({"error": "TradeReviewer not initialized"}, 503)
+            else:
+                self._send_json(_trade_reviewer.get_learning_summary())
 
         elif path == "/api/balance":
             if _kalshi_client is None:

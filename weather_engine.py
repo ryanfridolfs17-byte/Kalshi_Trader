@@ -510,10 +510,14 @@ class WeatherEngine:
                 if daytime_temps:
                     member_highs.append(round(max(daytime_temps), 1))
 
+            # Filter out NaN/Inf values from API data
+            import math
+            member_highs = [h for h in member_highs
+                           if h is not None and not math.isnan(h) and not math.isinf(h)]
             return member_highs if member_highs else None
 
         except Exception as e:
-            # Silently fail — we have multiple sources
+            print("  [WEATHER] %s fetch failed for %s: %s" % (model, city.get("name", "?"), e))
             return None
 
     # ═══════════════════════════════════════════════════════

@@ -330,16 +330,16 @@ class TradeIntelligence:
                     elif action == "sell":
                         if fside == "yes":
                             can_pair = min(count, no_held)
-                            total_cost += f.get("yes_price", 0) * count
+                            pair_revenue += f.get("yes_price", 0) * count  # Sell = revenue
                             pair_revenue += can_pair * 100
                             no_held -= can_pair
-                            yes_held += (count - can_pair)
+                            yes_held = max(0, yes_held - (count - can_pair))  # Floor at 0
                         elif fside == "no":
                             can_pair = min(count, yes_held)
-                            total_cost += f.get("no_price", 0) * count
+                            pair_revenue += f.get("no_price", 0) * count  # Sell = revenue
                             pair_revenue += can_pair * 100
                             yes_held -= can_pair
-                            no_held += (count - can_pair)
+                            no_held = max(0, no_held - (count - can_pair))  # Floor at 0
                 ticker_flows[ticker] = {
                     "total_cost": total_cost, "pair_revenue": pair_revenue,
                     "yes_held": yes_held, "no_held": no_held,
