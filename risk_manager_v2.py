@@ -34,10 +34,17 @@ class RiskManager:
             "last_trade_time": None,
             "trade_count_today": 0,
             "total_exposure_cents": 0,
+            "win_amounts": [],
+            "loss_amounts": [],
         }
         for key, value in defaults.items():
             if key not in self.state or not isinstance(self.state.get(key), type(value)):
-                self.state[key] = dict(value) if isinstance(value, dict) else value
+                if isinstance(value, dict):
+                    self.state[key] = dict(value)
+                elif isinstance(value, list):
+                    self.state[key] = list(value)
+                else:
+                    self.state[key] = value
 
         migrated = {}
         for ticker, pos in list(self.state["positions"].items()):
@@ -125,6 +132,19 @@ class RiskManager:
         balance = self._get_balance_cents()
         max_contracts = contracts
 
+        # P/L ratio dynamic position cap
+        if not is_confirmed and not is_arb:
+            pl_ratio = self.get_pl_ratio()
+            if pl_ratio < 2.0 and len(self.state.get("win_amounts", [])) >= 5:
+                dynamic_pct = 0.03  # Tighten to 3%
+            elif pl_ratio > 3.0:
+                dynamic_pct = 0.07  # Loosen to 7%
+            else:
+                dynamic_pct = config.MAX_POSITION_PCT
+            dynamic_max = int(balance * dynamic_pct)
+            if price_cents > 0:
+                max_contracts = min(max_contracts, max(1, dynamic_max // price_cents))
+
         if not is_confirmed:
             max_exposure = int(balance * config.MAX_TOTAL_EXPOSURE_PCT)
             room = max_exposure - self.state["total_exposure_cents"]
@@ -197,8 +217,13 @@ class RiskManager:
         self.state["daily_pnl_cents"] += pnl_cents
         if pnl_cents < 0:
             self.state["consecutive_losses"] += 1
+            self.state["loss_amounts"].append(abs(pnl_cents))
+            self.state["loss_amounts"] = self.state["loss_amounts"][-50:]
         else:
             self.state["consecutive_losses"] = 0
+            if pnl_cents > 0:
+                self.state["win_amounts"].append(pnl_cents)
+                self.state["win_amounts"] = self.state["win_amounts"][-50:]
         self._save_state()
 
     def release_exposure(self, ticker, cost_cents=0, city_code=""):
@@ -302,7 +327,16 @@ class RiskManager:
             "total_exposure_cents": self.state["total_exposure_cents"],
             "kill_switch_until": self.state.get("kill_switch_until"),
             "trade_count_today": self.state["trade_count_today"],
+            "pl_ratio": self.get_pl_ratio(),
         }
+
+    def get_pl_ratio(self):
+        """Compute rolling P/L ratio (avg win / avg loss). Target > 2.0."""
+        wins = self.state.get("win_amounts", [])
+        losses = self.state.get("loss_amounts", [])
+        avg_win = sum(wins) / len(wins) if wins else 0
+        avg_loss = sum(losses) / len(losses) if losses else 1
+        return avg_win / max(avg_loss, 1)
 
     def _ticker_exposure(self, ticker):
         total = 0

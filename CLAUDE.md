@@ -64,8 +64,8 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 
 ### Key Design Decisions
 
-- **Quarter-Kelly sizing** (Kelly/4 x confirmation multiplier)
-- **Maker strategy** -- limit orders, not market orders
+- **Graduated Kelly sizing** -- Edge 5-10%: Kelly/6, Edge 10-20%: Kelly/4, Edge 20%+: Kelly/3. Dispersion multiplier: `1/(1 + model_spread/5)`. Confirmation multiplier still applied.
+- **Maker strategy** -- limit orders default. CASE 1 confirmed with edge >15% uses taker (market) orders for guaranteed execution.
 - **NWS settlement** -- Weather markets settle on NWS Daily Climate Reports
 - **NWS rounding** -- +/-1F DOS-era conversion error. Buffer: +/-1F = no trade, +/-2F = 50% size.
 - **NO-side separation** -- Dynamic: `max(3.0F, std_dev * 0.8)` from expanded boundary. CONFIRM gets 1.5x penalty.
@@ -74,7 +74,7 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 - **Binary exits** -- HOLD or EXIT. No PARE/HEDGE/TAKE_PROFIT.
 - **Single-writer P&L** -- Only `sync_pnl_from_kalshi()` writes `pnl_history.json`. No exceptions.
 - **Size-down, not reject** -- When caps are exceeded, risk manager reduces contracts to fit instead of blocking.
-- **Kill switch** -- Daily loss = stop for day (auto-resume). 5 consecutive = 4h pause. No Sharpe-based shutdown.
+- **Kill switch** -- Daily loss = stop for day (auto-resume). 3 consecutive = 4h pause. No Sharpe-based shutdown.
 
 ## NWS Station Mappings (20 Cities)
 
@@ -108,7 +108,7 @@ Bankroll ~$48. All values in `config.py`. Cents = 100 per $1.00. `BALANCE_FALLBA
 | `MIN_PAYOUT_DOLLARS` | $0.25 | Minimum expected payout per trade |
 | `DAILY_LOSS_LIMIT_CENTS` | 600 ($6) | ~15% of bankroll |
 | `CONSECUTIVE_LOSS_PAUSE` | 3 losses / 60 min | |
-| `KILL_SWITCH_CONSEC_LOSSES` | 5 | 4-hour pause, then auto-resume |
+| `KILL_SWITCH_CONSEC_LOSSES` | 3 | 4-hour pause, then auto-resume |
 
 ### Position Sizing & Exposure
 | Parameter | Value | Notes |
@@ -152,7 +152,59 @@ Bankroll ~$48. All values in `config.py`. Cents = 100 per $1.00. `BALANCE_FALLBA
 | Thesis valid | HOLD to settlement |
 
 ### Maker Strategy
-Limit orders at `fair_value - 2c`. Dynamic: high edge -> 1c, low edge -> 3c. Stale cleanup every cycle (cancel >30min). NaN guard on ensemble data.
+Limit orders at `fair_value - 2c`. Dynamic: high edge -> 1c, low edge -> 3c. Stale cleanup every cycle with time-decay threshold (30min morning, 15min afternoon, 5min after 3 PM ET). NaN guard on ensemble data.
+- **Taker mode**: CASE 1 confirmed with edge >15% (`TAKER_MODE_MIN_EDGE`) uses market orders for guaranteed fill
+- **Adverse selection**: Tracks 24h rolling fill rate per side. >70% fill rate = widen spread by 1c. >85% = pause maker on that side. State in `fill_tracking.json`.
+- **Order book imbalance**: `get_book_imbalance(ticker)` returns OBI in [-1, 1]. Available for spread adjustment.
+
+### Quant Fund Upgrades (v4.1)
+
+#### Graduated Kelly Sizing (strategy.py)
+Edge 5-10%: Kelly/6 (conservative). Edge 10-20%: Kelly/4 (standard). Edge 20%+: Kelly/3 (aggressive).
+Dispersion multiplier: `fraction *= 1.0 / (1.0 + model_spread / 5.0)` — high model disagreement = lower sizing.
+Model convergence boost (<2F spread) still applied as 1.2x on top.
+
+#### Convergence Confidence Trading (strategy.py + trade_intelligence.py)
+After 2 PM local, when obs_high tracks ensemble mean closely AND model spread is low, reduce edge threshold to `CONFIRMED_MIN_EDGE` (5%).
+Convergence score: `max(0, 1 - tracking_error/5) * max(0, 1 - spread/8) * hour_factor`. Score > 0.7 triggers.
+Sizing boost: `1.0 + CONVERGENCE_SIZING_BOOST * score` (up to 1.5x).
+
+#### Asymmetric P/L Ratio (risk_manager_v2.py)
+Tracks rolling win/loss amounts (last 50 each). Computes `avg_win / avg_loss`.
+P/L ratio < 2.0 (with 5+ trades): tighten max position to 3%. P/L ratio > 3.0: loosen to 7%.
+Self-correcting: losing streaks auto-reduce exposure, winning streaks auto-expand.
+
+#### Bayesian Observation Update (weather_engine.py)
+`update_distribution_with_observation(distribution, obs_high, local_hour)`: Shifts ensemble distribution based on real-time NWS observations.
+Observation weight scales with hour: `min(0.8, local_hour / 18)`. Later in day = more weight to observations.
+Truncates ensemble members below obs_high for high prediction (temp can't go backwards).
+
+#### Cloud Cover / Precipitation Adjustment (weather_engine.py)
+`_fetch_cloud_cover(city_code, target_date)`: Fetches daily cloud_cover_mean and precipitation_sum from Open-Meteo.
+Cloud cover > 70%: apply -1.5F bias. Precipitation > 0.5mm: apply additional -1.0F bias.
+Biases stored in distribution: `cloud_cover_adj_f`, `precip_adj_f`.
+
+#### Portfolio Rebalancing (kalshi_bot.py)
+Every 15 cycles (`REBALANCE_INTERVAL_CYCLES`), re-ranks open positions by current edge.
+If weakest position edge < 3% (`REBALANCE_MAX_OLD_EDGE`) AND at max capacity: exit to free slot.
+
+### New Config Parameters (v4.1)
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| `CONVERGENCE_SCORE_THRESHOLD` | 0.7 | Min score to trigger convergence trading |
+| `CONVERGENCE_MIN_LOCAL_HOUR` | 14 | Only after 2 PM local |
+| `CONVERGENCE_SIZING_BOOST` | 0.5 | Up to 1.5x sizing at score=1.0 |
+| `CLOUD_COVER_THRESHOLD_PCT` | 70 | Above = apply temp bias |
+| `CLOUD_COVER_TEMP_BIAS_F` | -1.5 | Overcast day bias |
+| `PRECIP_THRESHOLD_MM` | 0.5 | Above = apply additional bias |
+| `PRECIP_TEMP_BIAS_F` | -1.0 | Precipitation cooling bias |
+| `REBALANCE_INTERVAL_CYCLES` | 15 | Check rebalancing every N cycles |
+| `REBALANCE_MIN_NEW_EDGE` | 0.15 | Min edge for new opportunity |
+| `REBALANCE_MAX_OLD_EDGE` | 0.03 | Max edge to consider for exit |
+| `TAKER_MODE_MIN_EDGE` | 0.15 | Min edge for CASE 1 taker mode |
+
+### New State Files (v4.1)
+- `fill_tracking.json` — Adverse selection: per-side order/fill counts (rolling 24h)
 
 ### Infrastructure Invariants
 - **Dashboard outside restart loop**: `start_dashboard_server()` in `__main__` block, NOT inside `main()`.
@@ -178,3 +230,12 @@ Limit orders at `fair_value - 2c`. Dynamic: high edge -> 1c, low edge -> 3c. Sta
 - **Ensemble fetch logging**: Failed API calls logged with model name and error (was silently swallowed).
 - **Sell P&L fix**: `sync_pnl_from_kalshi()` correctly treats sell proceeds as revenue (was adding to cost). Position direction corrected for unpaired sells.
 - **Reviewer dedup**: `_learn_forecast_bias()` and `_learn_model_accuracy()` rebuild from scratch each night (was appending to existing, duplicating errors).
+- **Graduated Kelly sizing**: `_kelly_size()` uses graduated divisor (6/4/3) based on edge + dispersion multiplier. `model_spread` parameter added.
+- **Taker mode**: CASE 1 confirmed outcomes with edge > 15% bypass maker limit pricing, use `place_market_order()`.
+- **Time-decay stale cleanup**: `_get_stale_threshold_minutes()` returns 30/15/5 based on ET hour. Near settlement = faster cancellation.
+- **Adverse selection**: `fill_tracking.json` tracks per-side fill rates. >70% = widen, >85% = pause. Integrated into `calculate_limit_price()`.
+- **Convergence confidence**: After 2 PM, if obs tracks ensemble mean + low spread, edge threshold drops to 5% and sizing boosted up to 1.5x.
+- **P/L ratio sizing**: Risk manager tracks rolling win/loss amounts. Ratio < 2.0 = 3% max position. Ratio > 3.0 = 7% max position.
+- **Bayesian obs update**: `update_distribution_with_observation()` shifts ensemble based on NWS observations, weight scaling with hour.
+- **Cloud cover bias**: `_fetch_cloud_cover()` gets cloud/precip data from Open-Meteo. High overcast = negative temp bias.
+- **Portfolio rebalancing**: `_check_rebalancing()` runs every 15 cycles. Exits weakest position if at max capacity and edge < 3%.

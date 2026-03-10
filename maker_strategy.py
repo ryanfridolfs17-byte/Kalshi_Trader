@@ -10,6 +10,7 @@ import json
 import os
 import time
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 import config
 
 
@@ -19,6 +20,7 @@ class MakerStrategy:
         self.client = kalshi_client
         self.risk = risk_manager
         self.open_orders = self._load_open_orders()
+        self._fill_tracking = self._load_fill_tracking()
 
     def calculate_limit_price(self, signal):
         """
@@ -44,6 +46,13 @@ class MakerStrategy:
             buffer = config.MAKER_SPREAD_BUFFER_CENTS
         else:
             buffer = 3
+
+        # Adverse selection adjustment
+        spread_adj = self.get_spread_adjustment(side)
+        if spread_adj is None:
+            print("  [MAKER] Adverse selection: PAUSED on %s side" % side)
+            return None
+        buffer += spread_adj
 
         # Limit price = fair_value - buffer (we want to buy cheaper)
         limit_price = fair_value - buffer
@@ -165,10 +174,53 @@ class MakerStrategy:
 
                 print("  [MAKER] Placed: %s %s %dc x%d (order %s)" % (
                     side.upper(), ticker, limit_price, contracts, order_id[:8]))
+                self._track_order_side(side)
                 return order
         except Exception as e:
             print("  [MAKER] Order failed: %s" % e)
 
+        return None
+
+
+    def place_market_order(self, signal):
+        """Place a MARKET order for confirmed outcomes (taker mode)."""
+        if not self.client:
+            return None
+        ticker = signal.get("ticker", "")
+        side = signal.get("side", "yes")
+        contracts = signal.get("contracts", 1)
+        if config.DRY_RUN:
+            order = {
+                "order_id": "dry_taker_%s_%d" % (ticker, int(time.time())),
+                "ticker": ticker, "side": side,
+                "price_cents": signal.get("price_cents", 0),
+                "contracts": contracts, "status": "dry_run",
+                "placed_at": datetime.now(timezone.utc).isoformat(),
+            }
+            print("  [MAKER] TAKER MODE (DRY): %s %s x%d" % (side.upper(), ticker, contracts))
+            return order
+        try:
+            result = self.client.create_order(
+                ticker=ticker, action="buy", side=side, type="market", count=contracts)
+            if result and result.get("order"):
+                order = result["order"]
+                order_id = order.get("order_id", "")
+                print("  [MAKER] TAKER MODE: %s %s x%d (order %s)" % (
+                    side.upper(), ticker, contracts, order_id[:8]))
+                if self.risk:
+                    self.risk.add_pending_order({
+                        "ticker": ticker, "city_code": signal.get("city_code", ""),
+                        "side": side, "price_cents": signal.get("price_cents", 0),
+                        "contracts": contracts,
+                        "cost_cents": signal.get("price_cents", 0) * contracts,
+                        "order_id": order_id,
+                        "order_status": order.get("status", "resting"),
+                        "is_confirmed": True, "is_arb": False,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
+                return order
+        except Exception as e:
+            print("  [MAKER] Taker order failed: %s" % e)
         return None
 
     def place_exit_order(self, position, limit_price=1):
@@ -276,6 +328,8 @@ class MakerStrategy:
                         new_contracts,
                         info.get("price_cents", 0),
                     ))
+                    if info.get("action", "buy") == "buy":
+                        self._track_fill_side(info.get("side", "yes"))
 
                 info["order_status"] = status or info.get("order_status", "")
 
@@ -330,10 +384,20 @@ class MakerStrategy:
                 cancelled += 1
         return cancelled
 
+    def _get_stale_threshold_minutes(self):
+        """Dynamic stale threshold: tighter near settlement."""
+        et_hour = datetime.now(ZoneInfo("America/New_York")).hour
+        if et_hour >= 15:
+            return 5
+        elif et_hour >= 12:
+            return 15
+        return config.STALE_ORDER_MINUTES
+
     def _cleanup_stale_orders(self):
-        """Cancel orders older than STALE_ORDER_MINUTES."""
+        """Cancel orders older than dynamic stale threshold."""
         now = datetime.now(timezone.utc)
-        stale_limit = timedelta(minutes=config.STALE_ORDER_MINUTES)
+        threshold = self._get_stale_threshold_minutes()
+        stale_limit = timedelta(minutes=threshold)
         stale = []
 
         for order_id, info in self.open_orders.items():
@@ -347,7 +411,7 @@ class MakerStrategy:
 
         for oid in stale:
             self.cancel_order(oid)
-            print("  [MAKER] Cancelled stale order: %s" % oid[:8])
+            print("  [MAKER] Cancelled stale order (%dm threshold): %s" % (threshold, oid[:8]))
 
     def get_open_order_count(self):
         return len(self.open_orders)
@@ -357,6 +421,74 @@ class MakerStrategy:
             info.get("ticker") == ticker and info.get("action") == "sell"
             for info in self.open_orders.values()
         )
+
+    def _track_fill_side(self, side):
+        """Track which side got filled for adverse selection detection."""
+        key = "yes_fills" if side == "yes" else "no_fills"
+        self._fill_tracking.setdefault(key, []).append(datetime.now(timezone.utc).isoformat())
+        self._save_fill_tracking()
+
+    def _track_order_side(self, side):
+        """Track which side we placed orders on."""
+        key = "yes_orders" if side == "yes" else "no_orders"
+        self._fill_tracking.setdefault(key, []).append(datetime.now(timezone.utc).isoformat())
+        self._save_fill_tracking()
+
+    def get_adverse_selection_info(self):
+        """Compute 24h rolling fill rate per side. Warn if lopsided."""
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(hours=24)).isoformat()
+        result = {}
+        for side in ("yes", "no"):
+            fills = [t for t in self._fill_tracking.get("%s_fills" % side, []) if t > cutoff]
+            orders = [t for t in self._fill_tracking.get("%s_orders" % side, []) if t > cutoff]
+            fill_count = len(fills)
+            order_count = len(orders)
+            fill_rate = fill_count / order_count if order_count > 0 else 0.0
+            result[side] = {"fills": fill_count, "orders": order_count, "fill_rate": fill_rate}
+            if order_count >= 3:
+                if fill_rate > 0.85:
+                    print("  [MAKER] ADVERSE SELECTION WARNING: %s fill_rate=%.0f%% \u2014 PAUSE maker on %s side" % (
+                        side.upper(), fill_rate * 100, side))
+                elif fill_rate > 0.70:
+                    print("  [MAKER] ADVERSE SELECTION WARNING: %s fill_rate=%.0f%% \u2014 widen spread buffer" % (
+                        side.upper(), fill_rate * 100))
+        return result
+
+    def get_spread_adjustment(self, side):
+        """Returns spread adjustment: 0 normal, 1 widen, None pause."""
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(hours=24)).isoformat()
+        fills = [t for t in self._fill_tracking.get("%s_fills" % side, []) if t > cutoff]
+        orders = [t for t in self._fill_tracking.get("%s_orders" % side, []) if t > cutoff]
+        order_count = len(orders)
+        if order_count < 3:
+            return 0
+        fill_rate = len(fills) / order_count
+        if fill_rate > 0.85:
+            return None  # pause
+        elif fill_rate > 0.70:
+            return 1  # widen
+        return 0
+
+    def _load_fill_tracking(self):
+        """Load adverse selection tracking data."""
+        path = os.path.join(config.STATE_DIR, "fill_tracking.json")
+        try:
+            if os.path.exists(path):
+                with open(path, "r") as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return {}
+
+    def _save_fill_tracking(self):
+        """Save adverse selection tracking data."""
+        path = os.path.join(config.STATE_DIR, "fill_tracking.json")
+        try:
+            config.atomic_json_save(path, self._fill_tracking)
+        except Exception as e:
+            print("  [MAKER] Error saving fill tracking: %s" % e)
 
     def _load_open_orders(self):
         try:
