@@ -357,6 +357,12 @@ class TradeIntelligence:
             settle_rev_copy = dict(settle_rev)
 
             # Realized P&L for closed tickers
+            # NOTE: Kalshi settlement creates sell-fills at payout price
+            # (100c for winners). Using BOTH pair_revenue (from those fills)
+            # AND settle_revenue would double-count. So: if a ticker has
+            # sell fills (pair_revenue > 0), the fills already capture all
+            # revenue -- skip settlement revenue. Only use settlement revenue
+            # for tickers with no sell fills (rare edge case).
             settled_tickers = set(settle_rev.keys())
             total_invested, total_returned = 0, 0
             wins, losses = 0, 0
@@ -368,16 +374,23 @@ class TradeIntelligence:
                 total_cost = flows["total_cost"]
                 pair_rev = flows["pair_revenue"]
                 settle_revenue = settle_rev.pop(ticker, 0)
-                ticker_pnl = pair_rev + settle_revenue - total_cost
+                if pair_rev > 0:
+                    # Fills include sell revenue (manual exits + settlement
+                    # auto-closes). Don't add settlement revenue on top.
+                    ticker_returned = pair_rev
+                else:
+                    # No sell fills -- use settlement revenue directly
+                    ticker_returned = settle_revenue
+                ticker_pnl = ticker_returned - total_cost
                 total_invested += total_cost
-                total_returned += pair_rev + settle_revenue
+                total_returned += ticker_returned
                 if ticker_pnl > 0:
                     wins += 1
                 elif ticker_pnl < 0:
                     losses += 1
             total_pnl = total_returned - total_invested
 
-            # Today settlements
+            # Today settlements (same double-count guard as above)
             today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             today_wins, today_losses, today_pnl = 0, 0, 0
             filled_tickers = set(ticker_flows.keys())
@@ -391,7 +404,11 @@ class TradeIntelligence:
                     t_cost = ticker_flows.get(sticker, {}).get("total_cost", 0)
                     p_rev = ticker_flows.get(sticker, {}).get("pair_revenue", 0)
                     revenue = s.get("revenue", 0) or 0
-                    t_pnl = p_rev + revenue - t_cost
+                    if p_rev > 0:
+                        t_returned = p_rev
+                    else:
+                        t_returned = revenue
+                    t_pnl = t_returned - t_cost
                     today_pnl += t_pnl
                     if t_pnl > 0:
                         today_wins += 1

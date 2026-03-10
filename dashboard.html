@@ -689,7 +689,7 @@ function updateDashboard(data) {
   }
   document.getElementById('winLoss').textContent = pnlSub;
 
-  const positions = risk.positions || [];
+  const positions = Object.values(risk.positions || {});
   const eb = bot.exposure_breakdown || {};
   const activeExp = (eb.active_exposure_cents || positions.reduce((s, p) => s + (p.cost_cents || 0), 0)) / 100;
   const pendingExp = (eb.pending_settlement_cents || 0) / 100;
