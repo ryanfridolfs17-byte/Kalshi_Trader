@@ -125,14 +125,8 @@ def main():
                         print("  [EXIT] HIGH: %s - %s" % (ticker, reason))
                         _execute_exit(maker, risk, ticker, positions_dict.get(ticker, {}))
 
-                # Stamp positions as reviewed (for dashboard stale alert)
-                now_iso = datetime.now(timezone.utc).isoformat()
-                for tk in positions_dict:
-                    if tk in risk.state["positions"]:
-                        risk.state["positions"][tk]["last_review"] = {
-                            "reviewed_at": now_iso,
-                        }
-                risk._save_state()
+                # Enrich positions with live data for dashboard
+                _review_positions(client, strategy, positions_dict, risk)
 
             # --- STEP 4: Scan weather markets ---
             weather_markets = scanner.scan_weather_markets()
@@ -308,6 +302,74 @@ def _fetch_observed_highs(markets, intel=None):
             "%s=%dF" % (c, t) for c, t in sorted(obs_highs.items())))
 
     return obs_highs
+
+
+
+def _review_positions(client, strategy, positions_dict, risk):
+    """Enrich positions with live market data for dashboard display."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    weather = getattr(strategy, "weather", None)
+
+    for tk, pos in positions_dict.items():
+        if tk not in risk.state["positions"]:
+            continue
+        review = {"reviewed_at": now_iso}
+
+        entry_price = pos.get("price_cents", 0)
+        side = pos.get("side", "")
+        contracts = pos.get("contracts", 1)
+        review["entry_price"] = entry_price
+        review["entry_edge"] = pos.get("edge")
+
+        # Fetch current market price from Kalshi
+        try:
+            mkt = client.get_market(tk)
+            if mkt and "market" in mkt:
+                mkt = mkt["market"]
+            if mkt:
+                if side == "yes":
+                    cur_price = mkt.get("yes_bid", 0) or 0
+                else:
+                    cur_price = mkt.get("no_bid", 0) or 0
+                if cur_price > 0:
+                    review["current_price"] = cur_price
+                    pnl_cents = (cur_price - entry_price) * contracts
+                    review["pnl_pct"] = pnl_cents / max(entry_price * contracts, 1)
+                    review["is_underwater"] = pnl_cents < 0
+        except Exception:
+            pass
+
+        # Get current forecast for weather positions
+        city_code = pos.get("city_code", "")
+        if city_code and weather:
+            try:
+                mkt_dict = {"ticker": tk, "title": "", "subtitle": "", "event_ticker": tk}
+                parsed = weather.parse_market_bucket(mkt_dict)
+                dist = weather.get_temperature_distribution(city_code)
+                if dist:
+                    review["forecast_mean"] = dist.get("mean", dist.get("raw_forecast_mean"))
+                    review["forecast_min"] = dist.get("min")
+                    review["forecast_max"] = dist.get("max")
+                    review["forecast_confidence"] = dist.get("confidence")
+                    review["ensemble_members"] = dist.get("total_members")
+                    if parsed:
+                        prob = weather.calculate_bucket_probability(
+                            dist, parsed["temp_low"], parsed["temp_high"])
+                        if prob is not None:
+                            mkt_price = review.get("current_price", entry_price)
+                            if side == "yes":
+                                cur_edge = prob - (mkt_price / 100.0)
+                            else:
+                                cur_edge = (1 - prob) - (mkt_price / 100.0)
+                            review["current_edge"] = cur_edge
+                            ent_edge = review.get("entry_edge")
+                            if ent_edge and ent_edge > 0:
+                                review["edge_decay_pct"] = 1 - (cur_edge / ent_edge)
+            except Exception:
+                pass
+
+        risk.state["positions"][tk]["last_review"] = review
+    risk._save_state()
 
 
 def _execute_exit(maker, risk, ticker, position):
