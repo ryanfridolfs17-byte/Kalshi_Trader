@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 import config
 
@@ -73,6 +74,171 @@ def _write_json(path, data):
             json.dump(data, f, indent=2)
     except Exception:
         pass
+
+
+def _default_risk_state():
+    return {
+        "positions": {},
+        "pending_orders": {},
+        "daily_pnl_cents": 0,
+        "daily_date": datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d"),
+        "consecutive_losses": 0,
+        "kill_switch_until": None,
+        "last_trade_time": None,
+        "trade_count_today": 0,
+        "total_exposure_cents": 0,
+        "observation_mode": False,
+        "observation_reason": "",
+    }
+
+
+def _merge_position(existing, incoming):
+    existing_contracts = int(existing.get("contracts", 0) or 0)
+    incoming_contracts = int(incoming.get("contracts", 0) or 0)
+    if incoming_contracts <= 0:
+        return existing
+
+    existing_cost = int(existing.get("cost_cents", 0) or 0)
+    incoming_cost = int(incoming.get("cost_cents", 0) or 0)
+    total_contracts = existing_contracts + incoming_contracts
+    total_cost = existing_cost + incoming_cost
+
+    merged = dict(existing)
+    merged.update(incoming)
+    merged["contracts"] = total_contracts
+    merged["cost_cents"] = total_cost
+    if total_contracts > 0:
+        merged["price_cents"] = int(round(float(total_cost) / float(total_contracts)))
+    return merged
+
+
+def _rebuild_risk_metrics(risk):
+    total_exposure = 0
+    city_exposure = {}
+
+    for pos in risk.get("positions", {}).values():
+        cost_cents = int(pos.get("cost_cents", 0) or 0)
+        total_exposure += cost_cents
+        city_code = pos.get("city_code", "")
+        if city_code:
+            city_exposure[city_code] = city_exposure.get(city_code, 0) + cost_cents
+
+    for order in risk.get("pending_orders", {}).values():
+        remaining_cost = int(order.get("remaining_cost_cents", 0) or 0)
+        total_exposure += remaining_cost
+        city_code = order.get("city_code", "")
+        if city_code:
+            city_exposure[city_code] = city_exposure.get(city_code, 0) + remaining_cost
+
+    risk["total_exposure_cents"] = total_exposure
+    risk["city_exposure"] = city_exposure
+    return risk
+
+
+def _normalize_risk_state(risk):
+    state = _default_risk_state()
+    if not isinstance(risk, dict):
+        return state
+
+    for key, value in risk.items():
+        if key not in ("positions", "pending_orders"):
+            state[key] = value
+
+    if "trade_count_today" not in risk and "daily_trade_count" in risk:
+        state["trade_count_today"] = int(risk.get("daily_trade_count", 0) or 0)
+    if "daily_pnl_cents" not in risk and "daily_loss_cents" in risk:
+        state["daily_pnl_cents"] = -abs(int(risk.get("daily_loss_cents", 0) or 0))
+    if not state.get("daily_date") and risk.get("last_reset_date"):
+        state["daily_date"] = risk.get("last_reset_date", "")
+    if not state.get("kill_switch_until") and risk.get("loss_pause_until"):
+        state["kill_switch_until"] = risk.get("loss_pause_until")
+
+    raw_positions = risk.get("positions", {})
+    if isinstance(raw_positions, dict):
+        position_rows = [(ticker, pos) for ticker, pos in raw_positions.items()]
+    elif isinstance(raw_positions, list):
+        position_rows = []
+        for pos in raw_positions:
+            if isinstance(pos, dict):
+                ticker = pos.get("ticker", "")
+                if ticker:
+                    position_rows.append((ticker, pos))
+    else:
+        position_rows = []
+
+    positions = {}
+    for ticker, pos in position_rows:
+        if not isinstance(pos, dict):
+            continue
+        ticker = pos.get("ticker", ticker) or ticker
+        if not ticker:
+            continue
+
+        normalized = dict(pos)
+        normalized["ticker"] = ticker
+        normalized["contracts"] = int(normalized.get("contracts", 0) or 0)
+        normalized["cost_cents"] = int(normalized.get("cost_cents", 0) or 0)
+        normalized["price_cents"] = int(normalized.get("price_cents", 0) or 0)
+        if normalized["contracts"] <= 0:
+            continue
+
+        existing = positions.get(ticker)
+        if existing and existing.get("side") == normalized.get("side"):
+            positions[ticker] = _merge_position(existing, normalized)
+        else:
+            positions[ticker] = normalized
+
+    raw_pending = risk.get("pending_orders", {})
+    if isinstance(raw_pending, dict):
+        pending_rows = raw_pending.items()
+    elif isinstance(raw_pending, list):
+        pending_rows = []
+        for order in raw_pending:
+            if isinstance(order, dict):
+                order_id = order.get("order_id", "")
+                if order_id:
+                    pending_rows.append((order_id, order))
+    else:
+        pending_rows = []
+
+    pending_orders = {}
+    for order_id, order in pending_rows:
+        if not isinstance(order, dict):
+            continue
+        order_id = order.get("order_id", order_id) or order_id
+        if not order_id:
+            continue
+
+        normalized = dict(order)
+        normalized["order_id"] = order_id
+        normalized["requested_contracts"] = int(
+            normalized.get("requested_contracts", normalized.get("contracts", 0)) or 0
+        )
+        normalized["remaining_contracts"] = int(
+            normalized.get("remaining_contracts", normalized["requested_contracts"]) or 0
+        )
+        normalized["filled_contracts"] = int(normalized.get("filled_contracts", 0) or 0)
+        normalized["remaining_cost_cents"] = int(
+            normalized.get(
+                "remaining_cost_cents",
+                int(normalized.get("price_cents", 0) or 0) * normalized["remaining_contracts"],
+            ) or 0
+        )
+        if normalized["remaining_contracts"] <= 0:
+            continue
+        pending_orders[order_id] = normalized
+
+    state["positions"] = positions
+    state["pending_orders"] = pending_orders
+    return _rebuild_risk_metrics(state)
+
+
+def _is_executed_buy_fill(trade):
+    if not isinstance(trade, dict):
+        return False
+    if trade.get("entry_type"):
+        return trade.get("entry_type") == "buy_fill"
+    return trade.get("status") in ("live_filled", "executed")
 
 
 # ═══════════════════════════════════════════════════════
@@ -167,10 +333,11 @@ def _check_alerts(bot_status, risk_state, pending):
             pass
 
     # 4. Daily loss limit hit
-    if risk_state.get("daily_loss_cents", 0) >= config.DAILY_LOSS_LIMIT_CENTS:
+    daily_pnl_cents = int(risk_state.get("daily_pnl_cents", 0) or 0)
+    if daily_pnl_cents <= -config.DAILY_LOSS_LIMIT_CENTS:
         _alert_once("daily_loss",
             "Daily loss limit hit",
-            f"Daily losses have reached ${risk_state['daily_loss_cents']/100:.2f} "
+            f"Daily P&L has reached ${daily_pnl_cents/100:.2f} "
             f"(limit: ${config.DAILY_LOSS_LIMIT_CENTS/100:.2f}).\n"
             f"No more trades will execute today.")
     else:
@@ -185,7 +352,7 @@ def _build_health_response():
     """Build the /api/health response."""
     now = datetime.now(timezone.utc)
     bot_status = _read_json(STATE_FILES["bot_status"], default={})
-    risk_state = _read_json(STATE_FILES["risk"], default={})
+    risk_state = _normalize_risk_state(_read_json(STATE_FILES["risk"], default={}))
     pending = []  # Pending trades removed in v4
 
     # Run alert checks
@@ -280,13 +447,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     state[key] = _read_json(filepath, default=[])
                 else:
                     state[key] = _read_json(filepath, default={})
+            state["risk"] = _normalize_risk_state(state.get("risk", {}))
             self._send_json(state)
 
         elif path == "/api/pending":
             self._send_json([])  # Pending trades removed in v4
 
         elif path == "/api/reports":
-            self._send_json(_read_json(STATE_FILES["reports"], default=[]))
+            self._send_json([])
 
         elif path == "/api/fills":
             # Fetch recent fills from Kalshi API (buys + sells)
@@ -339,11 +507,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         elif path == "/api/resume":
             # Resume trading: clear observation mode in risk_state.json
-            risk = _read_json(STATE_FILES["risk"], default={})
+            risk = _normalize_risk_state(_read_json(STATE_FILES["risk"], default={}))
             risk["observation_mode"] = False
             risk["observation_reason"] = ""
             risk["consecutive_losses"] = 0
-            risk["loss_pause_until"] = None
+            risk["kill_switch_until"] = None
             _write_json(STATE_FILES["risk"], risk)
             _clear_alert("observation")
             self._send_json({"ok": True, "action": "resumed"})
@@ -363,16 +531,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             failed_tickers = {t.get("ticker") for t in failed_trades}
             kept_tickers = {t.get("ticker") for t in kept_trades}
             orphaned_tickers = failed_tickers - kept_tickers  # only tickers with zero filled trades
-            risk = _read_json(STATE_FILES["risk"], default={})
-            positions = risk.get("positions", [])
-            risk["positions"] = [p for p in positions if p.get("ticker") not in orphaned_tickers]
-            # Recalculate city exposure from remaining positions
-            risk["city_exposure"] = {}
-            for p in risk["positions"]:
-                city = p.get("city_code", "")
-                if city:
-                    risk["city_exposure"][city] = risk["city_exposure"].get(city, 0) + p.get("cost_cents", 0)
-            risk["daily_trade_count"] = max(0, risk.get("daily_trade_count", 0) - removed_count)
+            risk = _normalize_risk_state(_read_json(STATE_FILES["risk"], default={}))
+            risk["positions"] = {
+                ticker: pos
+                for ticker, pos in risk.get("positions", {}).items()
+                if ticker not in orphaned_tickers
+            }
+            risk["pending_orders"] = {
+                order_id: order
+                for order_id, order in risk.get("pending_orders", {}).items()
+                if order.get("ticker") not in orphaned_tickers
+            }
+            _rebuild_risk_metrics(risk)
             _write_json(STATE_FILES["risk"], risk)
 
             self._send_json({
@@ -385,55 +555,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         elif path == "/api/sync-positions":
             # Consolidate fragmented position entries and remove phantoms
-            risk = _read_json(STATE_FILES["risk"], default={})
-            positions = risk.get("positions", [])
+            risk = _normalize_risk_state(_read_json(STATE_FILES["risk"], default={}))
+            positions = risk.get("positions", {})
             trades = _read_json(STATE_FILES["trades"], default=[])
 
-            # Build set of (ticker, side) pairs that have live_filled trades
-            filled_pairs = {(t["ticker"], t["side"]) for t in trades if t.get("status") == "live_filled"}
+            filled_pairs = {
+                (t.get("ticker", ""), t.get("side", ""))
+                for t in trades
+                if _is_executed_buy_fill(t)
+            }
 
-            # Group positions by (ticker, side) and merge
-            merged = {}
-            for p in positions:
-                ticker = p.get("ticker", "")
-                side = p.get("side", "")
-                # Skip phantom positions with no matching filled trade for this side
-                if (ticker, side) not in filled_pairs:
-                    continue
-                key = (ticker, side)
-                if key in merged:
-                    merged[key]["contracts"] += p.get("contracts", 1)
-                    merged[key]["cost_cents"] += p.get("cost_cents", 0)
-                    merged[key]["expected_profit_cents"] = merged[key].get("expected_profit_cents", 0) + p.get("expected_profit_cents", 0)
-                else:
-                    merged[key] = dict(p)  # copy
+            if filled_pairs:
+                risk["positions"] = {
+                    ticker: pos
+                    for ticker, pos in positions.items()
+                    if (ticker, pos.get("side", "")) in filled_pairs
+                }
 
-            # Also merge trades into positions: count filled trades per (ticker, side)
-            trade_totals = {}
-            for t in trades:
-                if t.get("status") != "live_filled":
-                    continue
-                key = (t["ticker"], t["side"])
-                if key not in trade_totals:
-                    trade_totals[key] = {"contracts": 0, "cost_cents": 0}
-                trade_totals[key]["contracts"] += t.get("contracts", 1)
-                trade_totals[key]["cost_cents"] += t.get("cost_cents", 0)
-
-            # Reconcile: use trade totals as source of truth for contracts/cost
-            for key, totals in trade_totals.items():
-                if key in merged:
-                    merged[key]["contracts"] = totals["contracts"]
-                    merged[key]["cost_cents"] = totals["cost_cents"]
-
-            consolidated = list(merged.values())
-            risk["positions"] = consolidated
-
-            # Recalculate city exposure
-            risk["city_exposure"] = {}
-            for p in consolidated:
-                city = p.get("city_code", "")
-                if city:
-                    risk["city_exposure"][city] = risk["city_exposure"].get(city, 0) + p.get("cost_cents", 0)
+            consolidated = list(risk["positions"].values())
+            _rebuild_risk_metrics(risk)
 
             _write_json(STATE_FILES["risk"], risk)
             self._send_json({
@@ -462,23 +602,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
             total_payout_cents = int(total_payout_cents)
 
             # Find the position in risk state
-            risk = _read_json(STATE_FILES["risk"], default={})
-            positions = risk.get("positions", [])
+            risk = _normalize_risk_state(_read_json(STATE_FILES["risk"], default={}))
+            positions = risk.get("positions", {})
             pos = None
-            pos_idx = None
+            pos_key = None
             # Prefer exact (ticker, side) match if side was provided
             if close_side:
-                for i, p in enumerate(positions):
+                for tk, p in positions.items():
                     if p.get("ticker") == ticker and p.get("side") == close_side:
                         pos = p
-                        pos_idx = i
+                        pos_key = tk
                         break
             # Fallback: match by ticker only
             if pos is None:
-                for i, p in enumerate(positions):
+                for tk, p in positions.items():
                     if p.get("ticker") == ticker:
                         pos = p
-                        pos_idx = i
+                        pos_key = tk
                         break
 
             if pos is None:
@@ -494,16 +634,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             realized_pnl = total_payout_cents - cost_cents
 
             # Remove position from risk state
-            positions.pop(pos_idx)
+            positions.pop(pos_key, None)
             risk["positions"] = positions
-            # Update city exposure
-            if city_code and city_code in risk.get("city_exposure", {}):
-                risk["city_exposure"][city_code] = max(
-                    0, risk["city_exposure"][city_code] - cost_cents
-                )
-            risk["total_exposure_cents"] = max(
-                0, risk.get("total_exposure_cents", 0) - cost_cents
-            )
+            _rebuild_risk_metrics(risk)
             _write_json(STATE_FILES["risk"], risk)
 
             # NOTE: P&L history is NOT updated here. _sync_pnl_from_kalshi()
@@ -512,6 +645,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # Add exit record to trade history
             trades = _read_json(STATE_FILES["trades"], default=[])
             trades.append({
+                "entry_type": "manual_close",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "ticker": ticker,
                 "side": side,
@@ -560,6 +694,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # Add to trade history
             trades = _read_json(STATE_FILES["trades"], default=[])
             trades.append({
+                "entry_type": "manual_trade",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "ticker": description,
                 "side": "",
@@ -713,20 +848,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         elif path == "/api/reset":
             # Wipe all runtime state files to start fresh
-            from datetime import datetime as _dt
             clean_state = {
                 "trades": [],
-                "risk": {
-                    "daily_loss_cents": 0,
-                    "daily_trade_count": 0,
-                    "last_reset_date": _dt.now().strftime("%Y-%m-%d"),
-                    "last_trade_time": None,
-                    "positions": [],
-                    "consecutive_losses": 0,
-                    "loss_pause_until": None,
-                    "city_exposure": {},
-                    "total_exposure_cents": 0,
-                },
+                "risk": _default_risk_state(),
                 "pnl": {
                     "trades": [],
                     "total_invested_cents": 0,
@@ -735,8 +859,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "wins": 0,
                     "losses": 0,
                 },
-                "pending": [],
+                "maker": {},
+                "learning": {},
                 "bot_status": {},
+                "scan_log": [],
             }
             for key, default in clean_state.items():
                 if key in STATE_FILES:
