@@ -186,7 +186,7 @@ def _build_health_response():
     now = datetime.now(timezone.utc)
     bot_status = _read_json(STATE_FILES["bot_status"], default={})
     risk_state = _read_json(STATE_FILES["risk"], default={})
-    pending = _read_json(STATE_FILES["pending"], default=[])
+    pending = []  # Pending trades removed in v4
 
     # Run alert checks
     _check_alerts(bot_status, risk_state, pending)
@@ -276,14 +276,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path == "/api/state":
             state = {}
             for key, filepath in STATE_FILES.items():
-                if key in ("trades", "pending", "reports", "attribution", "analysis", "scan_log"):
+                if key in ("trades", "reports", "attribution", "analysis", "scan_log"):
                     state[key] = _read_json(filepath, default=[])
                 else:
                     state[key] = _read_json(filepath, default={})
             self._send_json(state)
 
         elif path == "/api/pending":
-            self._send_json(_read_json(STATE_FILES["pending"], default=[]))
+            self._send_json([])  # Pending trades removed in v4
 
         elif path == "/api/reports":
             self._send_json(_read_json(STATE_FILES["reports"], default=[]))
@@ -328,36 +328,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not trade_id:
                 self._send_json({"error": "Missing trade id"}, 400)
                 return
-            pending = _read_json(STATE_FILES["pending"], default=[])
-            found = False
-            for trade in pending:
-                if trade.get("id") == trade_id and trade.get("status") == "pending":
-                    trade["status"] = "approved"
-                    found = True
-                    break
-            if found:
-                _write_json(STATE_FILES["pending"], pending)
-                self._send_json({"ok": True, "action": "approved"})
-            else:
-                self._send_json({"error": "Trade not found or already processed"}, 404)
+            self._send_json({"error": "Pending trades not supported in v4"}, 404)
 
         elif path == "/api/reject":
             trade_id = payload.get("id")
             if not trade_id:
                 self._send_json({"error": "Missing trade id"}, 400)
                 return
-            pending = _read_json(STATE_FILES["pending"], default=[])
-            found = False
-            for trade in pending:
-                if trade.get("id") == trade_id and trade.get("status") == "pending":
-                    trade["status"] = "rejected"
-                    found = True
-                    break
-            if found:
-                _write_json(STATE_FILES["pending"], pending)
-                self._send_json({"ok": True, "action": "rejected"})
-            else:
-                self._send_json({"error": "Trade not found or already processed"}, 404)
+            self._send_json({"error": "Pending trades not supported in v4"}, 404)
 
         elif path == "/api/resume":
             # Resume trading: clear observation mode in risk_state.json
