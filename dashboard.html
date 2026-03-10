@@ -732,8 +732,11 @@ function updateDashboard(data) {
     posBody.innerHTML = positions.map((p, idx) => {
       const age = toET(p.timestamp) + ' (' + timeSince(p.timestamp) + ')';
       const desc = p.market_description || p.title || shortTicker(p.ticker);
-      const edgePct = p.edge ? (p.edge * 100).toFixed(1) + '%' : '-';
-      const expProfit = p.expected_profit_cents ? ((p.expected_profit_cents >= 0 ? '+$' : '-$') + Math.abs(p.expected_profit_cents / 100).toFixed(2)) : '-';
+      const edgeVal = p.edge || (p.last_review || {}).current_edge || (p.last_review || {}).entry_edge;
+      const edgePct = edgeVal ? (edgeVal * 100).toFixed(1) + '%' : '-';
+      let expProfit = '-';
+      if (p.expected_profit_cents) { expProfit = (p.expected_profit_cents >= 0 ? '+$' : '-$') + Math.abs(p.expected_profit_cents / 100).toFixed(2); }
+      else if (edgeVal && p.cost_cents) { const ep = edgeVal * p.cost_cents; expProfit = (ep >= 0 ? '+$' : '-$') + Math.abs(ep / 100).toFixed(2); }
       const expClass = (p.expected_profit_cents || 0) >= 0 ? 'green' : 'amber';
       const mtype = (p.city_code === 'SP500' || (p.ticker||'').startsWith('KXINX')) ? 'sp500' : 'weather';
       const mtypeLabel = mtype === 'sp500' ? 'S&P' : 'WX';

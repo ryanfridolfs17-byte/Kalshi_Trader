@@ -336,8 +336,8 @@ def _review_positions(client, strategy, positions_dict, risk):
                     pnl_cents = (cur_price - entry_price) * contracts
                     review["pnl_pct"] = pnl_cents / max(entry_price * contracts, 1)
                     review["is_underwater"] = pnl_cents < 0
-        except Exception:
-            pass
+        except Exception as e:
+            print("  [REVIEW] Market fetch error for %s: %s" % (tk, e))
 
         # Get current forecast for weather positions
         city_code = pos.get("city_code", "")
@@ -345,7 +345,8 @@ def _review_positions(client, strategy, positions_dict, risk):
             try:
                 mkt_dict = {"ticker": tk, "title": "", "subtitle": "", "event_ticker": tk}
                 parsed = weather.parse_market_bucket(mkt_dict)
-                dist = weather.get_temperature_distribution(city_code)
+                target_date = parsed.get("target_date") if parsed else None
+                dist = weather.get_temperature_distribution(city_code, target_date=target_date)
                 if dist:
                     review["forecast_mean"] = dist.get("mean", dist.get("raw_forecast_mean"))
                     review["forecast_min"] = dist.get("min")
@@ -365,8 +366,8 @@ def _review_positions(client, strategy, positions_dict, risk):
                             ent_edge = review.get("entry_edge")
                             if ent_edge and ent_edge > 0:
                                 review["edge_decay_pct"] = 1 - (cur_edge / ent_edge)
-            except Exception:
-                pass
+            except Exception as e:
+                print("  [REVIEW] Forecast error for %s: %s" % (tk, e))
 
         risk.state["positions"][tk]["last_review"] = review
     risk._save_state()
