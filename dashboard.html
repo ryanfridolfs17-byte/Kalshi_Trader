@@ -675,12 +675,14 @@ function updateDashboard(data) {
   // Account P&L (balance - deposits = true P&L)
   // Fall back to realized P&L if account_pnl not available
   const accountPnl = pnl.account_pnl_cents != null ? pnl.account_pnl_cents / 100 : null;
-  const realizedPnl = (pnl.total_profit_cents || 0) / 100;
+  const openCost = (pnl.open_position_cost_cents || 0) / 100;
+  // True realized = account P&L + money still at risk in open positions
+  const realizedPnl = accountPnl != null ? (accountPnl + openCost) : (pnl.total_profit_cents || 0) / 100;
   const displayPnl = accountPnl != null ? accountPnl : realizedPnl;
   document.getElementById('totalPnl').textContent = (displayPnl >= 0 ? '+$' : '-$') + Math.abs(displayPnl).toFixed(2);
   document.getElementById('totalPnl').className = 'card-value ' + (displayPnl >= 0 ? 'green' : 'red');
   let pnlSub = (pnl.wins || 0) + 'W / ' + (pnl.losses || 0) + 'L';
-  if (accountPnl != null) {
+  if (accountPnl != null && openCost > 0) {
     pnlSub += ' | Realized: ' + (realizedPnl >= 0 ? '+$' : '-$') + Math.abs(realizedPnl).toFixed(2);
   }
   if (pnl.kalshi_synced && pnl.last_sync) {
@@ -750,11 +752,11 @@ function updateDashboard(data) {
       let unrealPnlHtml = '<span style="color:var(--text-secondary)">-</span>';
       if (hasReview && rv.current_price != null) {
         livePriceHtml = rv.current_price + '&cent;';
-        const entryPer = p.cost_cents / Math.max(p.contracts, 1);
+        const entryPer = rv.entry_price != null ? rv.entry_price : (p.cost_cents / Math.max(p.contracts, 1));
         const currentVal = rv.current_price * p.contracts;
         // current_price is the bid for our side (yes_bid or no_bid),
         // so P&L = (sell price - buy price) for both YES and NO.
-        const unrealCents = (rv.current_price - rv.entry_price) * p.contracts;
+        const unrealCents = (rv.current_price - entryPer) * p.contracts;
         const unrealClass = unrealCents >= 0 ? 'green' : 'red';
         const unrealSign = unrealCents >= 0 ? '+$' : '-$';
         unrealPnlHtml = `<span class="${unrealClass}">${unrealSign}${Math.abs(unrealCents / 100).toFixed(2)}</span>`;
@@ -878,7 +880,7 @@ function updateDashboard(data) {
     trEmpty.style.display = 'none';
     trBody.innerHTML = recentTrades.map(t => {
       const time = toET(t.timestamp);
-      const conf = t.confirmation || '';
+      const conf = t.confirmation || t.confirmation_verdict || '';
       const confClass = conf === 'CONFIRMED_OUTCOME' ? 'badge-confirmed' : conf === 'STRONG' ? 'badge-strong' : conf === 'CONFIRM' ? 'badge-confirm' : 'badge-weak';
       let statusBadge = '';
       if (t.settled && t.result === 'expired_dry_run') statusBadge = '<span class="badge badge-dry">expired</span>';
@@ -888,16 +890,33 @@ function updateDashboard(data) {
       else statusBadge = '<span class="badge badge-dry">' + (t.status||'open') + '</span>';
       const mtype = (t.city_code === 'SP500' || (t.strategy||'').includes('SP500') || (t.ticker||'').startsWith('KXINX')) ? 'sp500' : 'weather';
       const mtypeLabel = mtype === 'sp500' ? 'S&P' : 'WX';
+      const hasDetails = t.model_means || t.predicted_high || t.our_prob || t.target_date;
+      const detailsLink = hasDetails ? ` <span class="review-toggle" onclick="toggleTradeDetail(${recentTrades.indexOf(t)})">[Details]</span>` : '';
+      let detailRow = '';
+      if (hasDetails) {
+        let detailParts = [];
+        if (t.target_date) detailParts.push('<b>Target:</b> ' + t.target_date);
+        if (t.predicted_high != null) detailParts.push('<b>Predicted High:</b> ' + t.predicted_high.toFixed(1) + 'F');
+        if (t.our_prob != null) detailParts.push('<b>Our Prob:</b> ' + (t.our_prob * 100).toFixed(1) + '%');
+        if (t.model_spread != null) detailParts.push('<b>Model Spread:</b> ' + t.model_spread.toFixed(1) + 'F');
+        if (t.strategy) detailParts.push('<b>Strategy:</b> ' + t.strategy);
+        if (t.model_means && typeof t.model_means === 'object') {
+          const models = Object.entries(t.model_means).map(([m,v]) => m.replace('_seamless','').replace('_ifs025','') + '=' + (typeof v === 'number' ? v.toFixed(1) : v) + 'F').join(', ');
+          detailParts.push('<b>Models:</b> ' + models);
+        }
+        detailRow = `<tr class="review-row" id="trade-detail-${recentTrades.indexOf(t)}" style="display:none">
+          <td colspan="8"><div class="review-panel" style="font-size:12px;line-height:1.8">${detailParts.join(' &nbsp;|&nbsp; ')}</div></td></tr>`;
+      }
       return `<tr>
         <td><span class="badge badge-${mtype}">${mtypeLabel}</span></td>
         <td style="color:var(--text-secondary);font-size:12px">${time}</td>
-        <td style="font-weight:600;font-size:12px" title="${t.ticker}">${t.market_description || t.title || shortTicker(t.ticker)}</td>
+        <td style="font-weight:600;font-size:12px" title="${t.ticker}">${t.market_description || t.title || shortTicker(t.ticker)}${detailsLink}</td>
         <td>${(t.side||'').toUpperCase()}</td>
         <td>${t.price_cents}¢ x${t.contracts}</td>
         <td>${t.edge ? (t.edge*100).toFixed(1)+'%' : '-'}</td>
         <td>${t.strategy === 'MANUAL_EXIT' ? '<span class="badge badge-dry">EXIT</span>' : '<span class="badge '+confClass+'">'+(conf||'-')+'</span>'}</td>
         <td>${statusBadge}</td>
-      </tr>`;
+      </tr>${detailRow}`;
     }).join('');
   } else {
     trEmpty.style.display = 'block';
@@ -1467,6 +1486,11 @@ function classifyPosition(p) {
 
 function toggleReview(idx) {
   const row = document.getElementById('review-' + idx);
+  if (row) row.style.display = row.style.display === 'none' ? '' : 'none';
+}
+
+function toggleTradeDetail(idx) {
+  const row = document.getElementById('trade-detail-' + idx);
   if (row) row.style.display = row.style.display === 'none' ? '' : 'none';
 }
 
