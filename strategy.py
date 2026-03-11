@@ -86,6 +86,10 @@ class Strategy:
                 print(f"  [SIGNAL] {_t} ARB edge={_e:.1%}")
                 return arb
 
+        # Propagate the rich skip from weather strategy (has forecast data)
+        if signal and signal.get("signal") == "skip":
+            return signal
+
         return self._skip(f"No signal for {ticker}", ticker)
 
     # ===========================================================
@@ -121,7 +125,8 @@ class Strategy:
         vol24 = market.get("volume_24h", 0) or 0
         vol = market.get("volume", 0) or 0
         if vol == 0 and vol24 == 0:
-            return None
+            return self._skip("no_volume", ticker,
+                              city_code=city_code, target_date=target_date)
 
         # Step 3: Fetch ensemble distribution
         model_weights, city_bias_correction = self._get_learning_adjustments(city_code)
@@ -132,14 +137,19 @@ class Strategy:
             city_bias_f=city_bias_correction,
         )
         if not distribution:
-            return None
+            return self._skip("ensemble_fetch_failed", ticker,
+                              city_code=city_code, target_date=target_date)
 
         # Step 4: Calculate bucket probability
         our_prob = self.weather.calculate_bucket_probability(
             distribution, temp_low, temp_high
         )
         if our_prob is None:
-            return None
+            return self._skip("bucket_prob_failed", ticker,
+                              city_code=city_code, target_date=target_date,
+                              predicted_high=distribution.get("forecasted_high_mean"),
+                              model_spread=distribution.get("model_spread"),
+                              model_means=distribution.get("model_means", {}))
 
         yes_price = market.get("yes_ask", 0) or ref_price
         no_price = market.get("no_ask", 0) or max(1, 100 - yes_price)
@@ -150,8 +160,22 @@ class Strategy:
         no_prob = 1.0 - our_prob
         no_edge = no_prob - no_market_prob
 
+        # Common fields for rich skip signals (post-distribution)
+        forecast_mean = distribution.get("forecasted_high_mean")
+        model_spread = distribution.get("model_spread", 0)
+        model_means = distribution.get("model_means", {})
+        std_dev_val = distribution.get("std_dev")
+        _dist_fields = dict(
+            city_code=city_code, target_date=target_date,
+            predicted_high=forecast_mean, model_spread=model_spread,
+            model_means=model_means, std_dev=std_dev_val,
+            our_prob=round(our_prob, 4),
+            market_prob=round(yes_market_prob, 4),
+            strategy="S1-Weather",
+        )
+
         if yes_edge <= 0 and no_edge <= 0:
-            return None
+            return self._skip("no_edge", ticker, **_dist_fields)
 
         if yes_edge >= no_edge:
             side = "yes"
@@ -178,9 +202,17 @@ class Strategy:
         local_hour = local_now.hour
         is_next_day = target_date > local_date
 
+        # Helper: side-aware skip fields (available after side selection)
+        def _side_skip(reason, **extra):
+            fields = dict(_dist_fields, side=side, edge=round(edge, 4),
+                          fee_adjusted_edge=round(fee_adjusted_edge, 4),
+                          price_cents=price_cents, market_prob=round(market_prob, 4))
+            fields.update(extra)
+            return self._skip(reason, ticker, **fields)
+
         # Block same-day trades before 6 AM local -- overnight forecasts are stale
         if not is_next_day and local_hour < 6:
-            return None
+            return _side_skip("before_6am_local")
 
         # Convergence score (same-day afternoon only)
         convergence_score = 0.0
@@ -194,22 +226,22 @@ class Strategy:
             local_hour=local_hour if not is_next_day else None,
             convergence_score=convergence_score)
         if edge < min_edge:
-            return None
+            return _side_skip("edge_below_threshold",
+                              min_edge_required=round(min_edge, 4))
         if fee_adjusted_edge < config.FEE_ADJUSTED_MIN_EDGE:
-            return None
+            return _side_skip("fee_adj_edge_below_threshold")
 
         # Price guardrails
         if price_cents < config.LONGSHOT_FLOOR_CENTS:
-            return None
+            return _side_skip("longshot_floor")
         if price_cents > config.NEAR_CERTAINTY_CAP_CENTS:
-            return None
+            return _side_skip("near_certainty_cap")
 
         # Model divergence check (side-aware)
-        model_spread = distribution.get("model_spread", 0)
         if side == "yes" and model_spread > config.MAX_MODEL_DIVERGENCE_YES_F:
-            return None
+            return _side_skip("model_divergence_yes")
         if side == "no" and model_spread > config.MAX_MODEL_DIVERGENCE_NO_F:
-            return None
+            return _side_skip("model_divergence_no")
 
         # Step 8: Confirm signal
         city_info = CITIES.get(city_code, {})
@@ -225,7 +257,8 @@ class Strategy:
         conf_mult = confirmation["size_multiplier"]
 
         if verdict == "REJECT":
-            return None
+            return _side_skip("confirmation_reject",
+                              confirmation_verdict="REJECT")
 
         # Step 9: NO-side guards
         if side == "no":
@@ -233,15 +266,16 @@ class Strategy:
                 distribution, temp_low, temp_high, price_cents, verdict
             )
             if not passed:
-                return None
+                return _side_skip("no_side_guard",
+                                  confirmation_verdict=verdict)
 
         # Rounding buffer (YES and NO)
-        forecast_mean = distribution["forecasted_high_mean"]
         rounding_mult = self._rounding_buffer_multiplier(
             forecast_mean, temp_low, temp_high, side
         )
         if rounding_mult == 0.0:
-            return None
+            return _side_skip("rounding_buffer",
+                              confirmation_verdict=verdict)
 
         # Step 10: Kelly sizing
         contracts = self._kelly_size(
@@ -249,7 +283,8 @@ class Strategy:
             conf_mult * rounding_mult, model_spread=model_spread
         )
         if contracts <= 0:
-            return None
+            return _side_skip("kelly_undersized",
+                              confirmation_verdict=verdict)
 
         # Convergence sizing boost
         if convergence_score > config.CONVERGENCE_SCORE_THRESHOLD:
@@ -265,14 +300,15 @@ class Strategy:
         payout_per = 100 - price_cents
         total_payout = (contracts * payout_per) / 100.0
         if total_payout < config.MIN_PAYOUT_DOLLARS:
-            return None
+            return _side_skip("min_payout",
+                              confirmation_verdict=verdict,
+                              suggested_contracts=contracts)
 
         # Model convergence boost (sizing only, not edge)
         if model_spread < config.MODEL_CONVERGENCE_BOOST_F:
             contracts = max(1, int(contracts * 1.2))
 
         total_members = distribution.get("total_members", "?")
-        std_dev_val = distribution.get("std_dev")
 
         return {
             "signal": "buy",
@@ -733,9 +769,9 @@ class Strategy:
             print("  [CONVERGENCE] %s score=%.2f" % (city_code, score))
         return score
 
-    def _skip(self, reason, ticker=""):
-        """Return a skip signal."""
-        return {
+    def _skip(self, reason, ticker="", **kwargs):
+        """Return a skip signal. Extra kwargs override defaults for learning."""
+        base = {
             "signal": "skip",
             "ticker": ticker,
             "side": "",
@@ -755,4 +791,7 @@ class Strategy:
             "predicted_high": None,
             "model_spread": None,
             "std_dev": None,
+            "skip_reason": reason,
         }
+        base.update(kwargs)
+        return base

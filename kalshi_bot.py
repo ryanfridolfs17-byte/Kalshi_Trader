@@ -144,12 +144,22 @@ def main():
 
             # --- STEP 6: Evaluate all markets for edge ---
             buy_signals = []
+            all_evaluated = []
             for market in weather_markets:
                 city_code = market.get("_city_code", "")
                 todays_high = obs_highs.get(city_code)
                 signal = strategy.evaluate_market(market, todays_high=todays_high)
                 if signal and signal.get("signal") == "buy":
                     buy_signals.append(signal)
+                # Capture all signals with forecast data for learning
+                if signal and signal.get("city_code") and signal.get("predicted_high") is not None:
+                    all_evaluated.append(signal)
+
+            # Snapshot all evaluated signals for scan reconciliation learning
+            try:
+                reviewer.capture_scan_snapshot(all_evaluated)
+            except Exception:
+                pass
 
             if not buy_signals:
                 print("  [BOT] No actionable signals this cycle")
