@@ -676,16 +676,16 @@ class TradeReviewer:
 
         # Print reconciliation summary
         print()
-        print("  ╔══════════════════════════════════════╗")
-        print("  ║       SCAN RECONCILIATION: %s   ║" % today)
-        print("  ╠══════════════════════════════════════╣")
-        print("  ║  Evaluated: %-3d markets w/ forecasts ║" % results["total_evaluated"])
-        print("  ║  Correct skips: %-3d                  ║" % results["correct_skips"])
-        print("  ║  Missed opportunities: %-3d           ║" % results["missed_opportunities"])
-        print("  ║  Missed profit: $%.2f               ║" % (results["missed_profit_potential_cents"] / 100.0))
-        print("  ║  Correct trades: %-3d                 ║" % results["correct_trades"])
-        print("  ║  Bad trades: %-3d                     ║" % results["bad_trades"])
-        print("  ╚══════════════════════════════════════╝")
+        print("  +======================================+")
+        print("  |       SCAN RECONCILIATION: %s   |" % today)
+        print("  +======================================+")
+        print("  |  Evaluated: %-3d markets w/ forecasts |" % results["total_evaluated"])
+        print("  |  Correct skips: %-3d                  |" % results["correct_skips"])
+        print("  |  Missed opportunities: %-3d           |" % results["missed_opportunities"])
+        print("  |  Missed profit: $%.2f               |" % (results["missed_profit_potential_cents"] / 100.0))
+        print("  |  Correct trades: %-3d                 |" % results["correct_trades"])
+        print("  |  Bad trades: %-3d                     |" % results["bad_trades"])
+        print("  +======================================+")
 
         if results["missed_by_guard"]:
             print("  [RECON] Missed by guard:")
@@ -783,7 +783,7 @@ class TradeReviewer:
             acc = stats.get("block_accuracy")
             total = stats.get("total_blocks", 0)
             if acc is not None and total >= 30 and acc < 0.60:
-                print("  [REVIEW] ⚠ GUARD WARNING: %s accuracy=%.0f%% "
+                print("  [REVIEW] [!] GUARD WARNING: %s accuracy=%.0f%% "
                       "(%d blocks, %d were winners)" % (
                           guard, acc * 100, total,
                           stats["would_have_won"]))
@@ -1089,17 +1089,17 @@ class TradeReviewer:
 
         # Print report to console
         print()
-        print("  ╔══════════════════════════════════════╗")
-        print("  ║       DAILY TRADE REVIEW: %s      ║" % today)
-        print("  ╠══════════════════════════════════════╣")
-        print("  ║  Record: %dW / %dL                    ║" % (wins, losses))
-        print("  ║  P&L: %+dc ($%+.2f)                ║" % (total_pnl, total_pnl / 100.0))
-        print("  ║  Avg Edge: Win=%.1f%% Loss=%.1f%%     ║" % (avg_win_edge * 100, avg_loss_edge * 100))
+        print("  +======================================+")
+        print("  |       DAILY TRADE REVIEW: %s      |" % today)
+        print("  +======================================+")
+        print("  |  Record: %dW / %dL                    |" % (wins, losses))
+        print("  |  P&L: %+dc ($%+.2f)                |" % (total_pnl, total_pnl / 100.0))
+        print("  |  Avg Edge: Win=%.1f%% Loss=%.1f%%     |" % (avg_win_edge * 100, avg_loss_edge * 100))
         prof = self.state.get("profitability", {})
         if prof.get("profit_factor") is not None:
-            print("  ║  Profit Factor: %-20s  ║" % ("%.2f" % prof["profit_factor"]))
-            print("  ║  Expectancy: %+.1fc/trade           ║" % prof.get("expectancy_cents", 0))
-        print("  ╚══════════════════════════════════════╝")
+            print("  |  Profit Factor: %-20s  |" % ("%.2f" % prof["profit_factor"]))
+            print("  |  Expectancy: %+.1fc/trade           |" % prof.get("expectancy_cents", 0))
+        print("  +======================================+")
 
         for city, cr in sorted(city_results.items()):
             print("  [REVIEW] %s: %dW/%dL, %+dc" % (

@@ -344,7 +344,7 @@ class WeatherEngine:
                 # Learned bias: negative = underpredicts → correction is positive
                 learned_bias = model_biases[quant_key]
                 correction = -learned_bias
-                print(f"  [WEATHER] {family_name}: learned bias {learned_bias:+.1f}°F → correction {correction:+.1f}°F")
+                print(f"  [WEATHER] {family_name}: learned bias {learned_bias:+.1f}F -> correction {correction:+.1f}F")
             elif is_winter and city_code in _WARM_CITY_BIAS:
                 # Fall back to per-city default (no learned data yet)
                 correction = _WARM_CITY_BIAS.get(city_code, 0.0)
@@ -396,10 +396,10 @@ class WeatherEngine:
         if cloud_data:
             if cloud_data["cloud_cover_pct"] > config.CLOUD_COVER_THRESHOLD_PCT:
                 cloud_adj = config.CLOUD_COVER_TEMP_BIAS_F
-                print(f"  [WEATHER] {city_code}: cloud cover {cloud_data['cloud_cover_pct']:.0f}% > {config.CLOUD_COVER_THRESHOLD_PCT}% → bias {cloud_adj:+.1f}°F")
+                print(f"  [WEATHER] {city_code}: cloud cover {cloud_data['cloud_cover_pct']:.0f}% > {config.CLOUD_COVER_THRESHOLD_PCT}% -> bias {cloud_adj:+.1f}F")
             if cloud_data["precipitation_mm"] > config.PRECIP_THRESHOLD_MM:
                 precip_adj = config.PRECIP_TEMP_BIAS_F
-                print(f"  [WEATHER] {city_code}: precip {cloud_data['precipitation_mm']:.1f}mm > {config.PRECIP_THRESHOLD_MM}mm → bias {precip_adj:+.1f}°F")
+                print(f"  [WEATHER] {city_code}: precip {cloud_data['precipitation_mm']:.1f}mm > {config.PRECIP_THRESHOLD_MM}mm -> bias {precip_adj:+.1f}F")
             total_weather_adj = cloud_adj + precip_adj
             if total_weather_adj != 0:
                 result["forecasted_high_mean"] = round(result["forecasted_high_mean"] + total_weather_adj, 1)
