@@ -38,6 +38,10 @@ class TradeReviewer:
             "patterns": {},
             "last_review_date": "",
             "actual_temps": {},
+            "scan_snapshots": {},
+            "scan_reconciliation": [],
+            "guard_stats": {},
+            "calibration": {},
         }
         for k, v in defaults.items():
             if k not in self.state:
@@ -68,6 +72,9 @@ class TradeReviewer:
         self._learn_forecast_bias(trade_log)
         self._learn_model_accuracy(trade_log)
         self._analyze_patterns(trade_log)
+        self._reconcile_scans(today)
+        self._analyze_guard_effectiveness()
+        self._analyze_calibration()
         self._generate_daily_report(trade_log, today)
 
         self.state["last_review_date"] = today
@@ -108,10 +115,68 @@ class TradeReviewer:
         """Returns learned per-model accuracy weights."""
         return dict(self.state.get("model_accuracy", {}))
 
+    def capture_scan_snapshot(self, all_signals):
+        """Called once per cycle with ALL evaluated signals (buy + skip).
+
+        Stores deduplicated snapshots per ticker per day. Keeps 7 days.
+        Only stores signals that have forecast data (city_code + predicted_high).
+        """
+        if not all_signals:
+            return
+
+        et_now = datetime.now(ZoneInfo("America/New_York"))
+        today = et_now.strftime("%Y-%m-%d")
+
+        if "scan_snapshots" not in self.state:
+            self.state["scan_snapshots"] = {}
+
+        day_snaps = self.state["scan_snapshots"].get(today, {})
+
+        for sig in all_signals:
+            ticker = sig.get("ticker", "")
+            if not ticker:
+                continue
+            # Only store signals with meaningful forecast data
+            if not sig.get("city_code") or sig.get("predicted_high") is None:
+                continue
+
+            day_snaps[ticker] = {
+                "ticker": ticker,
+                "city_code": sig.get("city_code", ""),
+                "target_date": sig.get("target_date", ""),
+                "signal": sig.get("signal", "skip"),
+                "side": sig.get("side", ""),
+                "edge": sig.get("edge", 0),
+                "our_prob": sig.get("our_prob", 0),
+                "market_prob": sig.get("market_prob", 0),
+                "price_cents": sig.get("price_cents", 0),
+                "predicted_high": sig.get("predicted_high"),
+                "model_means": sig.get("model_means", {}),
+                "model_spread": sig.get("model_spread"),
+                "skip_reason": sig.get("skip_reason"),
+                "confirmation_verdict": sig.get("confirmation_verdict", ""),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
+        self.state["scan_snapshots"][today] = day_snaps
+
+        # Prune to 7 days
+        all_dates = sorted(self.state["scan_snapshots"].keys())
+        while len(all_dates) > 7:
+            del self.state["scan_snapshots"][all_dates.pop(0)]
+
+        # Save periodically (not every cycle -- every 10th call)
+        cycle_count = getattr(self, "_scan_snap_counter", 0) + 1
+        self._scan_snap_counter = cycle_count
+        if cycle_count % 10 == 0:
+            self._save_state()
+
     def get_learning_summary(self):
         """Summary for dashboard /api/learning endpoint."""
         reports = self.state.get("daily_reports", [])
         latest_report = reports[-1] if reports else None
+        reconciliations = self.state.get("scan_reconciliation", [])
+        latest_recon = reconciliations[-1] if reconciliations else None
         return {
             "city_biases": self.state.get("city_biases", {}),
             "model_accuracy": self.state.get("model_accuracy", {}),
@@ -119,6 +184,9 @@ class TradeReviewer:
             "latest_report": latest_report,
             "total_snapshots": len(self.state.get("forecast_snapshots", [])),
             "last_review_date": self.state.get("last_review_date", ""),
+            "scan_reconciliation": latest_recon,
+            "guard_stats": self.state.get("guard_stats", {}),
+            "calibration": self.state.get("calibration", {}),
         }
 
     # ===========================================================
@@ -377,6 +445,318 @@ class TradeReviewer:
 
         patterns["losing_patterns"] = losing
         self.state["patterns"] = patterns
+
+    # ===========================================================
+    # SCAN RECONCILIATION
+    # ===========================================================
+
+    def _reconcile_scans(self, today):
+        """Reconcile today's scan snapshots against NWS actual temperatures.
+
+        For every market we evaluated today, check what actually happened.
+        Classifies each signal as: correct_skip, missed_opportunity,
+        correct_trade, bad_trade, or unknown.
+        """
+        day_snaps = self.state.get("scan_snapshots", {}).get(today, {})
+        if not day_snaps:
+            print("  [REVIEW] No scan snapshots for %s" % today)
+            return
+
+        # Fetch actuals for all cities evaluated today
+        city_dates = set()
+        for snap in day_snaps.values():
+            city = snap.get("city_code", "")
+            tdate = snap.get("target_date", "")
+            if city and tdate:
+                city_dates.add((city, tdate))
+
+        actuals = {}
+        for city, tdate in city_dates:
+            actual = self._get_actual_temp(city, tdate)
+            if actual is not None:
+                actuals["%s_%s" % (city, tdate)] = actual
+
+        # Classify each signal
+        results = {
+            "date": today,
+            "total_evaluated": len(day_snaps),
+            "correct_skips": 0,
+            "missed_opportunities": 0,
+            "correct_trades": 0,
+            "bad_trades": 0,
+            "unknown": 0,
+            "missed_by_guard": {},
+            "missed_profit_potential_cents": 0,
+            "forecast_accuracy": {},
+            "missed_details": [],
+        }
+
+        for snap in day_snaps.values():
+            city = snap.get("city_code", "")
+            tdate = snap.get("target_date", "")
+            actual = actuals.get("%s_%s" % (city, tdate))
+
+            if actual is None:
+                results["unknown"] += 1
+                continue
+
+            # Record forecast accuracy per city (deduped, keep last)
+            predicted = snap.get("predicted_high")
+            if predicted is not None and city:
+                results["forecast_accuracy"][city] = {
+                    "predicted": round(predicted, 1),
+                    "actual": actual,
+                    "error": round(predicted - actual, 1),
+                }
+
+            # Determine actual outcome for this ticker's bucket
+            ticker = snap.get("ticker", "")
+            would_yes_win = self._would_yes_win(ticker, actual)
+            if would_yes_win is None:
+                results["unknown"] += 1
+                continue
+
+            sig_type = snap.get("signal", "skip")
+            side = snap.get("side", "")
+            price = snap.get("price_cents", 0)
+
+            if sig_type == "buy":
+                # We traded this
+                if side == "yes":
+                    traded_wins = would_yes_win
+                else:
+                    traded_wins = not would_yes_win
+                if traded_wins:
+                    results["correct_trades"] += 1
+                else:
+                    results["bad_trades"] += 1
+            else:
+                # We skipped this -- would we have won?
+                if side == "yes":
+                    skip_would_win = would_yes_win
+                elif side == "no":
+                    skip_would_win = not would_yes_win
+                else:
+                    # No side selected (no edge either direction)
+                    results["correct_skips"] += 1
+                    continue
+
+                if skip_would_win and price > 0:
+                    results["missed_opportunities"] += 1
+                    payout = 100 - price
+                    results["missed_profit_potential_cents"] += payout
+                    guard = snap.get("skip_reason", "unknown")
+                    results["missed_by_guard"][guard] = \
+                        results["missed_by_guard"].get(guard, 0) + 1
+                    # Keep top 10 missed opportunities
+                    if len(results["missed_details"]) < 10:
+                        results["missed_details"].append({
+                            "ticker": ticker,
+                            "city": city,
+                            "side": side,
+                            "edge": snap.get("edge", 0),
+                            "price": price,
+                            "payout": payout,
+                            "guard": guard,
+                            "predicted": predicted,
+                            "actual": actual,
+                        })
+                else:
+                    results["correct_skips"] += 1
+
+        # Print reconciliation summary
+        print()
+        print("  ╔══════════════════════════════════════╗")
+        print("  ║       SCAN RECONCILIATION: %s   ║" % today)
+        print("  ╠══════════════════════════════════════╣")
+        print("  ║  Evaluated: %-3d markets w/ forecasts ║" % results["total_evaluated"])
+        print("  ║  Correct skips: %-3d                  ║" % results["correct_skips"])
+        print("  ║  Missed opportunities: %-3d           ║" % results["missed_opportunities"])
+        print("  ║  Missed profit: $%.2f               ║" % (results["missed_profit_potential_cents"] / 100.0))
+        print("  ║  Correct trades: %-3d                 ║" % results["correct_trades"])
+        print("  ║  Bad trades: %-3d                     ║" % results["bad_trades"])
+        print("  ╚══════════════════════════════════════╝")
+
+        if results["missed_by_guard"]:
+            print("  [RECON] Missed by guard:")
+            for guard, count in sorted(results["missed_by_guard"].items(),
+                                       key=lambda x: -x[1]):
+                print("    %s: %d" % (guard, count))
+
+        # Store (keep last 30 days)
+        self.state["scan_reconciliation"].append(results)
+        if len(self.state["scan_reconciliation"]) > 30:
+            self.state["scan_reconciliation"] = \
+                self.state["scan_reconciliation"][-30:]
+
+    def _would_yes_win(self, ticker, actual_temp):
+        """Given a ticker and actual temp, determine if YES wins.
+
+        Parses bucket boundaries from ticker name.
+        Returns True (YES wins), False (NO wins), or None (can't determine).
+        """
+        if not ticker or actual_temp is None:
+            return None
+        try:
+            # Ticker format: KXHIGH{CITY}-{DATE}-T{temp} or -B{temp}
+            parts = ticker.split("-")
+            if len(parts) < 3:
+                return None
+            bucket_part = parts[-1]  # e.g., T54, B63.5, T78
+
+            if bucket_part.startswith("T"):
+                # "T54" means ">54F" -- YES wins if actual > threshold
+                threshold = float(bucket_part[1:])
+                return actual_temp > threshold
+            elif bucket_part.startswith("B"):
+                # "B63.5" means "63-64F" bucket -- YES wins if in range
+                mid = float(bucket_part[1:])
+                temp_low = int(mid)
+                temp_high = temp_low + 1
+                return temp_low <= actual_temp <= temp_high
+        except (ValueError, IndexError):
+            pass
+        return None
+
+    def _analyze_guard_effectiveness(self):
+        """Analyze how effective each guard is at blocking losing trades.
+
+        Uses reconciliation data to compute per-guard accuracy.
+        """
+        guard_stats = {}
+        for recon in self.state.get("scan_reconciliation", []):
+            # Count guard blocks from missed_by_guard
+            for guard, count in recon.get("missed_by_guard", {}).items():
+                if guard not in guard_stats:
+                    guard_stats[guard] = {
+                        "total_blocks": 0,
+                        "would_have_won": 0,
+                        "would_have_lost": 0,
+                    }
+                guard_stats[guard]["would_have_won"] += count
+
+        # We need correct_skips per guard too -- but we only track
+        # missed_by_guard (winners blocked). For correct skips we need
+        # to aggregate from scan_snapshots vs actuals more carefully.
+        # For now, estimate from the reconciliation totals.
+        for recon in self.state.get("scan_reconciliation", []):
+            day_snaps = self.state.get("scan_snapshots", {}).get(
+                recon.get("date", ""), {})
+            for snap in day_snaps.values():
+                if snap.get("signal") != "skip":
+                    continue
+                guard = snap.get("skip_reason", "unknown")
+                if guard not in guard_stats:
+                    guard_stats[guard] = {
+                        "total_blocks": 0,
+                        "would_have_won": 0,
+                        "would_have_lost": 0,
+                    }
+                guard_stats[guard]["total_blocks"] += 1
+
+        # The would_have_won is already counted above from missed_by_guard.
+        # would_have_lost = total_blocks - would_have_won (for known outcomes).
+        for guard, stats in guard_stats.items():
+            stats["would_have_lost"] = max(
+                0, stats["total_blocks"] - stats["would_have_won"])
+            known = stats["would_have_won"] + stats["would_have_lost"]
+            if known > 0:
+                stats["block_accuracy"] = round(
+                    stats["would_have_lost"] / known, 3)
+            else:
+                stats["block_accuracy"] = None
+
+        self.state["guard_stats"] = guard_stats
+
+        # Print warnings for low-accuracy guards
+        for guard, stats in guard_stats.items():
+            acc = stats.get("block_accuracy")
+            total = stats.get("total_blocks", 0)
+            if acc is not None and total >= 30 and acc < 0.60:
+                print("  [REVIEW] ⚠ GUARD WARNING: %s accuracy=%.0f%% "
+                      "(%d blocks, %d were winners)" % (
+                          guard, acc * 100, total,
+                          stats["would_have_won"]))
+
+    def _analyze_calibration(self):
+        """Analyze probability calibration using ALL scan data.
+
+        Groups predictions into 10% buckets and compares predicted
+        probability vs actual outcome rate. Computes Brier score.
+        """
+        buckets = {}
+        for label in ["0-10%", "10-20%", "20-30%", "30-40%", "40-50%",
+                       "50-60%", "60-70%", "70-80%", "80-90%", "90-100%"]:
+            buckets[label] = {"predictions": 0, "actual_wins": 0}
+
+        brier_sum = 0.0
+        brier_count = 0
+
+        actuals_cache = self.state.get("actual_temps", {})
+
+        for day_date, day_snaps in self.state.get("scan_snapshots", {}).items():
+            for snap in day_snaps.values():
+                city = snap.get("city_code", "")
+                tdate = snap.get("target_date", "")
+                our_prob = snap.get("our_prob", 0)
+                ticker = snap.get("ticker", "")
+
+                if not city or not tdate or not ticker:
+                    continue
+
+                actual = actuals_cache.get("%s_%s" % (city, tdate))
+                if actual is None:
+                    actual = self._get_actual_temp(city, tdate)
+                if actual is None:
+                    continue
+
+                would_yes = self._would_yes_win(ticker, actual)
+                if would_yes is None:
+                    continue
+
+                outcome = 1.0 if would_yes else 0.0
+
+                # Brier score component
+                brier_sum += (our_prob - outcome) ** 2
+                brier_count += 1
+
+                # Bucket
+                pct = int(our_prob * 100)
+                if pct >= 100:
+                    label = "90-100%"
+                elif pct < 0:
+                    label = "0-10%"
+                else:
+                    low = (pct // 10) * 10
+                    label = "%d-%d%%" % (low, low + 10)
+
+                if label in buckets:
+                    buckets[label]["predictions"] += 1
+                    if would_yes:
+                        buckets[label]["actual_wins"] += 1
+
+        # Compute actual rates
+        for label, data in buckets.items():
+            if data["predictions"] > 0:
+                data["actual_rate"] = round(
+                    data["actual_wins"] / data["predictions"], 3)
+            else:
+                data["actual_rate"] = None
+
+        brier_score = round(brier_sum / brier_count, 4) if brier_count > 0 else None
+
+        self.state["calibration"] = {
+            "buckets": buckets,
+            "brier_score": brier_score,
+            "total_predictions": brier_count,
+        }
+
+        if brier_score is not None:
+            quality = "excellent" if brier_score < 0.15 else \
+                      "good" if brier_score < 0.20 else \
+                      "fair" if brier_score < 0.25 else "poor"
+            print("  [REVIEW] Calibration: Brier=%.4f (%s), %d predictions" % (
+                brier_score, quality, brier_count))
 
     # ===========================================================
     # DAILY REPORT

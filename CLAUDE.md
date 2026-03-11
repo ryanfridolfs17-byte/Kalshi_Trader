@@ -49,7 +49,7 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 | `weather_engine.py` | ~750 | 143 ensemble members (GFS 31, ECMWF 51, ICON 40, GEM 21) via Open-Meteo |
 | `signal_confirmer.py` | ~265 | 5-source voting. STRONG/CONFIRM/REJECT (no WEAK). NWS veto power. |
 | `risk_manager.py` | ~340 | 10 safety checks + SIZE-DOWN logic + settlement methods. State in `risk_state.json`. |
-| `trade_reviewer.py` | ~540 | Daily learning: per-city bias, model accuracy, NWS actual lookups, pattern analysis. State in `learning_state.json`. |
+| `trade_reviewer.py` | ~800 | Daily learning: per-city bias, model accuracy, NWS actual lookups, pattern analysis, scan reconciliation, guard effectiveness, probability calibration (Brier score). State in `learning_state.json`. |
 | `trade_intelligence.py` | ~760 | Exit logic, settlement P&L sync (single writer), NWS observations |
 | `maker_strategy.py` | ~260 | Limit orders at fair_value - spread_buffer. State in `maker_orders.json`. |
 | `dashboard.py` | ~780 | Web dashboard. `/api/health`, `/api/state`, `/api/force-exit` |
@@ -215,7 +215,10 @@ If weakest position edge < 3% (`REBALANCE_MAX_OLD_EDGE`) AND at max capacity: ex
 - **Single-writer P&L**: Only `sync_pnl_from_kalshi()` writes `pnl_history.json`.
 - **Single-writer learning**: Only `trade_reviewer._save_state()` writes `learning_state.json`.
 - **Learning = informational only**: Learned biases/weights are NOT auto-applied. Displayed in dashboard + daily report.
-- **Learning NWS lookup**: `trade_reviewer._get_actual_temp()` fetches actual highs from NWS (cached, 7-day limit). Enables bias/accuracy learning.
+- **Scan reconciliation**: `capture_scan_snapshot()` called every cycle with ALL evaluated signals (buy + skip). At 11 PM ET, `_reconcile_scans()` compares predictions against NWS actuals to classify correct_skips, missed_opportunities, correct_trades, bad_trades. `_analyze_guard_effectiveness()` tracks per-guard block accuracy. `_analyze_calibration()` computes Brier score across all probability predictions.
+- **Rich skip signals**: `strategy._skip()` accepts `**kwargs` to attach forecast data. `_strategy_weather()` returns enriched skip dicts (not None) at every rejection point post-distribution-fetch. Includes `skip_reason`, `edge`, `our_prob`, `predicted_high`, `model_means`, etc.
+- **Scan snapshot storage**: `learning_state.json["scan_snapshots"]` keyed by date, deduped by ticker. 7-day retention. Saved every 10th cycle to avoid I/O overhead.
+- **Learning NWS lookup**: `trade_reviewer._get_actual_temp()` fetches actual highs from NWS (cached, 7-day limit). Enables bias/accuracy learning + scan reconciliation.
 - **CITIES dict field**: `nws_station` (NOT `station`). Used for observation fetching.
 - **Daily reset at 6 AM ET**: Risk counters reset at 6 AM Eastern, not UTC midnight.
 - **NWS observation cache**: 2-minute TTL (matches cycle interval). Used for exits and CASE 1.
