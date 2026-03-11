@@ -14,6 +14,7 @@ Single writer for learning_state.json.
 """
 
 import json
+import math
 import os
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -42,6 +43,8 @@ class TradeReviewer:
             "scan_reconciliation": [],
             "guard_stats": {},
             "calibration": {},
+            "profitability": {},
+            "information_decay": {},
         }
         for k, v in defaults.items():
             if k not in self.state:
@@ -72,9 +75,11 @@ class TradeReviewer:
         self._learn_forecast_bias(trade_log)
         self._learn_model_accuracy(trade_log)
         self._analyze_patterns(trade_log)
+        self._compute_profitability_metrics(trade_log)
         self._reconcile_scans(today)
         self._analyze_guard_effectiveness()
         self._analyze_calibration()
+        self._analyze_information_decay()
         self._generate_daily_report(trade_log, today)
 
         self.state["last_review_date"] = today
@@ -91,6 +96,7 @@ class TradeReviewer:
             "city_code": signal.get("city_code", ""),
             "forecast_mean": signal.get("predicted_high"),
             "model_means": signal.get("model_means", {}),
+            "model_stds": signal.get("model_stds", {}),
             "market_price_cents": signal.get("price_cents", 0),
             "our_prob": signal.get("our_prob", 0),
             "side": signal.get("side", ""),
@@ -187,6 +193,8 @@ class TradeReviewer:
             "scan_reconciliation": latest_recon,
             "guard_stats": self.state.get("guard_stats", {}),
             "calibration": self.state.get("calibration", {}),
+            "profitability": self.state.get("profitability", {}),
+            "information_decay": self.state.get("information_decay", {}),
         }
 
     # ===========================================================
@@ -260,11 +268,30 @@ class TradeReviewer:
     # LEARNING: MODEL ACCURACY
     # ===========================================================
 
+    @staticmethod
+    def _crps_gaussian(mean, std, actual):
+        """CRPS for a Gaussian forecast distribution. Lower = better.
+
+        Exact formula: CRPS = std * [z*(2*Phi(z) - 1) + 2*phi(z) - 1/sqrt(pi)]
+        where z = (actual - mean) / std, Phi=CDF, phi=PDF of standard normal.
+        """
+        if std <= 0:
+            return abs(mean - actual)  # Degenerate: CRPS = MAE
+        try:
+            from scipy.stats import norm
+            z = (actual - mean) / std
+            crps = std * (z * (2.0 * norm.cdf(z) - 1.0)
+                          + 2.0 * norm.pdf(z) - 1.0 / math.sqrt(math.pi))
+            return max(0.0, crps)
+        except Exception:
+            return abs(mean - actual)
+
     def _learn_model_accuracy(self, trade_log):
         """Learn per-model accuracy weights from forecast snapshots.
 
-        Tracks MAE per model per city. Converts to weights:
-        weight = 1.0 / (mae + 1.0), normalized to sum to 1.0.
+        Tracks MAE and CRPS per model per city. Prefers CRPS-based weights
+        when per-model std devs are available; falls back to MAE.
+        CRPS rewards sharp, well-calibrated distributions.
         """
         settled = {}
         for t in trade_log:
@@ -296,13 +323,18 @@ class TradeReviewer:
             if city not in accuracy:
                 accuracy[city] = {}
 
+            model_stds = snap.get("model_stds", {})
+
             for model_name, model_mean in model_means.items():
                 if model_mean is None:
                     continue
                 abs_error = abs(model_mean - actual)
 
                 if model_name not in accuracy[city]:
-                    accuracy[city][model_name] = {"errors": [], "mae": None, "weight": None}
+                    accuracy[city][model_name] = {
+                        "errors": [], "mae": None, "weight": None,
+                        "crps_errors": [], "crps": None,
+                    }
 
                 entry = accuracy[city][model_name]
                 entry["errors"].append(round(abs_error, 2))
@@ -313,17 +345,95 @@ class TradeReviewer:
                     mae = sum(entry["errors"]) / len(entry["errors"])
                     entry["mae"] = round(mae, 2)
 
-            # Normalize weights for this city
-            models_with_mae = {m: d for m, d in accuracy[city].items()
-                              if d.get("mae") is not None}
-            if models_with_mae:
-                raw_weights = {m: 1.0 / (d["mae"] + 1.0)
-                              for m, d in models_with_mae.items()}
+                # CRPS computation (when per-model std available)
+                model_std = model_stds.get(model_name)
+                if model_std is not None and model_std > 0:
+                    crps_val = self._crps_gaussian(model_mean, model_std, actual)
+                    if "crps_errors" not in entry:
+                        entry["crps_errors"] = []
+                    entry["crps_errors"].append(round(crps_val, 3))
+                    if len(entry["crps_errors"]) > 30:
+                        entry["crps_errors"] = entry["crps_errors"][-30:]
+                    if len(entry["crps_errors"]) >= 5:
+                        entry["crps"] = round(
+                            sum(entry["crps_errors"]) / len(entry["crps_errors"]), 3)
+
+            # Normalize weights for this city -- prefer CRPS over MAE
+            scorable = {m: d for m, d in accuracy[city].items()
+                        if d.get("crps") is not None or d.get("mae") is not None}
+            if scorable:
+                raw_weights = {}
+                for m, d in scorable.items():
+                    if d.get("crps") is not None:
+                        raw_weights[m] = 1.0 / (d["crps"] + 0.5)
+                    elif d.get("mae") is not None:
+                        raw_weights[m] = 1.0 / (d["mae"] + 1.0)
                 total_weight = sum(raw_weights.values())
                 for m, w in raw_weights.items():
                     accuracy[city][m]["weight"] = round(w / total_weight, 3)
 
         self.state["model_accuracy"] = accuracy
+
+    # ===========================================================
+    # PROFITABILITY METRICS
+    # ===========================================================
+
+    def _compute_profitability_metrics(self, trade_log):
+        """Compute profit factor and per-trade expectancy from settled trades.
+
+        Profit factor = gross_wins / gross_losses (>1.5 good, >2.0 excellent).
+        Expectancy = (win_rate * avg_win) - (loss_rate * avg_loss) in cents.
+        """
+        gross_wins_cents = 0
+        gross_losses_cents = 0
+        num_wins = 0
+        num_losses = 0
+
+        for t in trade_log:
+            result = t.get("result")
+            pnl = t.get("profit_cents", 0)
+            if result == "win" and pnl > 0:
+                gross_wins_cents += pnl
+                num_wins += 1
+            elif result == "loss" and pnl < 0:
+                gross_losses_cents += abs(pnl)
+                num_losses += 1
+
+        total = num_wins + num_losses
+        if total == 0:
+            return
+
+        win_rate = num_wins / total
+        loss_rate = 1.0 - win_rate
+        avg_win = gross_wins_cents / num_wins if num_wins > 0 else 0
+        avg_loss = gross_losses_cents / num_losses if num_losses > 0 else 0
+
+        profit_factor = None
+        if gross_losses_cents > 0:
+            profit_factor = round(gross_wins_cents / gross_losses_cents, 2)
+
+        expectancy_cents = round((win_rate * avg_win) - (loss_rate * avg_loss), 1)
+
+        self.state["profitability"] = {
+            "profit_factor": profit_factor,
+            "expectancy_cents": expectancy_cents,
+            "gross_wins_cents": gross_wins_cents,
+            "gross_losses_cents": gross_losses_cents,
+            "win_rate": round(win_rate, 3),
+            "total_settled_trades": total,
+            "avg_win_cents": round(avg_win, 1),
+            "avg_loss_cents": round(avg_loss, 1),
+        }
+
+        pf_str = "%.2f" % profit_factor if profit_factor else "N/A"
+        pf_quality = ""
+        if profit_factor is not None:
+            pf_quality = " (excellent)" if profit_factor >= 2.0 else \
+                         " (good)" if profit_factor >= 1.5 else \
+                         " (needs work)" if profit_factor >= 1.0 else " (losing)"
+        print("  [REVIEW] Profitability: PF=%s%s, Expectancy=%+.1fc/trade, "
+              "WinRate=%.0f%% (%d trades)" % (
+                  pf_str, pf_quality, expectancy_cents, win_rate * 100, total))
 
     # ===========================================================
     # PATTERN ANALYSIS
@@ -745,10 +855,45 @@ class TradeReviewer:
 
         brier_score = round(brier_sum / brier_count, 4) if brier_count > 0 else None
 
+        # Brier decomposition: Brier = Reliability - Resolution + Uncertainty
+        reliability = None
+        resolution = None
+        uncertainty = None
+        if brier_count > 0:
+            # Overall base rate
+            total_wins = sum(b["actual_wins"] for b in buckets.values())
+            base_rate = total_wins / brier_count if brier_count > 0 else 0.5
+            uncertainty = round(base_rate * (1.0 - base_rate), 4)
+
+            # Bucket midpoints: "10-20%" -> 0.15
+            bucket_midpoints = {
+                "0-10%": 0.05, "10-20%": 0.15, "20-30%": 0.25,
+                "30-40%": 0.35, "40-50%": 0.45, "50-60%": 0.55,
+                "60-70%": 0.65, "70-80%": 0.75, "80-90%": 0.85,
+                "90-100%": 0.95,
+            }
+
+            rel_sum = 0.0
+            res_sum = 0.0
+            for label, data in buckets.items():
+                n_k = data["predictions"]
+                if n_k == 0:
+                    continue
+                f_k = bucket_midpoints.get(label, 0.5)
+                o_k = data["actual_wins"] / n_k
+                rel_sum += n_k * (f_k - o_k) ** 2
+                res_sum += n_k * (o_k - base_rate) ** 2
+
+            reliability = round(rel_sum / brier_count, 4)
+            resolution = round(res_sum / brier_count, 4)
+
         self.state["calibration"] = {
             "buckets": buckets,
             "brier_score": brier_score,
             "total_predictions": brier_count,
+            "reliability": reliability,
+            "resolution": resolution,
+            "uncertainty": uncertainty,
         }
 
         if brier_score is not None:
@@ -757,6 +902,128 @@ class TradeReviewer:
                       "fair" if brier_score < 0.25 else "poor"
             print("  [REVIEW] Calibration: Brier=%.4f (%s), %d predictions" % (
                 brier_score, quality, brier_count))
+            if reliability is not None:
+                print("  [REVIEW]   Reliability=%.4f (lower=better), "
+                      "Resolution=%.4f (higher=better), Uncertainty=%.4f" % (
+                          reliability, resolution, uncertainty))
+
+    # ===========================================================
+    # INFORMATION DECAY CURVES
+    # ===========================================================
+
+    def _analyze_information_decay(self):
+        """Analyze forecast accuracy by local hour of evaluation.
+
+        Groups scan signals by local hour bucket, computes per-bucket:
+        accuracy, avg_edge, edge_realized_pct, brier, count.
+
+        Answers: "Are morning predictions more/less accurate than afternoon?"
+        """
+        hour_buckets = {
+            "6-9": {"correct": 0, "total": 0, "edges": [], "edge_wins": 0,
+                    "edge_total": 0, "brier_sum": 0.0, "brier_n": 0},
+            "9-12": {"correct": 0, "total": 0, "edges": [], "edge_wins": 0,
+                     "edge_total": 0, "brier_sum": 0.0, "brier_n": 0},
+            "12-15": {"correct": 0, "total": 0, "edges": [], "edge_wins": 0,
+                      "edge_total": 0, "brier_sum": 0.0, "brier_n": 0},
+            "15-18": {"correct": 0, "total": 0, "edges": [], "edge_wins": 0,
+                      "edge_total": 0, "brier_sum": 0.0, "brier_n": 0},
+            "18+": {"correct": 0, "total": 0, "edges": [], "edge_wins": 0,
+                    "edge_total": 0, "brier_sum": 0.0, "brier_n": 0},
+        }
+
+        actuals_cache = self.state.get("actual_temps", {})
+
+        for day_date, day_snaps in self.state.get("scan_snapshots", {}).items():
+            for snap in day_snaps.values():
+                city = snap.get("city_code", "")
+                tdate = snap.get("target_date", "")
+                our_prob = snap.get("our_prob", 0)
+                ticker = snap.get("ticker", "")
+                edge = snap.get("edge", 0)
+                ts_str = snap.get("timestamp", "")
+
+                if not city or not tdate or not ticker or not ts_str:
+                    continue
+
+                actual = actuals_cache.get("%s_%s" % (city, tdate))
+                if actual is None:
+                    actual = self._get_actual_temp(city, tdate)
+                if actual is None:
+                    continue
+
+                would_yes = self._would_yes_win(ticker, actual)
+                if would_yes is None:
+                    continue
+
+                # Determine local hour from timestamp + city timezone
+                try:
+                    ts = datetime.fromisoformat(ts_str)
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    city_info = CITIES.get(city, {})
+                    tz_name = city_info.get("timezone", "America/New_York")
+                    local_hour = ts.astimezone(ZoneInfo(tz_name)).hour
+                except Exception:
+                    continue
+
+                # Map to bucket
+                if local_hour < 6:
+                    continue  # Pre-6 AM blocked by strategy anyway
+                elif local_hour < 9:
+                    bucket_key = "6-9"
+                elif local_hour < 12:
+                    bucket_key = "9-12"
+                elif local_hour < 15:
+                    bucket_key = "12-15"
+                elif local_hour < 18:
+                    bucket_key = "15-18"
+                else:
+                    bucket_key = "18+"
+
+                bucket = hour_buckets[bucket_key]
+                outcome = 1.0 if would_yes else 0.0
+
+                # Prediction direction correct?
+                pred_yes = our_prob > 0.5
+                correct = (pred_yes and would_yes) or (not pred_yes and not would_yes)
+                bucket["total"] += 1
+                if correct:
+                    bucket["correct"] += 1
+
+                # Edge realized?
+                if edge > 0:
+                    bucket["edges"].append(edge)
+                    bucket["edge_total"] += 1
+                    if correct:
+                        bucket["edge_wins"] += 1
+
+                # Brier per bucket
+                bucket["brier_sum"] += (our_prob - outcome) ** 2
+                bucket["brier_n"] += 1
+
+        # Compile results
+        decay = {}
+        for key, b in hour_buckets.items():
+            if b["total"] == 0:
+                continue
+            decay[key] = {
+                "accuracy": round(b["correct"] / b["total"], 3),
+                "avg_edge": round(sum(b["edges"]) / len(b["edges"]), 3) if b["edges"] else 0,
+                "edge_realized_pct": round(b["edge_wins"] / b["edge_total"], 3) if b["edge_total"] > 0 else 0,
+                "brier": round(b["brier_sum"] / b["brier_n"], 4) if b["brier_n"] > 0 else None,
+                "count": b["total"],
+            }
+
+        if decay:
+            self.state["information_decay"] = decay
+            print("  [REVIEW] Information decay by local hour:")
+            for key in ["6-9", "9-12", "12-15", "15-18", "18+"]:
+                if key in decay:
+                    d = decay[key]
+                    print("    %s: acc=%.0f%% edge_real=%.0f%% brier=%.4f (n=%d)" % (
+                        key, d["accuracy"] * 100, d["edge_realized_pct"] * 100,
+                        d["brier"] or 0, d["count"]))
 
     # ===========================================================
     # DAILY REPORT
@@ -828,6 +1095,10 @@ class TradeReviewer:
         print("  ║  Record: %dW / %dL                    ║" % (wins, losses))
         print("  ║  P&L: %+dc ($%+.2f)                ║" % (total_pnl, total_pnl / 100.0))
         print("  ║  Avg Edge: Win=%.1f%% Loss=%.1f%%     ║" % (avg_win_edge * 100, avg_loss_edge * 100))
+        prof = self.state.get("profitability", {})
+        if prof.get("profit_factor") is not None:
+            print("  ║  Profit Factor: %-20s  ║" % ("%.2f" % prof["profit_factor"]))
+            print("  ║  Expectancy: %+.1fc/trade           ║" % prof.get("expectancy_cents", 0))
         print("  ╚══════════════════════════════════════╝")
 
         for city, cr in sorted(city_results.items()):

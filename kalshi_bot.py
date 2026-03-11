@@ -161,6 +161,16 @@ def main():
             except Exception:
                 pass
 
+            # Bucket inconsistency detection (informational)
+            try:
+                inconsistencies = strategy.detect_bucket_inconsistencies(weather_markets)
+                for inc in inconsistencies[:3]:
+                    print("  [BUCKET] %s: %dc total (%+dc deviation, %d buckets)" % (
+                        inc["event_ticker"], inc["total_yes_cents"],
+                        inc["deviation_cents"], inc["num_buckets"]))
+            except Exception:
+                pass
+
             if not buy_signals:
                 print("  [BOT] No actionable signals this cycle")
                 _write_bot_status(cycle, risk, intel, maker, 0, 0)

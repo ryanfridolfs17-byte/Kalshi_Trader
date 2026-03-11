@@ -165,10 +165,12 @@ class Strategy:
         model_spread = distribution.get("model_spread", 0)
         model_means = distribution.get("model_means", {})
         std_dev_val = distribution.get("std_dev")
+        model_stds = distribution.get("model_stds", {})
         _dist_fields = dict(
             city_code=city_code, target_date=target_date,
             predicted_high=forecast_mean, model_spread=model_spread,
-            model_means=model_means, std_dev=std_dev_val,
+            model_means=model_means, model_stds=model_stds,
+            std_dev=std_dev_val,
             our_prob=round(our_prob, 4),
             market_prob=round(yes_market_prob, 4),
             strategy="S1-Weather",
@@ -338,6 +340,7 @@ class Strategy:
             "model_spread": model_spread,
             "std_dev": std_dev_val,
             "model_means": distribution.get("model_means", {}),
+            "model_stds": distribution.get("model_stds", {}),
         }
 
     # ===========================================================
@@ -768,6 +771,74 @@ class Strategy:
         if score > 0.5:
             print("  [CONVERGENCE] %s score=%.2f" % (city_code, score))
         return score
+
+    # ===========================================================
+    # BUCKET INCONSISTENCY DETECTION
+    # ===========================================================
+
+    def detect_bucket_inconsistencies(self, markets):
+        """Detect pricing inconsistencies within a city's temperature bucket set.
+
+        All exclusive buckets for one event (city+date) should sum to ~100c.
+        If total deviates significantly, some bucket is mispriced.
+
+        Args:
+            markets: list of market dicts from scanner
+
+        Returns:
+            list of inconsistency dicts, sorted by abs(deviation)
+        """
+        # Group by event_ticker
+        events = {}
+        for m in markets:
+            event = m.get("event_ticker", "")
+            if not event:
+                continue
+            if event not in events:
+                events[event] = []
+            events[event].append(m)
+
+        inconsistencies = []
+
+        for event_ticker, event_markets in events.items():
+            # Skip small events (need enough buckets for meaningful sum)
+            if len(event_markets) < config.BUCKET_SUM_MIN_MARKETS:
+                continue
+
+            # Sum all yes_ask prices (only count markets with active asks)
+            active_markets = []
+            total_yes = 0
+            for m in event_markets:
+                yes_ask = m.get("yes_ask") or 0
+                if yes_ask > 0:
+                    active_markets.append(m)
+                    total_yes += yes_ask
+
+            if len(active_markets) < config.BUCKET_SUM_MIN_MARKETS:
+                continue
+
+            deviation = total_yes - 100
+            if abs(deviation) < config.BUCKET_SUM_DEVIATION_CENTS:
+                continue
+
+            # Find city_code from first market
+            city_code = ""
+            for m in active_markets:
+                city_code = m.get("_city_code", "")
+                if city_code:
+                    break
+
+            inconsistencies.append({
+                "event_ticker": event_ticker,
+                "city_code": city_code,
+                "total_yes_cents": total_yes,
+                "deviation_cents": deviation,
+                "num_buckets": len(active_markets),
+                "num_total_buckets": len(event_markets),
+            })
+
+        inconsistencies.sort(key=lambda x: abs(x["deviation_cents"]), reverse=True)
+        return inconsistencies
 
     def _skip(self, reason, ticker="", **kwargs):
         """Return a skip signal. Extra kwargs override defaults for learning."""

@@ -373,6 +373,15 @@ class WeatherEngine:
         for model_name, highs in corrected_family_highs.items():
             if highs:
                 model_means[model_name] = round(sum(highs) / len(highs), 1)
+        # Per-model standard deviations for CRPS-based weighting
+        model_stds = {}
+        for model_name, highs in corrected_family_highs.items():
+            if highs and len(highs) >= 2:
+                m = sum(highs) / len(highs)
+                model_stds[model_name] = round(
+                    (sum((t - m) ** 2 for t in highs) / len(highs)) ** 0.5, 2)
+        result["model_stds"] = model_stds
+
         result["model_means"] = model_means
         if len(model_means) >= 2:
             means_list = list(model_means.values())
