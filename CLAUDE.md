@@ -49,7 +49,7 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 | `weather_engine.py` | ~750 | 143 ensemble members (GFS 31, ECMWF 51, ICON 40, GEM 21) via Open-Meteo |
 | `signal_confirmer.py` | ~265 | 5-source voting. STRONG/CONFIRM/REJECT (no WEAK). NWS veto power. |
 | `risk_manager.py` | ~340 | 10 safety checks + SIZE-DOWN logic + settlement methods. State in `risk_state.json`. |
-| `trade_reviewer.py` | ~800 | Daily learning: per-city bias, model accuracy, NWS actual lookups, pattern analysis, scan reconciliation, guard effectiveness, probability calibration (Brier score). State in `learning_state.json`. |
+| `trade_reviewer.py` | ~1050 | Daily learning: per-city bias, CRPS model accuracy, NWS actual lookups, pattern analysis, scan reconciliation, guard effectiveness, probability calibration (Brier score + decomposition), profitability metrics (profit factor, expectancy), information decay curves. State in `learning_state.json`. |
 | `trade_intelligence.py` | ~760 | Exit logic, settlement P&L sync (single writer), NWS observations |
 | `maker_strategy.py` | ~260 | Limit orders at fair_value - spread_buffer. State in `maker_orders.json`. |
 | `dashboard.py` | ~780 | Web dashboard. `/api/health`, `/api/state`, `/api/force-exit` |
@@ -202,6 +202,8 @@ If weakest position edge < 3% (`REBALANCE_MAX_OLD_EDGE`) AND at max capacity: ex
 | `REBALANCE_MIN_NEW_EDGE` | 0.15 | Min edge for new opportunity |
 | `REBALANCE_MAX_OLD_EDGE` | 0.03 | Max edge to consider for exit |
 | `TAKER_MODE_MIN_EDGE` | 0.15 | Min edge for CASE 1 taker mode |
+| `BUCKET_SUM_DEVIATION_CENTS` | 8 | Min deviation from 100c to flag bucket inconsistency |
+| `BUCKET_SUM_MIN_MARKETS` | 5 | Min buckets in event to analyze |
 
 ### New State Files (v4.1)
 - `fill_tracking.json` — Adverse selection: per-side order/fill counts (rolling 24h)
@@ -218,6 +220,12 @@ If weakest position edge < 3% (`REBALANCE_MAX_OLD_EDGE`) AND at max capacity: ex
 - **Scan reconciliation**: `capture_scan_snapshot()` called every cycle with ALL evaluated signals (buy + skip). At 11 PM ET, `_reconcile_scans()` compares predictions against NWS actuals to classify correct_skips, missed_opportunities, correct_trades, bad_trades. `_analyze_guard_effectiveness()` tracks per-guard block accuracy. `_analyze_calibration()` computes Brier score across all probability predictions.
 - **Rich skip signals**: `strategy._skip()` accepts `**kwargs` to attach forecast data. `_strategy_weather()` returns enriched skip dicts (not None) at every rejection point post-distribution-fetch. Includes `skip_reason`, `edge`, `our_prob`, `predicted_high`, `model_means`, etc.
 - **Scan snapshot storage**: `learning_state.json["scan_snapshots"]` keyed by date, deduped by ticker. 7-day retention. Saved every 10th cycle to avoid I/O overhead.
+- **CRPS model weighting**: `_learn_model_accuracy()` computes CRPS per model (Gaussian approximation via scipy.stats.norm) when `model_stds` available. Prefers CRPS over MAE for weight computation. Falls back to MAE for old snapshots.
+- **Model stds propagation**: `weather_engine` computes `model_stds` per ensemble family. Stored in distribution dict, propagated through strategy signals into forecast snapshots.
+- **Profitability metrics**: `_compute_profitability_metrics()` computes profit_factor and expectancy_cents from settled trades during nightly review. Stored in `learning_state.json["profitability"]`.
+- **Brier decomposition**: `_analyze_calibration()` decomposes Brier into reliability (calibration error), resolution (discrimination), uncertainty (base rate). Lower reliability = better. Higher resolution = better.
+- **Information decay curves**: `_analyze_information_decay()` groups predictions by local hour bucket (6-9, 9-12, 12-15, 15-18, 18+) and computes accuracy, edge realization, Brier per bucket. Stored in `learning_state.json["information_decay"]`.
+- **Bucket inconsistency detection**: `strategy.detect_bucket_inconsistencies(markets)` checks if bucket YES prices sum to ~100c per event. Logs deviations > `BUCKET_SUM_DEVIATION_CENTS`. Informational only.
 - **Learning NWS lookup**: `trade_reviewer._get_actual_temp()` fetches actual highs from NWS (cached, 7-day limit). Enables bias/accuracy learning + scan reconciliation.
 - **CITIES dict field**: `nws_station` (NOT `station`). Used for observation fetching.
 - **Daily reset at 6 AM ET**: Risk counters reset at 6 AM Eastern, not UTC midnight.

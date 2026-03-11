@@ -141,6 +141,10 @@ REBALANCE_MAX_OLD_EDGE = 0.03
 # === TAKER MODE ===
 TAKER_MODE_MIN_EDGE = 0.15
 
+# === BUCKET INCONSISTENCY DETECTION ===
+BUCKET_SUM_DEVIATION_CENTS = 8   # Min deviation from 100c to flag
+BUCKET_SUM_MIN_MARKETS = 5      # Min buckets in event to analyze
+
 
 # === ACCOUNT ===
 TOTAL_DEPOSITS_CENTS = 10000
