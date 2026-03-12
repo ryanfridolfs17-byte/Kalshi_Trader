@@ -1,7 +1,8 @@
 """
 TRADE INTELLIGENCE v4.0
 ====================================
-Exit logic, settlement tracking, P&L sync, NWS observation fetching.
+Exit logic, settlement tracking, P&L sync, observation fetching.
+METAR primary (batch all 20 stations in 1 request), NWS fallback.
 
 CRITICAL INVARIANT: Only sync_pnl_from_kalshi() writes to pnl_history.json.
 No other code path may write to that file. This prevents the "7 P&L writers" bug.
@@ -577,11 +578,157 @@ class TradeIntelligence:
                 pass
 
     # =====================================================
-    # NWS OBSERVATION API
+    # METAR OBSERVATION API (primary, batch all stations)
+    # =====================================================
+
+    def fetch_metar_batch(self):
+        """Fetch METAR observations for ALL 20 stations in one request.
+
+        Returns dict: {station_icao: [obs_dicts]} sorted by obs_time.
+        Cached for METAR_CACHE_TTL_SEC (90s). Returns {} on failure.
+        """
+        cache_key = "metar_batch"
+        cached = self._get_cached(
+            cache_key,
+            max_age_sec=getattr(config, "METAR_CACHE_TTL_SEC", 90))
+        if cached is not None:
+            return cached
+
+        cities = self._get_cities()
+        if not cities:
+            return {}
+
+        stations = [info["nws_station"] for info in cities.values()
+                    if info.get("nws_station")]
+        ids_param = ",".join(stations)
+
+        try:
+            resp = requests.get(
+                getattr(config, "METAR_API_URL",
+                        "https://aviationweather.gov/api/data/metar"),
+                params={
+                    "ids": ids_param,
+                    "format": "json",
+                    "hours": getattr(config, "METAR_HOURS_LOOKBACK", 18),
+                },
+                timeout=getattr(config, "METAR_REQUEST_TIMEOUT", 10),
+            )
+            if resp.status_code != 200:
+                print("  [METAR] Batch fetch failed: HTTP %d" % resp.status_code)
+                return {}
+
+            raw = resp.json()
+            if not isinstance(raw, list):
+                return {}
+
+            result = {}
+            for obs in raw:
+                icao = obs.get("icaoId", "")
+                temp_c = obs.get("temp")
+                obs_time_unix = obs.get("obsTime")
+                if not icao or temp_c is None or obs_time_unix is None:
+                    continue
+                try:
+                    temp_f = round(float(temp_c) * 9.0 / 5.0 + 32.0)
+                except (ValueError, TypeError):
+                    continue
+                obs_dt = datetime.fromtimestamp(
+                    int(obs_time_unix), tz=timezone.utc)
+
+                entry = {
+                    "temp_f": temp_f,
+                    "obs_time": obs_dt,
+                    "cloud_cover": obs.get("cover", ""),
+                    "clouds": obs.get("clouds", []),
+                    "precip": obs.get("precip"),
+                }
+                result.setdefault(icao, []).append(entry)
+
+            # Sort each station's obs by time (oldest first)
+            for station_obs in result.values():
+                station_obs.sort(key=lambda o: o["obs_time"])
+
+            self._set_cached(cache_key, result)
+            print("  [METAR] Batch: %d obs across %d stations"
+                  % (len(raw), len(result)))
+            return result
+
+        except Exception as e:
+            print("  [METAR] Batch fetch error: %s" % e)
+            return {}
+
+    def _get_metar_todays_high(self, city_code, station):
+        """Extract today's max temp from METAR batch data for one station."""
+        metar_data = self.fetch_metar_batch()
+        if not metar_data or station not in metar_data:
+            return None
+
+        cities = self._get_cities()
+        if not cities or city_code not in cities:
+            return None
+
+        tz_name = cities[city_code].get("timezone", "America/New_York")
+        tz = ZoneInfo(tz_name)
+        local_date = datetime.now(tz).strftime("%Y-%m-%d")
+
+        temps = []
+        for obs in metar_data[station]:
+            obs_local_date = obs["obs_time"].astimezone(tz).strftime("%Y-%m-%d")
+            if obs_local_date == local_date:
+                temps.append(obs["temp_f"])
+
+        return max(temps) if temps else None
+
+    def _get_metar_current_temp(self, station):
+        """Get latest temperature from METAR batch for one station."""
+        metar_data = self.fetch_metar_batch()
+        if not metar_data or station not in metar_data:
+            return None
+        obs_list = metar_data[station]
+        if not obs_list:
+            return None
+        # Already sorted oldest-first, pick last
+        return obs_list[-1]["temp_f"]
+
+    def get_metar_cloud_cover(self, city_code):
+        """Get real-time cloud cover from METAR for a city.
+
+        Returns {"cloud_cover_pct": float, "precipitation_mm": float} or None.
+        Cover mapping: CLR=0%, FEW=20%, SCT=40%, BKN=70%, OVC=95%.
+        """
+        station = self._get_station(city_code)
+        if not station:
+            return None
+        metar_data = self.fetch_metar_batch()
+        if not metar_data or station not in metar_data:
+            return None
+        obs_list = metar_data[station]
+        if not obs_list:
+            return None
+
+        latest = obs_list[-1]
+        cover_map = {
+            "CLR": 0, "SKC": 0, "FEW": 20, "SCT": 40,
+            "BKN": 70, "OVC": 95,
+        }
+        cover_str = (latest.get("cloud_cover") or "").upper()
+        cloud_pct = cover_map.get(cover_str, 50)
+
+        precip_mm = 0.0
+        if latest.get("precip") is not None:
+            try:
+                precip_mm = float(latest["precip"])
+            except (ValueError, TypeError):
+                pass
+
+        return {"cloud_cover_pct": cloud_pct, "precipitation_mm": precip_mm}
+
+    # =====================================================
+    # NWS OBSERVATION API (fallback)
     # =====================================================
 
     def get_current_temperature(self, city_code):
-        "Get current temperature from NWS. Cached 5 min. Returns F or None."
+        """Get current temperature. METAR primary, NWS fallback. Returns F or None."""
         station = self._get_station(city_code)
         if not station:
             return None
@@ -589,6 +736,15 @@ class TradeIntelligence:
         cached = self._get_cached(cache_key, max_age_sec=120)
         if cached is not None:
             return cached
+
+        # --- METAR primary ---
+        if getattr(config, "METAR_ENABLED", True):
+            temp_f = self._get_metar_current_temp(station)
+            if temp_f is not None:
+                self._set_cached(cache_key, temp_f)
+                return temp_f
+
+        # --- NWS fallback ---
         try:
             url = NWS_LATEST_URL.format(station=station)
             resp = requests.get(url, headers=NWS_HEADERS, timeout=15)
@@ -605,7 +761,7 @@ class TradeIntelligence:
             return None
 
     def get_todays_high(self, city_code):
-        "Get todays observed high so far. Cached 5 min. Returns F or None."
+        """Get today's observed high so far. METAR primary, NWS fallback. Returns F or None."""
         station = self._get_station(city_code)
         if not station:
             return None
@@ -616,6 +772,15 @@ class TradeIntelligence:
         cached = self._get_cached(cache_key, max_age_sec=120)
         if cached is not None:
             return cached
+
+        # --- METAR primary ---
+        if getattr(config, "METAR_ENABLED", True):
+            metar_high = self._get_metar_todays_high(city_code, station)
+            if metar_high is not None:
+                self._set_cached(cache_key, metar_high)
+                return metar_high
+
+        # --- NWS fallback ---
         try:
             tz_name = cities[city_code].get("timezone", "America/New_York")
             tz = ZoneInfo(tz_name)

@@ -108,6 +108,13 @@ MAX_MODEL_DIVERGENCE_NO_F = 10
 MODEL_CONVERGENCE_BOOST_F = 2
 CONFIRM_NO_SEPARATION_PENALTY = 1.25
 
+# === METAR OBSERVATION SOURCE ===
+METAR_API_URL = "https://aviationweather.gov/api/data/metar"
+METAR_CACHE_TTL_SEC = 90           # Slightly under 2-min cycle for fresh data each cycle
+METAR_REQUEST_TIMEOUT = 10         # Seconds
+METAR_HOURS_LOOKBACK = 18          # Hours of METAR history to fetch (covers full day)
+METAR_ENABLED = True               # Kill switch to fall back to NWS-only
+
 # Confirmed outcome settings
 CASE1_MIN_LOCAL_HOUR = 10
 CASE3_GAP_THRESHOLDS = {
