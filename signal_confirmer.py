@@ -123,9 +123,12 @@ class SignalConfirmer:
             verdict, mult = "CONFIRM", 1.0
             nws_note = "+ NWS agrees" if nws_agrees else "(NWS abstains)"
             summary = f"{agree}/5 agree {nws_note} -> CONFIRM"
+        elif agree >= 1 and disagree == 0:
+            verdict, mult = "CONFIRM", 0.8
+            summary = f"{agree}/5 agree, 0 disagree -> CONFIRM (cautious)"
         else:
             verdict, mult = "REJECT", 0.0
-            summary = f"Only {agree}/5 agree -> REJECT"
+            summary = f"Only {agree}/5 agree, {disagree} disagree -> REJECT"
 
         city_name = city_info.get("name", "?")
         print(f"    [CONFIRM] {city_name} {target_date}: {summary}")

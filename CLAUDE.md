@@ -47,7 +47,7 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 | `market_scanner.py` | ~130 | Queries Kalshi for weather series (20 cities) |
 | `strategy.py` | ~700 | S1 Weather Edge + S2 Arbitrage. CASE 1/3 confirmed outcomes. Quarter-Kelly sizing. |
 | `weather_engine.py` | ~750 | 143 ensemble members (GFS 31, ECMWF 51, ICON 40, GEM 21) via Open-Meteo |
-| `signal_confirmer.py` | ~265 | 5-source voting. STRONG/CONFIRM/REJECT (no WEAK). NWS veto power. |
+| `signal_confirmer.py` | ~270 | 5-source voting. STRONG/CONFIRM/REJECT (no WEAK). NWS veto power. 1 agree + 0 disagree = CONFIRM (0.8x). |
 | `risk_manager.py` | ~340 | 10 safety checks + SIZE-DOWN logic + settlement methods. State in `risk_state.json`. |
 | `trade_reviewer.py` | ~1050 | Daily learning: per-city bias, CRPS model accuracy, NWS actual lookups, pattern analysis, scan reconciliation, guard effectiveness, probability calibration (Brier score + decomposition), profitability metrics (profit factor, expectancy), information decay curves. State in `learning_state.json`. |
 | `trade_intelligence.py` | ~760 | Exit logic, settlement P&L sync (single writer), NWS observations |
@@ -68,7 +68,7 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 - **Maker strategy** -- limit orders default. CASE 1 confirmed with edge >15% uses taker (market) orders for guaranteed execution.
 - **NWS settlement** -- Weather markets settle on NWS Daily Climate Reports
 - **NWS rounding** -- +/-1F DOS-era conversion error. Buffer: +/-1F = no trade, +/-2F = 50% size.
-- **NO-side separation** -- Dynamic: `max(3.0F, std_dev * 0.8)` from expanded boundary. CONFIRM gets 1.5x penalty.
+- **NO-side separation** -- Dynamic: `max(2.0F, std_dev * 0.6)` from expanded boundary. CONFIRM gets 1.25x penalty.
 - **Fee-adjusted edge** -- 7% fee drag. Side-aware formula.
 - **Only CASE 1 = CONFIRMED_OUTCOME** -- temp exceeded bucket, can't un-happen. CASE 2 DELETED. CASE 3 = STRONG.
 - **Binary exits** -- HOLD or EXIT. No PARE/HEDGE/TAKE_PROFIT.
@@ -102,7 +102,7 @@ Bankroll ~$48. All values in `config.py`. Cents = 100 per $1.00. `BALANCE_FALLBA
 ### Core Limits
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `MIN_EDGE` | 10% | Morning (before noon): 12%. Next-day: 15%. |
+| `MIN_EDGE` | 7% | Morning (before noon): 8.4% (1.2x). Next-day: 10.5% (1.5x). |
 | `CONFIRMED_MIN_EDGE` | 5% | CASE 1 confirmed outcomes |
 | `FEE_ADJUSTED_MIN_EDGE` | 3% | After 7% fee drag |
 | `MIN_PAYOUT_DOLLARS` | $0.25 | Minimum expected payout per trade |
@@ -128,9 +128,9 @@ Bankroll ~$48. All values in `config.py`. Cents = 100 per $1.00. `BALANCE_FALLBA
 
 ### Strategy Guards
 - **Rounding buffer**: +/-1F = no trade, +/-2F = 50% size
-- **NO-side separation**: `max(3.0F, std_dev * 0.8)`. CONFIRM gets 1.5x penalty.
-- **Model divergence**: YES >6F = skip, NO >8F = skip. <2F = 1.2x boost.
-- **Longshot floor**: 5c. **Near-certainty cap**: 88c. **NO ceiling**: 50c (CASE1 bypasses).
+- **NO-side separation**: `max(2.0F, std_dev * 0.6)`. CONFIRM gets 1.25x penalty.
+- **Model divergence**: YES >8F = skip, NO >10F = skip. <2F = 1.2x boost.
+- **Longshot floor**: 5c. **Near-certainty cap**: 88c. **NO ceiling**: 60c (CASE1 bypasses).
 - **NO sizing**: >=50c gets 40% normal sizing.
 - **Next-day**: 1.5x edge threshold, 50% sizing.
 - **Same-day before 6 AM local**: BLOCKED. Overnight forecasts are stale.
