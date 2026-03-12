@@ -373,6 +373,13 @@ def _load_trade_log():
 
 def _fetch_observed_highs(markets, intel=None):
     """Fetch today's observed high for each city with markets."""
+    # Prime METAR cache with one batch request (all 20 stations)
+    if intel and getattr(config, "METAR_ENABLED", True):
+        try:
+            intel.fetch_metar_batch()
+        except Exception:
+            pass
+
     cities_seen = set()
     obs_highs = {}
 

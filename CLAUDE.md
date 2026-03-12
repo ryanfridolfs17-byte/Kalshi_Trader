@@ -22,7 +22,7 @@
 ## Dependencies
 
 Core: `requests`, `cryptography`, `numpy`, `scipy` (`requirements.txt`).
-APIs (free, no keys): Open-Meteo (ensemble forecasts), NWS (settlement source).
+APIs (free, no keys): Open-Meteo (ensemble forecasts), NWS (settlement source), AviationWeather METAR (primary observations).
 Kalshi API: RSA key-pair auth via `API_KEY_ID` + `PRIVATE_KEY_PATH` in `config.py`.
 
 ## Architecture (v4.0 -- Rebuilt March 2026)
@@ -50,7 +50,7 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 | `signal_confirmer.py` | ~270 | 5-source voting. STRONG/CONFIRM/REJECT (no WEAK). NWS veto power. 1 agree + 0 disagree = CONFIRM (0.8x). |
 | `risk_manager.py` | ~340 | 10 safety checks + SIZE-DOWN logic + settlement methods. State in `risk_state.json`. |
 | `trade_reviewer.py` | ~1050 | Daily learning: per-city bias, CRPS model accuracy, NWS actual lookups, pattern analysis, scan reconciliation, guard effectiveness, probability calibration (Brier score + decomposition), profitability metrics (profit factor, expectancy), information decay curves. State in `learning_state.json`. |
-| `trade_intelligence.py` | ~760 | Exit logic, settlement P&L sync (single writer), NWS observations |
+| `trade_intelligence.py` | ~870 | Exit logic, settlement P&L sync (single writer), METAR primary + NWS fallback observations |
 | `maker_strategy.py` | ~260 | Limit orders at fair_value - spread_buffer. State in `maker_orders.json`. |
 | `dashboard.py` | ~780 | Web dashboard. `/api/health`, `/api/state`, `/api/force-exit` |
 
@@ -204,11 +204,16 @@ If weakest position edge < 3% (`REBALANCE_MAX_OLD_EDGE`) AND at max capacity: ex
 | `TAKER_MODE_MIN_EDGE` | 0.15 | Min edge for CASE 1 taker mode |
 | `BUCKET_SUM_DEVIATION_CENTS` | 8 | Min deviation from 100c to flag bucket inconsistency |
 | `BUCKET_SUM_MIN_MARKETS` | 5 | Min buckets in event to analyze |
+| `METAR_CACHE_TTL_SEC` | 90 | METAR batch cache lifetime (under 2-min cycle) |
+| `METAR_REQUEST_TIMEOUT` | 10 | HTTP timeout for METAR batch request |
+| `METAR_HOURS_LOOKBACK` | 18 | Hours of METAR history per request |
+| `METAR_ENABLED` | True | Kill switch for METAR (falls back to NWS-only) |
 
 ### New State Files (v4.1)
 - `fill_tracking.json` — Adverse selection: per-side order/fill counts (rolling 24h)
 
 ### Infrastructure Invariants
+- **METAR primary, NWS fallback**: `fetch_metar_batch()` fetches all 20 stations in one request via AviationWeather API. `get_todays_high()` and `get_current_temperature()` try METAR first, fall back to NWS on failure. Same ICAO station codes (KNYC, KMDW, etc.). METAR cache key: `metar_batch` (90s TTL). Per-station keys `obs_{station}` and `latest_{station}` shared between METAR and NWS paths. `METAR_ENABLED=False` in config disables METAR entirely.
 - **Dashboard outside restart loop**: `start_dashboard_server()` in `__main__` block, NOT inside `main()`.
 - **Python 3.12**: `import traceback as _tb` to avoid shadowing.
 - **Timezone-aware**: `datetime.now(timezone.utc)`, `ZoneInfo(tz_name)`.
