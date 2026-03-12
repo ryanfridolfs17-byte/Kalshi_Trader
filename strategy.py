@@ -639,7 +639,7 @@ class Strategy:
             return config.MIN_EDGE * config.NEXT_DAY_EDGE_MULTIPLIER
 
         if et_hour < 12:
-            return 0.12
+            return config.MIN_EDGE * 1.2  # Morning: 20% premium over base
         return config.MIN_EDGE
 
     # ===========================================================
