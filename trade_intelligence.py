@@ -9,6 +9,7 @@ No other code path may write to that file. This prevents the "7 P&L writers" bug
 """
 
 import json
+import math
 import os
 import requests
 from datetime import datetime, timezone, timedelta
@@ -629,7 +630,10 @@ class TradeIntelligence:
                 if not icao or temp_c is None or obs_time_unix is None:
                     continue
                 try:
-                    temp_f = round(float(temp_c) * 9.0 / 5.0 + 32.0)
+                    # floor() instead of round() -- conservative: never
+                    # overestimate temp. Prevents false CASE 1 triggers
+                    # from C->F rounding up vs NWS's DOS-era conversion.
+                    temp_f = math.floor(float(temp_c) * 9.0 / 5.0 + 32.0)
                 except (ValueError, TypeError):
                     continue
                 obs_dt = datetime.fromtimestamp(
