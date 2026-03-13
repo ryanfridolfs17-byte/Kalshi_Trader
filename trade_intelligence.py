@@ -260,6 +260,26 @@ class TradeIntelligence:
 
             settlement = self._check_market_settlement(ticker)
             if not settlement:
+                # Fallback: if market date is 2+ days old, it must have settled.
+                # Release the stuck position so we don't block new trades forever.
+                trade_date = _date_from_ticker(ticker)
+                if trade_date and trade_date < today:
+                    from datetime import date as _date
+                    try:
+                        td = _date.fromisoformat(trade_date)
+                        age_days = (_date.fromisoformat(today) - td).days
+                    except Exception:
+                        age_days = 0
+                    if age_days >= 2:
+                        cost_cents = trade.get("cost_cents", 0)
+                        city_code = trade.get("city_code", "")
+                        trade["settled"] = True
+                        trade["settled_at"] = datetime.now(timezone.utc).isoformat()
+                        trade["result"] = "expired_unknown"
+                        trade["profit_cents"] = 0
+                        risk_manager.release_exposure(ticker, cost_cents, city_code)
+                        print(f"  [SETTLE] Expired fallback ({age_days}d old): {ticker}")
+                        settled.append(trade)
                 continue
             side = trade.get("side", "")
             contracts = trade.get("contracts", 0)
@@ -998,13 +1018,17 @@ class TradeIntelligence:
         try:
             market_data = self.client.get_market(ticker)
             if not market_data:
+                print(f"  [SETTLE] get_market({ticker}) returned None")
                 return None
-            market = market_data.get("market", {})
-            if market.get("status") == "settled" and market.get("result"):
-                return {"result": market["result"]}
-        except Exception:
-            pass
-        return None
+            market = market_data.get("market", market_data)
+            status = market.get("status", "")
+            result = market.get("result", "")
+            if status == "settled" and result:
+                return {"result": result}
+            if status:
+                print(f"  [SETTLE] {ticker}: status={status}, result={result}")
+        except Exception as e:
+            print(f"  [SETTLE] get_market({ticker}) error: {e}")
 
     def _get_cached(self, key, max_age_sec=120):
         "Return cached value if fresh enough, else None."
