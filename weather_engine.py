@@ -260,7 +260,8 @@ class WeatherEngine:
         if cache_key in self._cache:
             cached = self._cache[cache_key]
             age = (datetime.now() - cached["fetched_at"]).total_seconds()
-            if age < 300:  # 5 minutes
+            ttl = 60 if cached["data"] is None else 300  # 60s negative, 5min positive
+            if age < ttl:
                 return cached["data"]
 
         # Fetch from all ensemble sources
@@ -301,6 +302,11 @@ class WeatherEngine:
 
         if not model_family_highs:
             print(f"  [WEATHER] WARN: No ensemble data for {city_code} on {target_date}")
+            # Negative cache: avoid re-hitting failed API for 60s
+            self._cache[cache_key] = {
+                "data": None,
+                "fetched_at": datetime.now(),
+            }
             return None
 
         # ─── PER-MODEL BIAS CORRECTION ───
@@ -485,6 +491,21 @@ class WeatherEngine:
         Extract the daily high for target_date from each member.
         Returns list of high temperatures (one per ensemble member).
         """
+        # Per-model cache: avoids re-fetching same model for same city/date
+        ens_key = f"ens_{city.get('name','')}_{target_date}_{model}"
+        if ens_key in self._cache:
+            cached = self._cache[ens_key]
+            age = (datetime.now() - cached["fetched_at"]).total_seconds()
+            ttl = 60 if cached["data"] is None else 300
+            if age < ttl:
+                return cached["data"]
+
+        result = self._fetch_ensemble_raw(city, target_date, model)
+        self._cache[ens_key] = {"data": result, "fetched_at": datetime.now()}
+        return result
+
+    def _fetch_ensemble_raw(self, city, target_date, model):
+        """Raw ensemble fetch (no caching)."""
         try:
             params = {
                 "latitude": city["lat"],
