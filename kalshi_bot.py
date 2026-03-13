@@ -142,6 +142,15 @@ def main():
             # --- STEP 5: Fetch today's observed highs per city ---
             obs_highs = _fetch_observed_highs(weather_markets, intel)
 
+            # Debug: sample first market's key fields to verify normalization
+            if weather_markets:
+                _m0 = weather_markets[0]
+                print(f"  [DIAG] Sample market: {_m0.get('ticker','?')} "
+                      f"yes_ask={_m0.get('yes_ask')} no_ask={_m0.get('no_ask')} "
+                      f"vol={_m0.get('volume')} vol24={_m0.get('volume_24h')} "
+                      f"lp={_m0.get('last_price')} "
+                      f"yes_ask_dollars={_m0.get('yes_ask_dollars','N/A')}")
+
             # --- STEP 6: Evaluate all markets for edge ---
             buy_signals = []
             all_evaluated = []
@@ -280,7 +289,9 @@ def main():
             scan_interval = config.PEAK_SCAN_INTERVAL if config.PEAK_SCAN_START_ET <= hour_et <= config.PEAK_SCAN_END_ET else config.SCAN_INTERVAL
             _write_bot_status(cycle, risk, intel, maker,
                             len(buy_signals), trades_this_cycle, next_scan_seconds=scan_interval)
-            _save_scan_log(weather_markets, buy_signals, trades_this_cycle)
+            _save_scan_log(weather_markets, buy_signals, trades_this_cycle,
+                          skip_counts=_skip_counts, null_count=_null_count,
+                          evaluated_count=len(all_evaluated))
 
             # --- STEP 9: Daily learning review ---
             try:
@@ -576,7 +587,8 @@ def _write_bot_status(cycle, risk, intel, maker, signals_count, trades_count, ne
         pass
 
 
-def _save_scan_log(markets, signals, trades):
+def _save_scan_log(markets, signals, trades, skip_counts=None,
+                    null_count=0, evaluated_count=0):
     """Write scan_log.json."""
     try:
         log = {
@@ -593,6 +605,9 @@ def _save_scan_log(markets, signals, trades):
                 }
                 for s in signals[:10]
             ],
+            "diag_null": null_count,
+            "diag_evaluated": evaluated_count,
+            "diag_skips": skip_counts or {},
         }
         config.atomic_json_save(config.SCAN_LOG_FILE, log)
     except Exception:
