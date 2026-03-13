@@ -145,6 +145,8 @@ def main():
             # --- STEP 6: Evaluate all markets for edge ---
             buy_signals = []
             all_evaluated = []
+            _skip_counts = {}
+            _null_count = 0
             for market in weather_markets:
                 city_code = market.get("_city_code", "")
                 todays_high = obs_highs.get(city_code)
@@ -154,6 +156,18 @@ def main():
                 # Capture all signals with forecast data for learning
                 if signal and signal.get("city_code") and signal.get("predicted_high") is not None:
                     all_evaluated.append(signal)
+                # Track skip reasons for diagnostics
+                if signal is None:
+                    _null_count += 1
+                elif signal.get("skip_reason"):
+                    r = signal.get("skip_reason", "?")
+                    _skip_counts[r] = _skip_counts.get(r, 0) + 1
+
+            # Diagnostic summary
+            _top = sorted(_skip_counts.items(), key=lambda x: -x[1])[:5]
+            _summary = ", ".join(f"{c}x {r}" for r, c in _top)
+            print(f"  [DIAG] {len(weather_markets)} mkts: {len(buy_signals)} buys, "
+                  f"{len(all_evaluated)} with forecasts, {_null_count} null. Skips: {_summary}")
 
             # Snapshot all evaluated signals for scan reconciliation learning
             try:
