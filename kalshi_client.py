@@ -146,6 +146,50 @@ class KalshiClient:
         return None
 
     # =========================================================
+    # API RESPONSE NORMALIZATION
+    # =========================================================
+
+    @staticmethod
+    def _normalize_market(m):
+        """Translate new Kalshi API field names to internal format.
+
+        New API uses dollar strings (yes_ask_dollars: "0.0500") and
+        float-point strings (volume_fp: "136.00"). Internal code uses
+        integer cents (yes_ask: 5) and integer counts (volume: 136).
+        """
+        if not isinstance(m, dict):
+            return m
+        # Skip if already normalized (old fields present)
+        if "yes_ask" in m and m["yes_ask"] is not None:
+            return m
+
+        def _dollars_to_cents(val):
+            if val is None:
+                return 0
+            try:
+                return int(round(float(val) * 100))
+            except (ValueError, TypeError):
+                return 0
+
+        def _fp_to_int(val):
+            if val is None:
+                return 0
+            try:
+                return int(float(val))
+            except (ValueError, TypeError):
+                return 0
+
+        m["yes_ask"] = _dollars_to_cents(m.get("yes_ask_dollars"))
+        m["no_ask"] = _dollars_to_cents(m.get("no_ask_dollars"))
+        m["yes_bid"] = _dollars_to_cents(m.get("yes_bid_dollars"))
+        m["no_bid"] = _dollars_to_cents(m.get("no_bid_dollars"))
+        m["last_price"] = _dollars_to_cents(m.get("last_price_dollars"))
+        m["volume"] = _fp_to_int(m.get("volume_fp"))
+        m["volume_24h"] = _fp_to_int(m.get("volume_24h_fp"))
+        m["open_interest"] = _fp_to_int(m.get("open_interest_fp"))
+        return m
+
+    # =========================================================
     # PUBLIC ENDPOINTS (no authentication needed)
     # =========================================================
 
@@ -153,7 +197,7 @@ class KalshiClient:
         """Check if the exchange is currently open."""
         return self._request("GET", "/exchange/status")
 
-    def get_events(self, limit=100, cursor=None, status="open",
+    def get_events(self, limit=100, cursor=None, status="active",
                    series_ticker=None, with_nested_markets=True):
         """
         Get events (groups of related markets).
@@ -171,7 +215,7 @@ class KalshiClient:
         return self._request("GET", f"/events?{query}")
 
     def get_markets(self, limit=100, cursor=None, event_ticker=None,
-                    series_ticker=None, status="open"):
+                    series_ticker=None, status="active"):
         """
         Get individual markets.
         Each market is a yes/no question you can trade on.
@@ -185,11 +229,19 @@ class KalshiClient:
             params.append(f"series_ticker={series_ticker}")
 
         query = "&".join(params)
-        return self._request("GET", f"/markets?{query}")
+        result = self._request("GET", f"/markets?{query}")
+        if result and "markets" in result:
+            result["markets"] = [self._normalize_market(m) for m in result["markets"]]
+        return result
 
     def get_market(self, ticker):
         """Get detailed info about a specific market."""
-        return self._request("GET", f"/markets/{ticker}")
+        result = self._request("GET", f"/markets/{ticker}")
+        if result and "market" in result:
+            result["market"] = self._normalize_market(result["market"])
+        elif result and "ticker" in result:
+            result = self._normalize_market(result)
+        return result
 
     def get_orderbook(self, ticker):
         """Get the order book (all buy/sell offers) for a market."""

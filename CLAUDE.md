@@ -213,6 +213,7 @@ If weakest position edge < 3% (`REBALANCE_MAX_OLD_EDGE`) AND at max capacity: ex
 - `fill_tracking.json` — Adverse selection: per-side order/fill counts (rolling 24h)
 
 ### Infrastructure Invariants
+- **Kalshi API field normalization (March 2026)**: Kalshi changed field names: `yes_ask` → `yes_ask_dollars` (string), `volume` → `volume_fp` (string), `status:"open"` → `status:"active"`. `kalshi_client._normalize_market()` converts new dollar-string fields to integer cents for all internal code. `market_scanner.py` has its own `_normalize_scanner_market()` since it uses direct `requests.get`. All other files use cents integers unchanged.
 - **METAR primary, NWS fallback**: `fetch_metar_batch()` fetches all 20 stations in one request via AviationWeather API. `get_todays_high()` and `get_current_temperature()` try METAR first, fall back to NWS on failure. Same ICAO station codes (KNYC, KMDW, etc.). METAR cache key: `metar_batch` (90s TTL). Per-station keys `obs_{station}` and `latest_{station}` shared between METAR and NWS paths. `METAR_ENABLED=False` in config disables METAR entirely.
 - **Dashboard outside restart loop**: `start_dashboard_server()` in `__main__` block, NOT inside `main()`.
 - **Python 3.12**: `import traceback as _tb` to avoid shadowing.
