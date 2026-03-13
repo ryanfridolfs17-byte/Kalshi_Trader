@@ -205,11 +205,17 @@ CITIES = {
     },
 }
 
-# Open-Meteo Ensemble API endpoint
-ENSEMBLE_API = "https://ensemble-api.open-meteo.com/v1/ensemble"
-
-# Open-Meteo NWS/GFS for deterministic high-res forecast (confirmation)
-NWS_FORECAST_API = "https://api.open-meteo.com/v1/gfs"
+# Open-Meteo API endpoints — use customer API if key is set (removes rate limits)
+_OM_KEY = getattr(config, "OPEN_METEO_API_KEY", "") if hasattr(config, "OPEN_METEO_API_KEY") else ""
+if _OM_KEY:
+    ENSEMBLE_API = "https://customer-ensemble-api.open-meteo.com/v1/ensemble"
+    NWS_FORECAST_API = "https://customer-api.open-meteo.com/v1/gfs"
+    FORECAST_API = "https://customer-api.open-meteo.com/v1/forecast"
+    print("  [WEATHER] Using Open-Meteo customer API (paid key)")
+else:
+    ENSEMBLE_API = "https://ensemble-api.open-meteo.com/v1/ensemble"
+    NWS_FORECAST_API = "https://api.open-meteo.com/v1/gfs"
+    FORECAST_API = "https://api.open-meteo.com/v1/forecast"
 
 
 class WeatherEngine:
@@ -457,6 +463,8 @@ class WeatherEngine:
                 "timezone": city["timezone"],
                 "forecast_days": 3,
             }
+            if _OM_KEY:
+                params["apikey"] = _OM_KEY
             response = requests.get(NWS_FORECAST_API, params=params, timeout=15)
             if response.status_code != 200:
                 return None
@@ -517,6 +525,8 @@ class WeatherEngine:
                 "timezone": city["timezone"],
                 "forecast_days": 3,
             }
+            if _OM_KEY:
+                params["apikey"] = _OM_KEY
 
             response = requests.get(ENSEMBLE_API, params=params, timeout=20)
 
@@ -595,14 +605,18 @@ class WeatherEngine:
             return None
 
         try:
-            url = (
-                f"https://api.open-meteo.com/v1/forecast"
-                f"?latitude={city['lat']}&longitude={city['lon']}"
-                f"&daily=cloud_cover_mean,precipitation_sum"
-                f"&timezone=auto"
-                f"&start_date={target_date}&end_date={target_date}"
-            )
-            resp = requests.get(url, timeout=10)
+            _cc_url = FORECAST_API
+            _cc_params = {
+                "latitude": city["lat"],
+                "longitude": city["lon"],
+                "daily": "cloud_cover_mean,precipitation_sum",
+                "timezone": "auto",
+                "start_date": target_date,
+                "end_date": target_date,
+            }
+            if _OM_KEY:
+                _cc_params["apikey"] = _OM_KEY
+            resp = requests.get(_cc_url, params=_cc_params, timeout=10)
             if resp.status_code != 200:
                 return None
 

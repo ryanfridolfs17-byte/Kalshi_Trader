@@ -20,23 +20,26 @@ Verdicts:
 import requests
 import time
 from datetime import datetime
+import config
 
-# Open-Meteo deterministic endpoints
+# Open-Meteo deterministic endpoints — switch to customer API if key is set
+_OM_KEY = getattr(config, "OPEN_METEO_API_KEY", "")
+_BASE = "https://customer-api.open-meteo.com/v1" if _OM_KEY else "https://api.open-meteo.com/v1"
 _MODEL_APIS = {
     "nws_gfs": {
-        "url": "https://api.open-meteo.com/v1/forecast",
+        "url": f"{_BASE}/forecast",
         "name": "NWS/GFS HRRR",
     },
     "ecmwf": {
-        "url": "https://api.open-meteo.com/v1/ecmwf",
+        "url": f"{_BASE}/ecmwf",
         "name": "ECMWF IFS",
     },
     "icon": {
-        "url": "https://api.open-meteo.com/v1/dwd-icon",
+        "url": f"{_BASE}/dwd-icon",
         "name": "DWD ICON",
     },
     "gem": {
-        "url": "https://api.open-meteo.com/v1/gem",
+        "url": f"{_BASE}/gem",
         "name": "GEM Canada",
     },
 }
@@ -159,14 +162,17 @@ class SignalConfirmer:
 
         api_url = _MODEL_APIS[source_key]["url"]
         try:
-            resp = requests.get(api_url, params={
+            _params = {
                 "latitude": city_info["lat"],
                 "longitude": city_info["lon"],
                 "daily": "temperature_2m_max",
                 "temperature_unit": "fahrenheit",
                 "timezone": "auto",
                 "forecast_days": 3,
-            }, timeout=15)
+            }
+            if _OM_KEY:
+                _params["apikey"] = _OM_KEY
+            resp = requests.get(api_url, params=_params, timeout=15)
             if resp.status_code != 200:
                 return None
 

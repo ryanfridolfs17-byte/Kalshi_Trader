@@ -46,6 +46,11 @@ if _private_key_env:
 ENVIRONMENT = os.environ.get("KALSHI_ENVIRONMENT", "demo")
 DRY_RUN = os.environ.get("KALSHI_DRY_RUN", "true").lower() == "true"
 
+# === OPEN-METEO API KEY (optional, removes rate limits) ===
+# Free tier: 10,000 requests/day per IP. Railway shared IPs hit this easily.
+# $20/month at https://open-meteo.com/en/pricing — set env var OPEN_METEO_API_KEY.
+OPEN_METEO_API_KEY = os.environ.get("OPEN_METEO_API_KEY", "")
+
 # === SCAN SETTINGS ===
 SCAN_INTERVAL = 120
 PEAK_SCAN_INTERVAL = 60
