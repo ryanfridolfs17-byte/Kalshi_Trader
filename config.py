@@ -113,6 +113,16 @@ MAX_MODEL_DIVERGENCE_NO_F = 10
 MODEL_CONVERGENCE_BOOST_F = 2
 CONFIRM_NO_SEPARATION_PENALTY = 1.25
 
+# === OPEN-METEO RATE LIMITING ===
+# Free tier: 10K requests/day per IP. Railway shared IPs exhaust this.
+# Window: only fetch ensemble data during active trading hours.
+# Outside window: bot still runs (exits use METAR/NWS, not Open-Meteo).
+OPEN_METEO_FETCH_START_ET = 8    # 8 AM ET — covers 6 AM Central/Eastern
+OPEN_METEO_FETCH_END_ET = 18     # 6 PM ET — after this, exits only
+ENSEMBLE_CACHE_TTL = 900          # 15 min (models update every 6h)
+DISTRIBUTION_CACHE_TTL = 900      # 15 min (matches ensemble)
+CLOUD_COVER_CACHE_TTL = 1800      # 30 min (daily data, changes slowly)
+
 # === METAR OBSERVATION SOURCE ===
 METAR_API_URL = "https://aviationweather.gov/api/data/metar"
 METAR_CACHE_TTL_SEC = 90           # Slightly under 2-min cycle for fresh data each cycle

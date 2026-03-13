@@ -67,7 +67,11 @@ def main():
             print()
             print("-" * 50)
             ts = now_et.strftime("%Y-%m-%d %H:%M:%S")
-            print("  Cycle %d | %s ET" % (cycle, ts))
+            _fetch_start = getattr(config, "OPEN_METEO_FETCH_START_ET", 8)
+            _fetch_end = getattr(config, "OPEN_METEO_FETCH_END_ET", 18)
+            _in_window = _fetch_start <= hour_et < _fetch_end
+            _window_tag = "" if _in_window else " | OUTSIDE FETCH WINDOW"
+            print("  Cycle %d | %s ET%s" % (cycle, ts, _window_tag))
             print("-" * 50)
 
             # Update strategy balance from Kalshi

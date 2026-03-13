@@ -208,12 +208,18 @@ If weakest position edge < 3% (`REBALANCE_MAX_OLD_EDGE`) AND at max capacity: ex
 | `METAR_REQUEST_TIMEOUT` | 10 | HTTP timeout for METAR batch request |
 | `METAR_HOURS_LOOKBACK` | 18 | Hours of METAR history per request |
 | `METAR_ENABLED` | True | Kill switch for METAR (falls back to NWS-only) |
+| `OPEN_METEO_FETCH_START_ET` | 8 | Start of Open-Meteo fetch window (8 AM ET) |
+| `OPEN_METEO_FETCH_END_ET` | 18 | End of fetch window (6 PM ET) |
+| `ENSEMBLE_CACHE_TTL` | 900 | 15 min ensemble per-model cache |
+| `DISTRIBUTION_CACHE_TTL` | 900 | 15 min distribution cache |
+| `CLOUD_COVER_CACHE_TTL` | 1800 | 30 min cloud cover cache |
 
 ### New State Files (v4.1)
 - `fill_tracking.json` — Adverse selection: per-side order/fill counts (rolling 24h)
 
 ### Infrastructure Invariants
 - **Kalshi API field normalization (March 2026)**: Kalshi changed response field names: `yes_ask` → `yes_ask_dollars` (string), `volume` → `volume_fp` (string). Response `status` field changed to `"active"` but **query parameter** still uses `status=open`. `kalshi_client._normalize_market()` converts new dollar-string fields to integer cents for all internal code. `market_scanner.py` has its own `_normalize_scanner_market()` since it uses direct `requests.get`. All other files use cents integers unchanged.
+- **Open-Meteo rate limiting (March 2026)**: Free tier = 10K requests/day per IP. Railway shared IPs exhaust this. Fix: `_in_fetch_window()` in `weather_engine.py` gates ALL Open-Meteo calls to `OPEN_METEO_FETCH_START_ET` (8) – `OPEN_METEO_FETCH_END_ET` (18). Outside window: stale cache returned (any age) or None. Cache TTLs extended: ensemble 15 min (`ENSEMBLE_CACHE_TTL=900`), distribution 15 min (`DISTRIBUTION_CACHE_TTL=900`), cloud cover 30 min (`CLOUD_COVER_CACHE_TTL=1800`, was uncached!). `signal_confirmer.py` imports `_in_fetch_window` and gates deterministic model fetches. Strategy returns `"outside_fetch_window"` skip reason (not `"ensemble_fetch_failed"`). Exits use METAR/NWS (not Open-Meteo), so work 24/7. Set `OPEN_METEO_API_KEY` env var to bypass all limits (switches to `customer-api.open-meteo.com`). Budget: ~4,700 calls/day (53% margin).
 - **METAR primary, NWS fallback**: `fetch_metar_batch()` fetches all 20 stations in one request via AviationWeather API. `get_todays_high()` and `get_current_temperature()` try METAR first, fall back to NWS on failure. Same ICAO station codes (KNYC, KMDW, etc.). METAR cache key: `metar_batch` (90s TTL). Per-station keys `obs_{station}` and `latest_{station}` shared between METAR and NWS paths. `METAR_ENABLED=False` in config disables METAR entirely.
 - **Dashboard outside restart loop**: `start_dashboard_server()` in `__main__` block, NOT inside `main()`.
 - **Python 3.12**: `import traceback as _tb` to avoid shadowing.

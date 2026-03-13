@@ -137,7 +137,9 @@ class Strategy:
             city_bias_f=city_bias_correction,
         )
         if not distribution:
-            return self._skip("ensemble_fetch_failed", ticker,
+            from weather_engine import _in_fetch_window
+            reason = "outside_fetch_window" if not _in_fetch_window() else "ensemble_fetch_failed"
+            return self._skip(reason, ticker,
                               city_code=city_code, target_date=target_date)
 
         # Step 4: Calculate bucket probability

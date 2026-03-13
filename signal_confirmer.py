@@ -21,6 +21,7 @@ import requests
 import time
 from datetime import datetime
 import config
+from weather_engine import _in_fetch_window
 
 # Open-Meteo deterministic endpoints — switch to customer API if key is set
 _OM_KEY = getattr(config, "OPEN_METEO_API_KEY", "")
@@ -155,10 +156,16 @@ class SignalConfirmer:
         """
         cache_key = f"{source_key}_{city_info.get('name', '')}_{target_date}"
         cached = self._cache.get(cache_key)
+        in_window = _in_fetch_window()
         if cached:
             ts, temp = cached
-            if time.time() - ts < _MODEL_CACHE_TTL:
+            # Outside window: return stale cache regardless of age
+            if not in_window or time.time() - ts < _MODEL_CACHE_TTL:
                 return temp
+
+        # Outside fetch window with no cache: skip API call
+        if not in_window:
+            return None
 
         api_url = _MODEL_APIS[source_key]["url"]
         try:
