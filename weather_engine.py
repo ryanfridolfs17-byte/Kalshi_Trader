@@ -218,6 +218,21 @@ else:
     FORECAST_API = "https://api.open-meteo.com/v1/forecast"
 
 
+def _in_fetch_window():
+    """Check if current ET hour is within the Open-Meteo fetch window.
+    Outside this window, skip API calls and use stale cache data instead.
+    This keeps us within the free tier (10K requests/day).
+    """
+    from zoneinfo import ZoneInfo
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+    start = getattr(config, "OPEN_METEO_FETCH_START_ET", 8)
+    end = getattr(config, "OPEN_METEO_FETCH_END_ET", 18)
+    # If key is set, always allow fetching (paid tier has no limit)
+    if _OM_KEY:
+        return True
+    return start <= now_et.hour < end
+
+
 class WeatherEngine:
     """
     Fetches ensemble forecasts and builds temperature probability distributions.
@@ -227,6 +242,7 @@ class WeatherEngine:
     def __init__(self):
         self._cache = {}
         self._nws_cache = {}
+        self._cloud_cache = {}  # Independent cloud cover cache (30 min TTL)
         self.last_fetch_time = None
         self.last_api_error = None  # Track last Open-Meteo error for diagnostics
 
@@ -257,19 +273,25 @@ class WeatherEngine:
         if target_date is None:
             target_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        # Check cache — models update every 6 hours, so 5-min cache is plenty.
-        # At 2-min scan interval this saves ~60% of Open-Meteo API calls.
+        # Check cache — models update every 6 hours, 15-min cache is appropriate.
         weights_key = ""
         if model_weights:
             weights_key = "_" + "_".join("%s:%s" % (k, model_weights[k]) for k in sorted(model_weights))
         bias_key = "_cb%.2f" % float(city_bias_f or 0.0)
         cache_key = f"{city_code}_{target_date}{weights_key}{bias_key}"
+        pos_ttl = getattr(config, "DISTRIBUTION_CACHE_TTL", 900)
+        in_window = _in_fetch_window()
         if cache_key in self._cache:
             cached = self._cache[cache_key]
             age = (datetime.now() - cached["fetched_at"]).total_seconds()
-            ttl = 60 if cached["data"] is None else 300  # 60s negative, 5min positive
-            if age < ttl:
+            ttl = 60 if cached["data"] is None else pos_ttl
+            # Outside fetch window: return ANY cached data (even stale)
+            if not in_window or age < ttl:
                 return cached["data"]
+
+        # Outside fetch window with no cache: skip API calls entirely
+        if not in_window:
+            return None
 
         # Fetch from all ensemble sources
         sources_used = []
@@ -448,11 +470,16 @@ class WeatherEngine:
             target_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         cache_key = f"nws_{city_code}_{target_date}"
+        in_window = _in_fetch_window()
         if cache_key in self._nws_cache:
             cached = self._nws_cache[cache_key]
             age = (datetime.now() - cached["fetched_at"]).total_seconds()
-            if age < 1800:
+            if not in_window or age < 1800:
                 return cached["data"]
+
+        # Outside fetch window with no cache: skip
+        if not in_window:
+            return None
 
         try:
             params = {
@@ -502,12 +529,18 @@ class WeatherEngine:
         """
         # Per-model cache: avoids re-fetching same model for same city/date
         ens_key = f"ens_{city.get('name','')}_{target_date}_{model}"
+        pos_ttl = getattr(config, "ENSEMBLE_CACHE_TTL", 900)
+        in_window = _in_fetch_window()
         if ens_key in self._cache:
             cached = self._cache[ens_key]
             age = (datetime.now() - cached["fetched_at"]).total_seconds()
-            ttl = 60 if cached["data"] is None else 300
-            if age < ttl:
+            ttl = 60 if cached["data"] is None else pos_ttl
+            if not in_window or age < ttl:
                 return cached["data"]
+
+        # Outside fetch window with no cache: skip API call
+        if not in_window:
+            return None
 
         result = self._fetch_ensemble_raw(city, target_date, model)
         self._cache[ens_key] = {"data": result, "fetched_at": datetime.now()}
@@ -604,6 +637,20 @@ class WeatherEngine:
         if not city:
             return None
 
+        # Independent 30-min cache (cloud cover is daily data, changes slowly)
+        cc_key = f"cc_{city_code}_{target_date}"
+        cc_ttl = getattr(config, "CLOUD_COVER_CACHE_TTL", 1800)
+        in_window = _in_fetch_window()
+        if cc_key in self._cloud_cache:
+            cached = self._cloud_cache[cc_key]
+            age = (datetime.now() - cached["fetched_at"]).total_seconds()
+            if not in_window or age < cc_ttl:
+                return cached["data"]
+
+        # Outside fetch window with no cache: skip API call
+        if not in_window:
+            return None
+
         try:
             _cc_url = FORECAST_API
             _cc_params = {
@@ -628,7 +675,9 @@ class WeatherEngine:
             cloud_cover = cloud_vals[0] if cloud_vals and cloud_vals[0] is not None else 0.0
             precip = precip_vals[0] if precip_vals and precip_vals[0] is not None else 0.0
 
-            return {"cloud_cover_pct": float(cloud_cover), "precipitation_mm": float(precip)}
+            result = {"cloud_cover_pct": float(cloud_cover), "precipitation_mm": float(precip)}
+            self._cloud_cache[cc_key] = {"data": result, "fetched_at": datetime.now()}
+            return result
 
         except Exception as e:
             print(f"  [WEATHER] Cloud cover fetch error for {city_code}: {e}")
