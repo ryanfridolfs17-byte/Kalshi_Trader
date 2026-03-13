@@ -197,7 +197,7 @@ class KalshiClient:
         """Check if the exchange is currently open."""
         return self._request("GET", "/exchange/status")
 
-    def get_events(self, limit=100, cursor=None, status="active",
+    def get_events(self, limit=100, cursor=None, status="open",
                    series_ticker=None, with_nested_markets=True):
         """
         Get events (groups of related markets).
@@ -215,7 +215,7 @@ class KalshiClient:
         return self._request("GET", f"/events?{query}")
 
     def get_markets(self, limit=100, cursor=None, event_ticker=None,
-                    series_ticker=None, status="active"):
+                    series_ticker=None, status="open"):
         """
         Get individual markets.
         Each market is a yes/no question you can trade on.
