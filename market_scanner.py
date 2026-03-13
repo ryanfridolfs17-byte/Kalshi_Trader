@@ -13,6 +13,33 @@ from weather_engine import CITIES
 PUBLIC_READ_URL = "https://api.elections.kalshi.com/trade-api/v2"
 
 
+def _normalize_scanner_market(m):
+    """Translate new Kalshi dollar-string fields to integer cents.
+
+    Scanner bypasses kalshi_client, so needs its own normalization.
+    """
+    if "yes_ask" in m and m["yes_ask"] is not None:
+        return
+    def _d2c(val):
+        try:
+            return int(round(float(val) * 100)) if val else 0
+        except (ValueError, TypeError):
+            return 0
+    def _f2i(val):
+        try:
+            return int(float(val)) if val else 0
+        except (ValueError, TypeError):
+            return 0
+    m["yes_ask"] = _d2c(m.get("yes_ask_dollars"))
+    m["no_ask"] = _d2c(m.get("no_ask_dollars"))
+    m["yes_bid"] = _d2c(m.get("yes_bid_dollars"))
+    m["no_bid"] = _d2c(m.get("no_bid_dollars"))
+    m["last_price"] = _d2c(m.get("last_price_dollars"))
+    m["volume"] = _f2i(m.get("volume_fp"))
+    m["volume_24h"] = _f2i(m.get("volume_24h_fp"))
+    m["open_interest"] = _f2i(m.get("open_interest_fp"))
+
+
 class MarketScanner:
 
     def __init__(self, kalshi_client=None):
@@ -34,7 +61,7 @@ class MarketScanner:
                 url = f"{self.base_url}/markets"
                 params = {
                     "series_ticker": series_ticker,
-                    "status": "open",
+                    "status": "active",
                     "limit": 200,
                 }
 
@@ -47,6 +74,7 @@ class MarketScanner:
                 markets = data.get("markets", [])
 
                 for m in markets:
+                    _normalize_scanner_market(m)
                     m["_city_code"] = city_code
                     weather_markets.append(m)
 
