@@ -61,7 +61,7 @@ class MarketScanner:
                 url = f"{self.base_url}/markets"
                 params = {
                     "series_ticker": series_ticker,
-                    "status": "active",
+                    "status": "open",
                     "limit": 200,
                 }
 
