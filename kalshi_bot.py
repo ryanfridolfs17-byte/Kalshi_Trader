@@ -197,7 +197,9 @@ def main():
             if not buy_signals:
                 print("  [BOT] No actionable signals this cycle")
                 _write_bot_status(cycle, risk, intel, maker, 0, 0)
-                _save_scan_log(weather_markets, [], 0)
+                _save_scan_log(weather_markets, [], 0,
+                               skip_counts=_skip_counts, null_count=_null_count,
+                               evaluated_count=len(all_evaluated))
                 interval = config.SCAN_INTERVAL
                 try:
                     reviewer.check_and_run()
