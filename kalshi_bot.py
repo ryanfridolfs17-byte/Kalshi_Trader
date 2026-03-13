@@ -199,7 +199,8 @@ def main():
                 _write_bot_status(cycle, risk, intel, maker, 0, 0)
                 _save_scan_log(weather_markets, [], 0,
                                skip_counts=_skip_counts, null_count=_null_count,
-                               evaluated_count=len(all_evaluated))
+                               evaluated_count=len(all_evaluated),
+                               weather_error=strategy.weather.last_api_error)
                 interval = config.SCAN_INTERVAL
                 try:
                     reviewer.check_and_run()
@@ -293,7 +294,8 @@ def main():
                             len(buy_signals), trades_this_cycle, next_scan_seconds=scan_interval)
             _save_scan_log(weather_markets, buy_signals, trades_this_cycle,
                           skip_counts=_skip_counts, null_count=_null_count,
-                          evaluated_count=len(all_evaluated))
+                          evaluated_count=len(all_evaluated),
+                          weather_error=strategy.weather.last_api_error)
 
             # --- STEP 9: Daily learning review ---
             try:
@@ -590,7 +592,7 @@ def _write_bot_status(cycle, risk, intel, maker, signals_count, trades_count, ne
 
 
 def _save_scan_log(markets, signals, trades, skip_counts=None,
-                    null_count=0, evaluated_count=0):
+                    null_count=0, evaluated_count=0, weather_error=None):
     """Write scan_log.json."""
     try:
         log = {
@@ -610,6 +612,7 @@ def _save_scan_log(markets, signals, trades, skip_counts=None,
             "diag_null": null_count,
             "diag_evaluated": evaluated_count,
             "diag_skips": skip_counts or {},
+            "weather_api_error": weather_error,
         }
         config.atomic_json_save(config.SCAN_LOG_FILE, log)
     except Exception:

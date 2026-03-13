@@ -222,6 +222,7 @@ class WeatherEngine:
         self._cache = {}
         self._nws_cache = {}
         self.last_fetch_time = None
+        self.last_api_error = None  # Track last Open-Meteo error for diagnostics
 
     # ═══════════════════════════════════════════════════════
     # MAIN ENTRY: Get probability distribution for a city
@@ -520,7 +521,13 @@ class WeatherEngine:
             response = requests.get(ENSEMBLE_API, params=params, timeout=20)
 
             if response.status_code != 200:
-                print("  [WEATHER] %s HTTP %d for %s" % (model, response.status_code, city.get("name", "?")))
+                err_msg = "%s HTTP %d for %s" % (model, response.status_code, city.get("name", "?"))
+                try:
+                    err_msg += " body=%s" % response.text[:200]
+                except Exception:
+                    pass
+                print("  [WEATHER] %s" % err_msg)
+                self.last_api_error = err_msg
                 return None
 
             data = response.json()
@@ -571,7 +578,9 @@ class WeatherEngine:
             return member_highs if member_highs else None
 
         except Exception as e:
-            print("  [WEATHER] %s fetch failed for %s: %s" % (model, city.get("name", "?"), e))
+            err_msg = "%s fetch failed for %s: %s" % (model, city.get("name", "?"), e)
+            print("  [WEATHER] %s" % err_msg)
+            self.last_api_error = err_msg
             return None
 
     def _fetch_cloud_cover(self, city_code, target_date):
