@@ -520,6 +520,7 @@ class WeatherEngine:
             response = requests.get(ENSEMBLE_API, params=params, timeout=20)
 
             if response.status_code != 200:
+                print("  [WEATHER] %s HTTP %d for %s" % (model, response.status_code, city.get("name", "?")))
                 return None
 
             data = response.json()
