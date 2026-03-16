@@ -50,8 +50,8 @@ _MODEL_CACHE_TTL = 1800   # 30 min for model forecasts
 _NWS_CACHE_TTL = 3600     # 60 min for NWS point forecast
 
 # Gray zone: forecast within this many deg F of bucket edge -> ABSTAIN
-_MODEL_GRAY_ZONE_F = 2.0
-_NWS_GRAY_ZONE_F = 2.0
+_MODEL_GRAY_ZONE_F = 1.5
+_NWS_GRAY_ZONE_F = 1.5
 
 
 class SignalConfirmer:
@@ -115,8 +115,13 @@ class SignalConfirmer:
 
         # --- Verdict logic ---
         if nws_vote == "DISAGREE":
-            verdict, mult = "REJECT", 0.0
-            summary = f"NWS DISAGREE overrides {agree} model agree(s) -> REJECT"
+            if agree >= 2:
+                # Models agree despite NWS — trade cautiously, not reject
+                verdict, mult = "CONFIRM", 0.5
+                summary = f"NWS DISAGREE but {agree} models agree -> CONFIRM (0.5x cautious)"
+            else:
+                verdict, mult = "REJECT", 0.0
+                summary = f"NWS DISAGREE + only {agree} model agree(s) -> REJECT"
         elif disagree > agree:
             verdict, mult = "REJECT", 0.0
             summary = f"Majority disagree ({disagree}>{agree}) -> REJECT"
