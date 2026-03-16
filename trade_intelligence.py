@@ -203,8 +203,11 @@ class TradeIntelligence:
                     continue
 
             # --- EXIT RULE 3: Forecast edge deterioration ---
-            # If current forecast probability shows deeply negative edge, exit.
-            if now_hour >= 10:
+            # Only exit on negative edge if we're also UNDERWATER (losing money).
+            # Negative edge + profit = market agrees with our thesis (hold).
+            # Negative edge + loss = our thesis is wrong (exit).
+            entry_price = pos.get("price_cents", 0)
+            if now_hour >= 10 and entry_price > 0:
                 try:
                     dist = self.weather.get_temperature_distribution(
                         city_code, target_date=target_date
@@ -214,20 +217,22 @@ class TradeIntelligence:
                             dist, temp_low, temp_high
                         )
                         if prob is not None:
-                            # Get current market price
                             cur_mkt = self._get_current_market_price(ticker, side)
                             if cur_mkt is not None and cur_mkt > 0:
                                 if side == "yes":
                                     cur_edge = prob - (cur_mkt / 100.0)
                                 else:
                                     cur_edge = (1 - prob) - (cur_mkt / 100.0)
-                                if cur_edge < -0.15:
+                                # Only exit if edge deeply negative AND underwater
+                                is_underwater = cur_mkt < entry_price
+                                if cur_edge < -0.15 and is_underwater:
                                     exits.append({
                                         "ticker": ticker, "action": "sell", "urgency": "high",
                                         "side": side,
-                                        "reason": (f"Edge deterioration: current edge "
+                                        "reason": (f"Edge deterioration: edge "
                                                    f"{cur_edge:.1%} (prob={prob:.1%}, "
-                                                   f"mkt={cur_mkt}c) after 10 AM"),
+                                                   f"mkt={cur_mkt}c, entry={entry_price}c) "
+                                                   f"-- underwater + thesis wrong"),
                                     })
                                     continue
                 except Exception as e:
