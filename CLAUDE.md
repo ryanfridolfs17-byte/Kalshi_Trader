@@ -52,7 +52,7 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 | `trade_reviewer.py` | ~1050 | Daily learning: per-city bias, CRPS model accuracy, NWS actual lookups, pattern analysis, scan reconciliation, guard effectiveness, probability calibration (Brier score + decomposition), profitability metrics (profit factor, expectancy), information decay curves. State in `learning_state.json`. |
 | `trade_intelligence.py` | ~870 | Exit logic, settlement P&L sync (single writer), METAR primary + NWS fallback observations |
 | `maker_strategy.py` | ~260 | Limit orders at fair_value - spread_buffer. State in `maker_orders.json`. |
-| `dashboard.py` | ~830 | Web dashboard. `/api/health`, `/api/state`, `/api/performance`, `/api/equity-curve`, `/api/force-exit` |
+| `dashboard.py` | ~900 | Web dashboard. `/api/health`, `/api/state`, `/api/positions`, `/api/risk`, `/api/pnl`, `/api/trades`, `/api/performance`, `/api/equity-curve`, `/api/force-exit` |
 
 ### Deleted Modules (v3 -> v4)
 `trade_scorecard.py`, `self_improver.py`, `quant_analytics.py`, `seasonal_confidence.py`,
@@ -64,7 +64,8 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 
 ### Key Design Decisions
 
-- **Graduated Kelly sizing** -- Edge 5-10%: Kelly/6, Edge 10-20%: Kelly/4, Edge 20%+: Kelly/3. Dispersion multiplier: `1/(1 + model_spread/5)`. Confirmation multiplier still applied. **Fee-adjusted payout**: Kelly uses `net_payout = gross_payout * (1 - 0.07)` to account for Kalshi fees.
+- **Continuous Kelly sizing** -- Divisor: `max(3.0, min(6.0, 6.0 - (edge - 0.05) * 20.0))`. Edge 5% → divisor 6.0, edge 20%+ → divisor 3.0 (linear, no discontinuity). Dispersion multiplier: `1/(1 + model_spread/5)`. **Fee-adjusted payout**: Kelly uses `net_payout = gross_payout * (1 - 0.07)`.
+- **Exact Kalshi fee** -- `fee = fee_rate * min(price, 100-price)` per contract. Applied in `_calculate_fee_adjusted_edge()` in probability space.
 - **Maker strategy** -- limit orders default. CASE 1 confirmed with edge >15% uses taker (market) orders for guaranteed execution.
 - **NWS settlement** -- Weather markets settle on NWS Daily Climate Reports
 - **NWS rounding** -- +/-1F DOS-era conversion error. Buffer: +/-1F = no trade, +/-2F = 50% size.
@@ -80,6 +81,7 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 - **SIGTERM graceful shutdown** -- `threading.Event` checked each cycle. On SIGTERM: breaks loop, prints shutdown message. `time.sleep()` replaced with `shutdown_event.wait()` for instant response.
 - **Balance single source** -- `kalshi_bot.main()` reads balance from `risk._get_balance_cents()` (60s cached + fallback). No redundant API call.
 - **Health endpoint sanitized** -- `/api/health` returns only `{status, timestamp}` when unauthenticated. Full details require auth token.
+- **Regional correlation caps** -- 6 regions (northeast, southeast, south_central, mountain_west, west_coast, midwest). Max 15% of balance per region. Confirmed outcomes bypass.
 
 ## NWS Station Mappings (20 Cities)
 
@@ -126,6 +128,7 @@ Bankroll ~$48. All values in `config.py`. Cents = 100 per $1.00. `BALANCE_FALLBA
 | `ARB_MIN_SPREAD_CENTS` | 7 | Min gap for arb trades (covers 7% fee) |
 | `MAX_TOTAL_EXPOSURE_PCT` | 50% | Confirmed bypass |
 | `MAX_PER_CITY_PCT` | 10% | Confirmed bypass |
+| `MAX_PER_REGION_PCT` | 15% | Per weather region. Confirmed bypass. |
 | `MAX_PER_TICKER_CENTS` | 400 ($4) | Always enforced |
 | `MAX_CONTRACTS_PER_TICKER` | 5 | Always enforced |
 | `MAX_OPEN_POSITIONS` | 6 | Confirmed/arb bypass |

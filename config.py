@@ -68,6 +68,16 @@ WEATHER_CITIES = [
 # === RISK LIMITS (cents, 100 = $1.00) ===
 DAILY_LOSS_LIMIT_CENTS = 600
 ROLLING_DRAWDOWN_LIMIT_PCT = 0.25   # Block trading if 5-day rolling P&L <= -25% of balance
+MAX_PER_REGION_PCT = 0.15   # Max 15% of balance per weather region
+
+CITY_REGIONS = {
+    "northeast": ["NYC", "BOS", "PHI", "DC"],
+    "southeast": ["MIA", "ATL", "NOLA"],
+    "south_central": ["AUS", "DAL", "HOU", "SATX", "OKC"],
+    "mountain_west": ["DEN", "LV", "PHX"],
+    "west_coast": ["LAX", "SFO", "SEA"],
+    "midwest": ["CHI", "MIN"],
+}
 MAX_TOTAL_EXPOSURE_PCT = 0.50
 MAX_POSITION_PCT = 0.05
 CONFIRMED_POSITION_PCT = 0.10

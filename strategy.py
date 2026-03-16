@@ -673,10 +673,17 @@ class Strategy:
     # ===========================================================
 
     def _calculate_fee_adjusted_edge(self, win_prob, market_prob):
-        """Edge after a simple fee drag approximation on the actual contract price."""
+        """Edge after exact Kalshi fee on the contract price.
+
+        Kalshi fee per contract (in cents):
+            fee = min(fee_rate * price, fee_rate * (100 - price))
+        where price = market_prob * 100 cents.
+        Convert to probability space by dividing by 100.
+        """
         raw_edge = max(0.0, win_prob - market_prob)
-        fee_drag = config.KALSHI_FEE_PCT * (1.0 - market_prob) * win_prob
-        return max(0.0, raw_edge - fee_drag)
+        price_frac = market_prob  # 0-1
+        fee_frac = config.KALSHI_FEE_PCT * min(price_frac, 1.0 - price_frac)
+        return max(0.0, raw_edge - fee_frac)
 
     # ===========================================================
     # QUARTER-KELLY SIZING
@@ -714,13 +721,8 @@ class Strategy:
         if kelly <= 0:
             return 0
 
-        # Graduated Kelly divisor based on edge magnitude
-        if edge >= 0.20:
-            divisor = 3.0
-        elif edge >= 0.10:
-            divisor = 4.0
-        else:
-            divisor = 6.0
+        # Continuous Kelly divisor: edge 5% -> 6.0, edge 20%+ -> 3.0 (linear)
+        divisor = max(3.0, min(6.0, 6.0 - (edge - 0.05) * 20.0))
 
         fraction = kelly / divisor * confirmation_multiplier
 
