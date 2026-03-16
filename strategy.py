@@ -164,6 +164,9 @@ class Strategy:
 
         # Common fields for rich skip signals (post-distribution)
         forecast_mean = distribution.get("forecasted_high_mean")
+        if forecast_mean is None:
+            return self._skip("no_forecast_mean", ticker,
+                              city_code=city_code, target_date=target_date)
         model_spread = distribution.get("model_spread", 0)
         model_means = distribution.get("model_means", {})
         std_dev_val = distribution.get("std_dev")

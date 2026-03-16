@@ -644,7 +644,7 @@ class WeatherEngine:
         in_window = _in_fetch_window()
         if cc_key in self._cloud_cache:
             cached = self._cloud_cache[cc_key]
-            age = (datetime.now() - cached["fetched_at"]).total_seconds()
+            age = (datetime.now(timezone.utc) - cached["fetched_at"]).total_seconds()
             if not in_window or age < cc_ttl:
                 return cached["data"]
 
@@ -676,8 +676,14 @@ class WeatherEngine:
             cloud_cover = cloud_vals[0] if cloud_vals and cloud_vals[0] is not None else 0.0
             precip = precip_vals[0] if precip_vals and precip_vals[0] is not None else 0.0
 
+            import math
+            if not isinstance(cloud_cover, (int, float)) or math.isnan(cloud_cover) or math.isinf(cloud_cover):
+                cloud_cover = 0.0
+            if not isinstance(precip, (int, float)) or math.isnan(precip) or math.isinf(precip):
+                precip = 0.0
+
             result = {"cloud_cover_pct": float(cloud_cover), "precipitation_mm": float(precip)}
-            self._cloud_cache[cc_key] = {"data": result, "fetched_at": datetime.now()}
+            self._cloud_cache[cc_key] = {"data": result, "fetched_at": datetime.now(timezone.utc)}
             return result
 
         except Exception as e:
