@@ -691,72 +691,52 @@ class TradeIntelligence:
 
     @staticmethod
     def _normalize_fill(f):
-        """Normalize Kalshi fill response to ensure yes_price/no_price exist as int cents.
+        """Normalize Kalshi fill response fields to internal int format.
 
-        Kalshi API may return prices as:
-        - yes_price / no_price (int cents) — old format
-        - yes_price_cents / no_price_cents (int cents)
-        - yes_price_dollars / no_price_dollars (string dollars)
-        - price (single field, int cents)
-        This method handles all variants.
+        Kalshi API (March 2026) returns:
+        - yes_price / no_price as STRING cents ("5", "95")
+        - yes_price_dollars / no_price_dollars as STRING dollars ("0.0500")
+        - count_fp as STRING float ("5.00") instead of count (int)
+        This method converts all to integer cents/counts.
         """
         if not isinstance(f, dict):
             return
 
-        def _to_cents(val):
+        def _to_int(val):
+            """Convert any numeric representation to int."""
             if val is None:
                 return 0
+            if isinstance(val, (int, float)):
+                return int(val)
             if isinstance(val, str):
                 try:
-                    fval = float(val)
-                    # If looks like dollars (< 1.0 or has decimal), convert
-                    if fval < 1.5 or "." in val:
-                        return int(round(fval * 100))
-                    return int(fval)
+                    return int(float(val))
                 except (ValueError, TypeError):
                     return 0
+            return 0
+
+        def _dollars_to_cents(val):
+            """Convert dollar string to int cents."""
+            if val is None:
+                return 0
             try:
-                return int(val)
+                return int(round(float(val) * 100))
             except (ValueError, TypeError):
                 return 0
 
-        # Already have int cents?
-        if isinstance(f.get("yes_price"), (int, float)) and f["yes_price"] > 0:
-            f["yes_price"] = int(f["yes_price"])
-            f["no_price"] = int(f.get("no_price", 0) or 0)
-            return
-        if isinstance(f.get("no_price"), (int, float)) and f["no_price"] > 0:
-            f["no_price"] = int(f["no_price"])
-            f["yes_price"] = int(f.get("yes_price", 0) or 0)
-            return
+        # Normalize count: count_fp (string) -> count (int)
+        if "count" not in f or not isinstance(f.get("count"), int):
+            f["count"] = _to_int(f.get("count_fp", f.get("count", 0)))
 
-        # Try dollar-string fields
+        # Normalize prices to int cents
+        # Priority: dollar strings (most reliable) > string cents > raw values
         if "yes_price_dollars" in f or "no_price_dollars" in f:
-            f["yes_price"] = _to_cents(f.get("yes_price_dollars"))
-            f["no_price"] = _to_cents(f.get("no_price_dollars"))
-            return
-
-        # Try _cents suffix
-        if "yes_price_cents" in f or "no_price_cents" in f:
-            f["yes_price"] = _to_cents(f.get("yes_price_cents"))
-            f["no_price"] = _to_cents(f.get("no_price_cents"))
-            return
-
-        # Try single "price" field
-        if "price" in f:
-            price = _to_cents(f.get("price"))
-            side = f.get("side", "")
-            if side == "yes":
-                f["yes_price"] = price
-                f["no_price"] = max(0, 100 - price)
-            elif side == "no":
-                f["no_price"] = price
-                f["yes_price"] = max(0, 100 - price)
-            return
-
-        # Last resort: set to 0 (will be logged by diagnostic)
-        f.setdefault("yes_price", 0)
-        f.setdefault("no_price", 0)
+            f["yes_price"] = _dollars_to_cents(f.get("yes_price_dollars"))
+            f["no_price"] = _dollars_to_cents(f.get("no_price_dollars"))
+        else:
+            # yes_price/no_price may be strings ("5") or ints (5)
+            f["yes_price"] = _to_int(f.get("yes_price"))
+            f["no_price"] = _to_int(f.get("no_price"))
 
     # =====================================================
     # METAR OBSERVATION API (primary, batch all stations)
