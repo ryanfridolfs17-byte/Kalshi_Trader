@@ -26,7 +26,7 @@ from maker_strategy import MakerStrategy
 from trade_reviewer import TradeReviewer
 
 
-def main():
+def main(shutdown_event=None):
     """Main bot loop."""
     print()
     print("=" * 60)
@@ -58,6 +58,8 @@ def main():
 
     cycle = 0
     while True:
+        if shutdown_event and shutdown_event.is_set():
+            break
         cycle += 1
         try:
             cycle_start = time.time()
@@ -74,14 +76,10 @@ def main():
             print("  Cycle %d | %s ET%s" % (cycle, ts, _window_tag))
             print("-" * 50)
 
-            # Update strategy balance from Kalshi
-            try:
-                bal = client.get_balance()
-                if bal and "balance" in bal:
-                    strategy.balance_cents = bal["balance"]
-                    print("  [BOT] Balance: $%.2f" % (bal["balance"] / 100.0))
-            except Exception:
-                pass
+            # Update strategy balance from risk manager (single source)
+            balance = risk._get_balance_cents()
+            strategy.balance_cents = balance
+            print("  [BOT] Balance: $%.2f" % (balance / 100.0))
 
             # --- STEP 1: Sync P&L from settled markets ---
             pnl_summary = intel.sync_pnl_from_kalshi()
@@ -140,7 +138,12 @@ def main():
             if not weather_markets:
                 print("  [BOT] No weather markets found")
                 _write_bot_status(cycle, risk, intel, maker, 0, 0)
-                time.sleep(config.SCAN_INTERVAL)
+                if shutdown_event and shutdown_event.is_set():
+                    break
+                if shutdown_event:
+                    shutdown_event.wait(config.SCAN_INTERVAL)
+                else:
+                    time.sleep(config.SCAN_INTERVAL)
                 continue
 
             # --- STEP 5: Fetch today's observed highs per city ---
@@ -212,7 +215,13 @@ def main():
                     pass
                 if config.PEAK_SCAN_START_ET <= hour_et <= config.PEAK_SCAN_END_ET:
                     interval = config.PEAK_SCAN_INTERVAL
-                time.sleep(max(10, interval - (time.time() - cycle_start)))
+                _sleep = max(10, interval - (time.time() - cycle_start))
+                if shutdown_event and shutdown_event.is_set():
+                    break
+                if shutdown_event:
+                    shutdown_event.wait(_sleep)
+                else:
+                    time.sleep(_sleep)
                 continue
 
             # --- STEP 7: Sort by edge descending, execute best first ---
@@ -316,7 +325,12 @@ def main():
             sleep_time = max(10, interval - elapsed)
             print("  [BOT] Cycle %d done in %.1fs. Next in %ds." % (
                 cycle, elapsed, int(sleep_time)))
-            time.sleep(sleep_time)
+            if shutdown_event and shutdown_event.is_set():
+                break
+            if shutdown_event:
+                shutdown_event.wait(sleep_time)
+            else:
+                time.sleep(sleep_time)
 
         except KeyboardInterrupt:
             print("\n  [BOT] Shutting down gracefully...")
@@ -324,7 +338,12 @@ def main():
         except Exception as e:
             print("  [BOT] ERROR in cycle %d: %s" % (cycle, e))
             _tb.print_exc()
-            time.sleep(30)
+            if shutdown_event and shutdown_event.is_set():
+                break
+            if shutdown_event:
+                shutdown_event.wait(30)
+            else:
+                time.sleep(30)
 
 
 def _check_rebalancing(client, strategy, risk, maker, cycle):
@@ -632,6 +651,17 @@ def _save_scan_log(markets, signals, trades, skip_counts=None,
 
 
 if __name__ == "__main__":
+    import signal
+    import threading
+
+    shutdown_event = threading.Event()
+
+    def _sigterm_handler(signum, frame):
+        print("\n  [BOT] SIGTERM received — shutting down gracefully...")
+        shutdown_event.set()
+
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+
     # Dashboard starts OUTSIDE the main loop (prevents port binding crash)
     try:
         from dashboard import start_dashboard_server
@@ -641,14 +671,18 @@ if __name__ == "__main__":
         print("  [BOT] Dashboard failed to start: %s" % e)
 
     # Main loop with restart on crash
-    while True:
+    while not shutdown_event.is_set():
         try:
-            main()
+            main(shutdown_event=shutdown_event)
         except KeyboardInterrupt:
             print("\n  [BOT] Final shutdown.")
             break
         except Exception as e:
+            if shutdown_event.is_set():
+                break
             print("  [BOT] FATAL: %s" % e)
             _tb.print_exc()
             print("  [BOT] Restarting in 60s...")
-            time.sleep(60)
+            shutdown_event.wait(60)
+
+    print("  [BOT] Graceful shutdown complete.")

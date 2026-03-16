@@ -52,7 +52,7 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 | `trade_reviewer.py` | ~1050 | Daily learning: per-city bias, CRPS model accuracy, NWS actual lookups, pattern analysis, scan reconciliation, guard effectiveness, probability calibration (Brier score + decomposition), profitability metrics (profit factor, expectancy), information decay curves. State in `learning_state.json`. |
 | `trade_intelligence.py` | ~870 | Exit logic, settlement P&L sync (single writer), METAR primary + NWS fallback observations |
 | `maker_strategy.py` | ~260 | Limit orders at fair_value - spread_buffer. State in `maker_orders.json`. |
-| `dashboard.py` | ~780 | Web dashboard. `/api/health`, `/api/state`, `/api/force-exit` |
+| `dashboard.py` | ~830 | Web dashboard. `/api/health`, `/api/state`, `/api/performance`, `/api/equity-curve`, `/api/force-exit` |
 
 ### Deleted Modules (v3 -> v4)
 `trade_scorecard.py`, `self_improver.py`, `quant_analytics.py`, `seasonal_confidence.py`,
@@ -64,7 +64,7 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 
 ### Key Design Decisions
 
-- **Graduated Kelly sizing** -- Edge 5-10%: Kelly/6, Edge 10-20%: Kelly/4, Edge 20%+: Kelly/3. Dispersion multiplier: `1/(1 + model_spread/5)`. Confirmation multiplier still applied.
+- **Graduated Kelly sizing** -- Edge 5-10%: Kelly/6, Edge 10-20%: Kelly/4, Edge 20%+: Kelly/3. Dispersion multiplier: `1/(1 + model_spread/5)`. Confirmation multiplier still applied. **Fee-adjusted payout**: Kelly uses `net_payout = gross_payout * (1 - 0.07)` to account for Kalshi fees.
 - **Maker strategy** -- limit orders default. CASE 1 confirmed with edge >15% uses taker (market) orders for guaranteed execution.
 - **NWS settlement** -- Weather markets settle on NWS Daily Climate Reports
 - **NWS rounding** -- +/-1F DOS-era conversion error. Buffer: +/-1F = no trade, +/-2F = 50% size.
@@ -75,6 +75,11 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 - **Single-writer P&L** -- Only `sync_pnl_from_kalshi()` writes `pnl_history.json`. No exceptions.
 - **Size-down, not reject** -- When caps are exceeded, risk manager reduces contracts to fit instead of blocking.
 - **Kill switch** -- Daily loss = stop for day (auto-resume). 3 consecutive = 4h pause. No Sharpe-based shutdown.
+- **Rolling drawdown** -- 5-day rolling P&L check. Block trading if rolling P&L <= -25% of balance. Confirmed outcomes bypass.
+- **Daily P&L time series** -- `daily_history` array in `pnl_history.json`, updated by single-writer `sync_pnl_from_kalshi()`. 90-day cap. `rolling_5d_pnl_cents` computed from last 5 entries.
+- **SIGTERM graceful shutdown** -- `threading.Event` checked each cycle. On SIGTERM: breaks loop, prints shutdown message. `time.sleep()` replaced with `shutdown_event.wait()` for instant response.
+- **Balance single source** -- `kalshi_bot.main()` reads balance from `risk._get_balance_cents()` (60s cached + fallback). No redundant API call.
+- **Health endpoint sanitized** -- `/api/health` returns only `{status, timestamp}` when unauthenticated. Full details require auth token.
 
 ## NWS Station Mappings (20 Cities)
 
@@ -110,6 +115,7 @@ Bankroll ~$48. All values in `config.py`. Cents = 100 per $1.00. `BALANCE_FALLBA
 | `DAILY_LOSS_LIMIT_CENTS` | 600 ($6) | ~15% of bankroll |
 | `CONSECUTIVE_LOSS_PAUSE` | 3 losses / 60 min | |
 | `KILL_SWITCH_CONSEC_LOSSES` | 3 | 4-hour pause, then auto-resume |
+| `ROLLING_DRAWDOWN_LIMIT_PCT` | 25% | Block trading if 5-day rolling P&L <= -25% of balance. Confirmed bypass. |
 
 ### Position Sizing & Exposure
 | Parameter | Value | Notes |

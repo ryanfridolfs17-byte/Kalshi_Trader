@@ -526,6 +526,43 @@ class TradeIntelligence:
                 "kalshi_settlements": len(all_settlements),
                 "last_sync": datetime.now(timezone.utc).isoformat(),
             }
+
+            # --- Daily P&L time series tracking ---
+            daily_history = []
+            if os.path.exists(PNL_DATA_FILE):
+                try:
+                    with open(PNL_DATA_FILE, "r") as _f:
+                        _existing = json.load(_f)
+                        daily_history = _existing.get("daily_history", [])
+                except Exception:
+                    daily_history = []
+
+            today_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+            today_entry = {
+                "date": today_str,
+                "pnl_cents": today_pnl,
+                "wins": today_wins,
+                "losses": today_losses,
+                "account_balance_cents": account_balance,
+                "account_pnl_cents": account_pnl,
+            }
+
+            if daily_history and daily_history[-1].get("date") == today_str:
+                daily_history[-1] = today_entry
+            else:
+                daily_history.append(today_entry)
+
+            # Keep last 90 days
+            if len(daily_history) > 90:
+                daily_history = daily_history[-90:]
+
+            # Rolling 5-day P&L
+            last_5 = daily_history[-5:]
+            rolling_5d_pnl_cents = sum(e.get("pnl_cents", 0) for e in last_5)
+
+            self.pnl_data["daily_history"] = daily_history
+            self.pnl_data["rolling_5d_pnl_cents"] = rolling_5d_pnl_cents
+
             self._save_pnl(self.pnl_data)
 
             print(f"  [P&L SYNC] {len(all_fills)} fills, "
@@ -1070,4 +1107,79 @@ class TradeIntelligence:
             config.atomic_json_save(PNL_DATA_FILE, data)
         except Exception:
             pass
+
+    def compute_performance_metrics(self):
+        """Compute performance metrics from daily P&L history.
+
+        Returns dict with sharpe_ratio, max_drawdown_cents, max_drawdown_pct,
+        win_rate, profit_factor, winning_days, losing_days, cumulative_pnl_cents.
+        """
+        # Load daily_history from in-memory pnl_data or file
+        daily_history = None
+        if hasattr(self, "pnl_data") and self.pnl_data:
+            daily_history = self.pnl_data.get("daily_history")
+        if not daily_history:
+            try:
+                with open(PNL_DATA_FILE, "r") as _f:
+                    daily_history = json.load(_f).get("daily_history", [])
+            except Exception:
+                daily_history = []
+
+        if not daily_history:
+            return {
+                "sharpe_ratio": None, "max_drawdown_cents": 0,
+                "max_drawdown_pct": 0.0, "win_rate": None,
+                "profit_factor": None, "winning_days": 0,
+                "losing_days": 0, "cumulative_pnl_cents": 0,
+            }
+
+        daily_pnls = [e.get("pnl_cents", 0) for e in daily_history]
+        n = len(daily_pnls)
+
+        # Cumulative P&L
+        cumulative_pnl = sum(daily_pnls)
+
+        # Winning / losing days
+        winning_days = sum(1 for p in daily_pnls if p > 0)
+        losing_days = sum(1 for p in daily_pnls if p < 0)
+        win_rate = winning_days / n if n > 0 else None
+
+        # Sharpe ratio (annualized) -- need at least 5 days
+        sharpe_ratio = None
+        if n >= 5:
+            mean_pnl = cumulative_pnl / n
+            variance = sum((p - mean_pnl) ** 2 for p in daily_pnls) / (n - 1)
+            std_pnl = math.sqrt(variance) if variance > 0 else 0
+            if std_pnl > 0:
+                sharpe_ratio = round((mean_pnl / std_pnl) * math.sqrt(252), 3)
+
+        # Max drawdown
+        peak = 0
+        max_dd_cents = 0
+        max_dd_pct = 0.0
+        running = 0
+        for p in daily_pnls:
+            running += p
+            if running > peak:
+                peak = running
+            dd = peak - running
+            if dd > max_dd_cents:
+                max_dd_cents = dd
+                max_dd_pct = round(dd / peak * 100, 2) if peak > 0 else 0.0
+
+        # Profit factor
+        gross_profit = sum(p for p in daily_pnls if p > 0)
+        gross_loss = abs(sum(p for p in daily_pnls if p < 0))
+        profit_factor = round(gross_profit / gross_loss, 3) if gross_loss > 0 else None
+
+        return {
+            "sharpe_ratio": sharpe_ratio,
+            "max_drawdown_cents": max_dd_cents,
+            "max_drawdown_pct": max_dd_pct,
+            "win_rate": round(win_rate, 3) if win_rate is not None else None,
+            "profit_factor": profit_factor,
+            "winning_days": winning_days,
+            "losing_days": losing_days,
+            "cumulative_pnl_cents": cumulative_pnl,
+        }
 

@@ -20,6 +20,8 @@ class RiskManager:
         self.client = kalshi_client
         self._cached_balance = None
         self._balance_cache_time = 0
+        self._pnl_cache = None
+        self._pnl_cache_time = 0
         self.state = self._load_state()
         self._ensure_state_defaults()
 
@@ -114,6 +116,27 @@ class RiskManager:
                 self._save_state()
             return False, "%d consecutive losses -> %dh pause" % (
                 config.KILL_SWITCH_CONSEC_LOSSES, config.KILL_SWITCH_PAUSE_HOURS)
+
+        # Rolling 5-day drawdown check (confirmed outcomes bypass)
+        if not signal.get("is_confirmed", False):
+            now = time.time()
+            if self._pnl_cache is None or now - self._pnl_cache_time >= 60:
+                try:
+                    if os.path.exists(config.PNL_HISTORY_FILE):
+                        with open(config.PNL_HISTORY_FILE, "r") as f:
+                            self._pnl_cache = json.load(f)
+                    else:
+                        self._pnl_cache = {}
+                except Exception:
+                    self._pnl_cache = {}
+                self._pnl_cache_time = now
+            rolling_5d = self._pnl_cache.get("rolling_5d_pnl_cents") if isinstance(self._pnl_cache, dict) else None
+            if rolling_5d is not None:
+                balance = self._get_balance_cents()
+                drawdown_limit = -(balance * config.ROLLING_DRAWDOWN_LIMIT_PCT)
+                if rolling_5d <= drawdown_limit:
+                    return False, "Rolling 5-day drawdown limit: %dc (limit %dc)" % (
+                        int(rolling_5d), int(drawdown_limit))
 
         last = self.state.get("last_trade_time")
         if last and not signal.get("same_cycle", False):
