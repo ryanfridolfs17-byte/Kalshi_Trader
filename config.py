@@ -201,6 +201,9 @@ SMTP_PASS = os.environ.get("SMTP_PASS", "")
 HEALTH_STALE_MINUTES = 15
 HEALTH_WARN_MINUTES = 10
 
+# === DASHBOARD AUTH ===
+DASHBOARD_TOKEN = os.environ.get("DASHBOARD_TOKEN", "")  # Bearer token; empty = no auth (local dev)
+
 
 def atomic_json_save(filepath, data, indent=2):
     """Write JSON atomically: write to temp, then os.replace()."""
