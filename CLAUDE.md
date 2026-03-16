@@ -82,6 +82,10 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 - **Balance single source** -- `kalshi_bot.main()` reads balance from `risk._get_balance_cents()` (60s cached + fallback). No redundant API call.
 - **Health endpoint sanitized** -- `/api/health` returns only `{status, timestamp}` when unauthenticated. Full details require auth token.
 - **Regional correlation caps** -- 6 regions (northeast, southeast, south_central, mountain_west, west_coast, midwest). Max 15% of balance per region. Confirmed outcomes bypass.
+- **Convergence calibration logging** -- `[CONV]` log every time convergence is computed. Shows score, tracking error, spread, hour, and trigger status. Set thresholds from percentile data after 2 weeks.
+- **Deploy gate** -- `RUN python -c "import kalshi_bot"` in Dockerfile catches syntax errors before Railway deploys.
+- **CORS origin restriction** -- `CORS_ORIGIN` env var (default `*`). Set to Railway URL in production.
+- **Dead endpoints** -- `/api/pending` and `/api/reports` return 410 Gone.
 
 ## NWS Station Mappings (20 Cities)
 
