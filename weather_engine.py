@@ -24,7 +24,7 @@ SETTLEMENT SOURCE:
                 KMIA (Miami Intl), KAUS (Austin-Bergstrom),
                 KLAX (Los Angeles), KDEN (Denver), KPHL (Philadelphia),
                 KATL (Atlanta), KBOS (Boston), KDFW (Dallas-Fort Worth),
-                KDCA (Washington DC), KIAH (Houston), KLAS (Las Vegas),
+                KDCA (Washington DC), KHOU (Houston Hobby), KLAS (Las Vegas),
                 KMSP (Minneapolis), KMSY (New Orleans), KOKC (Oklahoma City),
                 KPHX (Phoenix), KSAT (San Antonio), KSEA (Seattle),
                 KSFO (San Francisco)

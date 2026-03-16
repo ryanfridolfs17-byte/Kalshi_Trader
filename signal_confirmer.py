@@ -265,7 +265,7 @@ class SignalConfirmer:
         in_bucket = temp_low <= forecast_high <= temp_high
         dist_to_edge = min(abs(forecast_high - temp_low),
                            abs(forecast_high - temp_high))
-        is_yes = our_prob > 0.5
+        is_yes = our_prob >= 0.5
 
         if is_yes:
             if in_bucket:
