@@ -398,13 +398,16 @@ class Strategy:
             if edge < config.CONFIRMED_MIN_EDGE:
                 return None
 
-            # Confirmed outcome sizing: CONFIRMED_POSITION_PCT of bankroll
-            max_bet = int(self.balance_cents * config.CONFIRMED_POSITION_PCT)
-            max_bet = min(max_bet, config.DAILY_LOSS_LIMIT_CENTS)
-            contracts = min(
-                max(1, int(max_bet / no_price)),
-                config.MAX_CONTRACTS_PER_TICKER
+            # Confirmed outcome sizing via Kelly with CONFIRMED_POSITION_PCT cap
+            contracts = self._kelly_size(
+                edge, 0.99, no_price, self.balance_cents, 1.0,
+                is_confirmed=True
             )
+            if contracts <= 0:
+                contracts = 1
+            # Apply NO sizing multiplier for expensive NO contracts
+            if no_price >= 50:
+                contracts = max(1, int(contracts * config.NO_SIDE_SIZING_MULTIPLIER))
 
             print(f"  [CASE1] {city_code} high={todays_high}F > "
                   f"bucket {temp_low}-{temp_high}F + 1F rounding")
@@ -415,7 +418,7 @@ class Strategy:
                 "ticker": ticker,
                 "side": "no",
                 "edge": round(edge, 4),
-                "fee_adjusted_edge": round(edge * 0.93, 4),
+                "fee_adjusted_edge": round(self._calculate_fee_adjusted_edge(0.99, no_price / 100.0), 4),
                 "our_prob": 0.99,
                 "market_prob": round(no_price / 100.0, 4),
                 "price_cents": no_price,
@@ -485,21 +488,28 @@ class Strategy:
                 if edge < config.CONFIRMED_MIN_EDGE:
                     return None
 
+                # Dynamic probability based on gap size and hour:
+                # Larger gap + later hour = higher confidence bucket won't be reached
+                # Base: 0.85 at minimum gap. Scales up to 0.95 for large gaps late in day.
+                gap_factor = min(1.0, temp_gap / 15.0)  # 15F gap = max confidence
+                hour_factor = min(1.0, max(0.0, (local_hour - 13) / 5.0))
+                case3_prob = 0.85 + 0.10 * (0.6 * gap_factor + 0.4 * hour_factor)
+
                 case3_contracts = self._kelly_size(
-                    edge, 0.90, no_price, self.balance_cents, 1.0
+                    edge, case3_prob, no_price, self.balance_cents, 1.0
                 )
 
                 print(f"  [CASE3] {city_code} high={todays_high}F, "
                       f"bucket {temp_low}-{temp_high}F, "
-                      f"gap={temp_gap:.0f}F -> STRONG")
+                      f"gap={temp_gap:.0f}F -> STRONG (p={case3_prob:.2f})")
 
                 return {
                     "signal": "buy",
                     "ticker": ticker,
                     "side": "no",
                     "edge": round(edge, 4),
-                    "fee_adjusted_edge": round(edge * 0.93, 4),
-                    "our_prob": 0.90,  # matches Kelly sizing probability
+                    "fee_adjusted_edge": round(self._calculate_fee_adjusted_edge(case3_prob, no_price / 100.0), 4),
+                    "our_prob": round(case3_prob, 4),
                     "market_prob": round(no_price / 100.0, 4),
                     "price_cents": no_price,
                     "suggested_contracts": case3_contracts,
@@ -777,9 +787,10 @@ class Strategy:
         forecast_mean = distribution.get("forecasted_high_mean", 0)
         model_spread = distribution.get("model_spread", 5.0)
         tracking_error = abs(obs_high - forecast_mean)
-        score = max(0.0, 1.0 - (tracking_error / 5.0)) * max(0.0, 1.0 - (model_spread / 8.0))
-        score *= min(1.0, (local_hour - 13) / 5.0)
-        score = min(1.0, score)
+        hour_factor = min(1.0, max(0.0, (local_hour - 13) / 5.0))
+        score = (max(0.0, 1.0 - (tracking_error / 5.0))
+                 * max(0.0, 1.0 - (model_spread / 8.0))
+                 * hour_factor)
         if score > 0.5:
             print("  [CONVERGENCE] %s score=%.2f" % (city_code, score))
         return score
