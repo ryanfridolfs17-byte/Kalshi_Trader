@@ -121,7 +121,7 @@ Bankroll ~$48. All values in `config.py`. Cents = 100 per $1.00. `BALANCE_FALLBA
 | `MAX_PER_CITY_PCT` | 10% | Confirmed bypass |
 | `MAX_PER_TICKER_CENTS` | 400 ($4) | Always enforced |
 | `MAX_CONTRACTS_PER_TICKER` | 5 | Always enforced |
-| `MAX_OPEN_POSITIONS` | 3 | Confirmed/arb bypass |
+| `MAX_OPEN_POSITIONS` | 6 | Confirmed/arb bypass |
 | `MAX_CORRELATED_POSITIONS` | 2 (3 confirmed) | Per city |
 | `LIQUIDITY_RESERVE_PCT` | 20% | |
 | `TRADE_COOLDOWN` | 120 sec | Same-cycle exempt |
