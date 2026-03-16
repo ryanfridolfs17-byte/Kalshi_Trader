@@ -278,7 +278,10 @@ class WeatherEngine:
         if model_weights:
             weights_key = "_" + "_".join("%s:%s" % (k, model_weights[k]) for k in sorted(model_weights))
         bias_key = "_cb%.2f" % float(city_bias_f or 0.0)
-        cache_key = f"{city_code}_{target_date}{weights_key}{bias_key}"
+        mbias_key = ""
+        if model_biases:
+            mbias_key = "_mb" + "_".join("%s:%.1f" % (k, model_biases[k]) for k in sorted(model_biases))
+        cache_key = f"{city_code}_{target_date}{weights_key}{bias_key}{mbias_key}"
         pos_ttl = getattr(config, "DISTRIBUTION_CACHE_TTL", 900)
         in_window = _in_fetch_window()
         if cache_key in self._cache:

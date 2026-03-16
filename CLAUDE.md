@@ -88,7 +88,7 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 - **Dead endpoints** -- `/api/pending` and `/api/reports` return 410 Gone.
 - **Fee-adjusted Kelly** -- Kelly sizing uses fee-adjusted edge (not raw edge) across all trade paths (normal, CASE 1, CASE 3). Prevents oversizing on marginal trades.
 - **CASE 1 fee gate** -- CASE 1 confirmed outcomes must pass both `CASE1_MIN_EDGE` (raw, 2%) and `CASE1_FEE_ADJUSTED_MIN_EDGE` (net, 1%). Lower than normal `FEE_ADJUSTED_MIN_EDGE` (3%) because outcome is near-guaranteed.
-- **NO-side exit pricing** -- Exit orders use `limit_price=99` for NO positions (was 1c, which wouldn't fill). YES exits still use 1c.
+- **Exit pricing** -- ALL exit orders (YES and NO) use `limit_price=1` (accept any bid). For sell orders, limit_price = minimum acceptable price. 1c = "sell at any price" = fills at current bid.
 - **Taker NO ceiling** -- `place_market_order()` rejects NO-side orders exceeding `NO_SIDE_MAX_PRICE_CENTS`. Matches limit order guard.
 - **Multiplier cap** -- Combined `conf_mult * rounding_mult * conv_mult` capped at 2.0x before Kelly sizing.
 - **PNL cache invalidation** -- `risk._pnl_cache` cleared immediately after `sync_pnl_from_kalshi()` so drawdown check uses fresh data.
