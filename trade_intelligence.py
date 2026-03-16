@@ -374,6 +374,20 @@ class TradeIntelligence:
             except Exception:
                 pass
 
+            # Debug: log first fill's fields so we can diagnose price field names
+            if all_fills:
+                sample = all_fills[0]
+                print("  [PNL] Sample fill fields: %s" % sorted(sample.keys()))
+                print("  [PNL] Sample fill: action=%s side=%s yes_price=%s no_price=%s count=%s" % (
+                    sample.get("action"), sample.get("side"),
+                    sample.get("yes_price"), sample.get("no_price"),
+                    sample.get("count")))
+
+            # Normalize fills: handle both old (yes_price/no_price int cents) and
+            # new Kalshi API formats (dollar strings, or renamed fields)
+            for fill in all_fills:
+                self._normalize_fill(fill)
+
             # Group fills by ticker, process with pairing model
             ticker_fill_lists = defaultdict(list)
             for fill in all_fills:
@@ -415,12 +429,29 @@ class TradeIntelligence:
                     "yes_held": yes_held, "no_held": no_held,
                 }
 
+            # Debug: log first settlement's fields
+            if all_settlements:
+                sample_s = all_settlements[0]
+                print("  [PNL] Sample settlement fields: %s" % sorted(sample_s.keys()))
+
             # Settlement revenue lookup
+            # Handle multiple possible field names for revenue
             settle_rev = {}
             for s in all_settlements:
                 t = s.get("ticker", "")
                 if t:
-                    settle_rev[t] = s.get("revenue", 0) or 0
+                    rev = s.get("revenue", None)
+                    if rev is None:
+                        rev = s.get("revenue_cents", None)
+                    if rev is None:
+                        # Try dollar string
+                        rev_str = s.get("revenue_dollars")
+                        if rev_str is not None:
+                            try:
+                                rev = int(round(float(rev_str) * 100))
+                            except (ValueError, TypeError):
+                                rev = 0
+                    settle_rev[t] = int(rev or 0)
             settle_rev_copy = dict(settle_rev)
 
             # Realized P&L for closed tickers
@@ -636,6 +667,79 @@ class TradeIntelligence:
                 config.atomic_json_save(config.TRADE_LOG_FILE, trade_log)
             except Exception:
                 pass
+
+    # =====================================================
+    # FILL / SETTLEMENT NORMALIZATION
+    # =====================================================
+
+    @staticmethod
+    def _normalize_fill(f):
+        """Normalize Kalshi fill response to ensure yes_price/no_price exist as int cents.
+
+        Kalshi API may return prices as:
+        - yes_price / no_price (int cents) — old format
+        - yes_price_cents / no_price_cents (int cents)
+        - yes_price_dollars / no_price_dollars (string dollars)
+        - price (single field, int cents)
+        This method handles all variants.
+        """
+        if not isinstance(f, dict):
+            return
+
+        def _to_cents(val):
+            if val is None:
+                return 0
+            if isinstance(val, str):
+                try:
+                    fval = float(val)
+                    # If looks like dollars (< 1.0 or has decimal), convert
+                    if fval < 1.5 or "." in val:
+                        return int(round(fval * 100))
+                    return int(fval)
+                except (ValueError, TypeError):
+                    return 0
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                return 0
+
+        # Already have int cents?
+        if isinstance(f.get("yes_price"), (int, float)) and f["yes_price"] > 0:
+            f["yes_price"] = int(f["yes_price"])
+            f["no_price"] = int(f.get("no_price", 0) or 0)
+            return
+        if isinstance(f.get("no_price"), (int, float)) and f["no_price"] > 0:
+            f["no_price"] = int(f["no_price"])
+            f["yes_price"] = int(f.get("yes_price", 0) or 0)
+            return
+
+        # Try dollar-string fields
+        if "yes_price_dollars" in f or "no_price_dollars" in f:
+            f["yes_price"] = _to_cents(f.get("yes_price_dollars"))
+            f["no_price"] = _to_cents(f.get("no_price_dollars"))
+            return
+
+        # Try _cents suffix
+        if "yes_price_cents" in f or "no_price_cents" in f:
+            f["yes_price"] = _to_cents(f.get("yes_price_cents"))
+            f["no_price"] = _to_cents(f.get("no_price_cents"))
+            return
+
+        # Try single "price" field
+        if "price" in f:
+            price = _to_cents(f.get("price"))
+            side = f.get("side", "")
+            if side == "yes":
+                f["yes_price"] = price
+                f["no_price"] = max(0, 100 - price)
+            elif side == "no":
+                f["no_price"] = price
+                f["yes_price"] = max(0, 100 - price)
+            return
+
+        # Last resort: set to 0 (will be logged by diagnostic)
+        f.setdefault("yes_price", 0)
+        f.setdefault("no_price", 0)
 
     # =====================================================
     # METAR OBSERVATION API (primary, batch all stations)
@@ -1062,9 +1166,10 @@ class TradeIntelligence:
             market = market_data.get("market", market_data)
             status = market.get("status", "")
             result = market.get("result", "")
-            if status == "settled" and result:
+            # Kalshi uses "settled", "finalized", or "closed" for resolved markets
+            if status in ("settled", "finalized", "closed") and result:
                 return {"result": result}
-            if status:
+            if status and status not in ("active", "open", "trading"):
                 print(f"  [SETTLE] {ticker}: status={status}, result={result}")
         except Exception as e:
             print(f"  [SETTLE] get_market({ticker}) error: {e}")
