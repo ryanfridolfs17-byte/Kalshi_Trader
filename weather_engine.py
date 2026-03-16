@@ -948,7 +948,8 @@ class WeatherEngine:
                 adj_weights = []
                 for i, t in enumerate(raw_highs):
                     if t >= obs_high:
-                        adjusted.append(t + shift)
+                        # Already at/above observation — keep as-is
+                        adjusted.append(t)
                     else:
                         # Lift below-obs temps up to at least obs_high
                         adjusted.append(max(obs_high, t + shift))
@@ -970,8 +971,21 @@ class WeatherEngine:
                 new_std = math.sqrt(variance)
                 distribution['forecasted_high_mean'] = round(new_mean, 1)
                 distribution['std_dev'] = round(new_std, 1)
-                distribution['raw_highs'] = sorted(adjusted)
-                distribution['raw_weights'] = [w for _, w in sorted(zip(adjusted, adj_weights))]
+                sorted_pairs = sorted(zip(adjusted, adj_weights))
+                distribution['raw_highs'] = [t for t, _ in sorted_pairs]
+                distribution['raw_weights'] = [w for _, w in sorted_pairs]
+
+                # Recompute bucket probabilities from adjusted temps
+                from collections import defaultdict
+                bucket_counts = defaultdict(float)
+                fine_counts = defaultdict(float)
+                for t, w in sorted_pairs:
+                    b5 = int(t // 5) * 5
+                    bucket_counts[f"{b5}-{b5 + 4}"] += w
+                    b2 = int(t // 2) * 2
+                    fine_counts[f"{b2}-{b2 + 1}"] += w
+                distribution['bucket_probs_5f'] = {k: v / total_w for k, v in sorted(bucket_counts.items())}
+                distribution['bucket_probs_2f'] = {k: v / total_w for k, v in sorted(fine_counts.items())}
         else:
             # No raw temps available -- just shift the mean
             distribution['forecasted_high_mean'] = round(forecast_mean + shift, 1)

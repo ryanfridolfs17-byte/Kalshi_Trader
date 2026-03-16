@@ -291,8 +291,10 @@ class Strategy:
                               confirmation_verdict=verdict)
 
         # Step 10: Kelly sizing (convergence boost applied pre-caps via multiplier)
+        # Don't boost convergence on REJECT-overridden trades (contradictory signals)
         conv_mult = 1.0
-        if convergence_score > config.CONVERGENCE_SCORE_THRESHOLD:
+        if (verdict != "REJECT"
+                and convergence_score > config.CONVERGENCE_SCORE_THRESHOLD):
             conv_mult = 1.0 + config.CONVERGENCE_SIZING_BOOST * convergence_score
         contracts = self._kelly_size(
             edge, win_prob, price_cents, self.balance_cents,
@@ -394,7 +396,7 @@ class Strategy:
                 return None
             # CASE1 bypasses NO_SIDE_MAX_PRICE_CENTS (near-guaranteed outcome)
 
-            edge = (100 - no_price) / 100.0
+            edge = 0.99 - (no_price / 100.0)
             if edge < config.CONFIRMED_MIN_EDGE:
                 return None
 
@@ -484,10 +486,6 @@ class Strategy:
                 if no_price > config.NO_SIDE_MAX_PRICE_CENTS:
                     return None
 
-                edge = (100 - no_price) / 100.0
-                if edge < config.CONFIRMED_MIN_EDGE:
-                    return None
-
                 # Dynamic probability based on gap size and hour:
                 # Larger gap + later hour = higher confidence bucket won't be reached
                 # Base: 0.85 at minimum gap. Scales up to 0.95 for large gaps late in day.
@@ -495,8 +493,14 @@ class Strategy:
                 hour_factor = min(1.0, max(0.0, (local_hour - 13) / 5.0))
                 case3_prob = 0.85 + 0.10 * (0.6 * gap_factor + 0.4 * hour_factor)
 
+                edge = case3_prob - (no_price / 100.0)
+                if edge < config.CONFIRMED_MIN_EDGE:
+                    return None
+
+                case3_spread = dist.get("model_spread") if dist else None
                 case3_contracts = self._kelly_size(
-                    edge, case3_prob, no_price, self.balance_cents, 1.0
+                    edge, case3_prob, no_price, self.balance_cents, 1.0,
+                    model_spread=case3_spread
                 )
 
                 print(f"  [CASE3] {city_code} high={todays_high}F, "

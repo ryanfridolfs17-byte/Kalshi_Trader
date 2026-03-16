@@ -59,27 +59,37 @@ class MarketScanner:
 
             try:
                 url = f"{self.base_url}/markets"
-                params = {
-                    "series_ticker": series_ticker,
-                    "status": "open",
-                    "limit": 200,
-                }
+                cursor = None
+                city_count = 0
+                while True:
+                    params = {
+                        "series_ticker": series_ticker,
+                        "status": "open",
+                        "limit": 200,
+                    }
+                    if cursor:
+                        params["cursor"] = cursor
 
-                response = requests.get(url, params=params, timeout=15)
-                if response.status_code != 200:
-                    print(f"  [SCAN] WARN: Failed to fetch {series_ticker}: HTTP {response.status_code}")
-                    continue
+                    response = requests.get(url, params=params, timeout=15)
+                    if response.status_code != 200:
+                        print(f"  [SCAN] WARN: Failed to fetch {series_ticker}: HTTP {response.status_code}")
+                        break
 
-                data = response.json()
-                markets = data.get("markets", [])
+                    data = response.json()
+                    markets = data.get("markets", [])
 
-                for m in markets:
-                    _normalize_scanner_market(m)
-                    m["_city_code"] = city_code
-                    weather_markets.append(m)
+                    for m in markets:
+                        _normalize_scanner_market(m)
+                        m["_city_code"] = city_code
+                        weather_markets.append(m)
+                    city_count += len(markets)
 
-                if markets:
-                    print(f"  [SCAN] {city_code}: Found {len(markets)} open weather markets")
+                    cursor = data.get("cursor", "")
+                    if not cursor or len(markets) < 200:
+                        break
+
+                if city_count:
+                    print(f"  [SCAN] {city_code}: Found {city_count} open weather markets")
 
             except Exception as e:
                 print(f"  [SCAN] Error fetching {series_ticker}: {e}")

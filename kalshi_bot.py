@@ -511,7 +511,6 @@ def _execute_exit(maker, risk, ticker, position):
     """Execute an exit order for a position. Retries once on failure."""
     if not maker or config.DRY_RUN:
         print("  [EXIT] DRY RUN: Would exit %s" % ticker)
-        risk.close_position(ticker)
         return
 
     try:

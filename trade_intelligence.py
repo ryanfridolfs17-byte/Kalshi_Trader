@@ -567,7 +567,9 @@ class TradeIntelligence:
             t_cost = flows.get("total_cost", 0)
             p_rev = flows.get("pair_revenue", 0)
             s_revenue = settle_rev.get(t_ticker, 0)
-            t_pnl = p_rev + s_revenue - t_cost
+            # Use pair_revenue if available, otherwise settlement (not both)
+            t_returned = p_rev if p_rev > 0 else s_revenue
+            t_pnl = t_returned - t_cost
 
             already_settled_pnl = sum(
                 t2.get("profit_cents", 0) for t2 in trade_log

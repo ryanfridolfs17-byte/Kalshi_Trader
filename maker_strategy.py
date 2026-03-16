@@ -444,7 +444,7 @@ class MakerStrategy:
             orders = [t for t in self._fill_tracking.get("%s_orders" % side, []) if t > cutoff]
             fill_count = len(fills)
             order_count = len(orders)
-            fill_rate = fill_count / order_count if order_count > 0 else 0.0
+            fill_rate = min(1.0, fill_count / order_count) if order_count > 0 else 0.0
             result[side] = {"fills": fill_count, "orders": order_count, "fill_rate": fill_rate}
             if order_count >= 3:
                 if fill_rate > 0.85:
