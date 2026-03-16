@@ -390,6 +390,7 @@ class Strategy:
         if target_date != local_date:
             return None
         if local_hour < config.CASE1_MIN_LOCAL_HOUR:
+            print(f"  [CASE1-SKIP] {city_code} hour={local_hour} < min={config.CASE1_MIN_LOCAL_HOUR}")
             return None
 
         # ---- CASE 1: High already ABOVE bucket upper bound ----
@@ -398,6 +399,7 @@ class Strategy:
         if todays_high > temp_high + config.ROUNDING_BUFFER_HARD_F:
             no_price = market.get("no_ask", 0) or (100 - ref_price)
             if no_price <= 0 or no_price >= 98:
+                print(f"  [CASE1-SKIP] {city_code} NO price {no_price}c out of range (0,98)")
                 return None
             # CASE1 bypasses NO_SIDE_MAX_PRICE_CENTS (near-guaranteed outcome)
 
@@ -405,6 +407,8 @@ class Strategy:
             fee_adj_edge = self._calculate_fee_adjusted_edge(0.99, no_price / 100.0)
             case1_fee_min = getattr(config, "CASE1_FEE_ADJUSTED_MIN_EDGE", 0.01)
             if edge < config.CASE1_MIN_EDGE or fee_adj_edge < case1_fee_min:
+                print(f"  [CASE1-SKIP] {city_code} edge={edge:.3f} fee_adj={fee_adj_edge:.3f} "
+                      f"below min (raw={config.CASE1_MIN_EDGE}, fee={case1_fee_min})")
                 return None
 
             # Confirmed outcome sizing via Kelly with CONFIRMED_POSITION_PCT cap
@@ -482,15 +486,20 @@ class Strategy:
                                 if local_hour >= 15
                                 else config.CASE3_ENSEMBLE_VETO_GAP_DEFAULT)
                     if f_mean >= temp_low - veto_gap:
+                        print(f"  [CASE3-SKIP] {city_code} ensemble veto: "
+                              f"f_mean={f_mean:.1f}F >= {temp_low}-{veto_gap}F threshold")
                         case3_triggered = False
                 else:
+                    print(f"  [CASE3-SKIP] {city_code} no ensemble data available")
                     case3_triggered = False  # No ensemble = blocked
 
             if case3_triggered:
                 no_price = market.get("no_ask", 0) or (100 - ref_price)
                 if no_price <= 0 or no_price >= 95:
+                    print(f"  [CASE3-SKIP] {city_code} NO price {no_price}c out of range (0,95)")
                     return None
                 if no_price > config.NO_SIDE_MAX_PRICE_CENTS:
+                    print(f"  [CASE3-SKIP] {city_code} NO price {no_price}c > cap {config.NO_SIDE_MAX_PRICE_CENTS}c")
                     return None
 
                 # Dynamic probability based on gap size and hour:
@@ -503,6 +512,8 @@ class Strategy:
                 edge = case3_prob - (no_price / 100.0)
                 fee_adj_edge = self._calculate_fee_adjusted_edge(case3_prob, no_price / 100.0)
                 if edge < config.CONFIRMED_MIN_EDGE or fee_adj_edge < config.FEE_ADJUSTED_MIN_EDGE:
+                    print(f"  [CASE3-SKIP] {city_code} edge={edge:.3f} fee_adj={fee_adj_edge:.3f} "
+                          f"below min (raw={config.CONFIRMED_MIN_EDGE}, fee={config.FEE_ADJUSTED_MIN_EDGE})")
                     return None
 
                 # Use conservative default spread (8F) when ensemble unavailable
