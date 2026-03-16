@@ -707,10 +707,14 @@ class WeatherEngine:
                  If None, all members weighted equally (backward compatible).
         """
         n = len(all_highs)
+        if n == 0:
+            return None
         if weights is None:
             weights = [1.0] * n
 
         total_weight = sum(weights)
+        if total_weight <= 0:
+            return None
 
         # Sort highs with their weights for median/min/max
         sorted_pairs = sorted(zip(all_highs, weights), key=lambda x: x[0])

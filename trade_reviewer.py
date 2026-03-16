@@ -1150,6 +1150,7 @@ class TradeReviewer:
             headers = {"User-Agent": "KalshiBot/4.0", "Accept": "application/geo+json"}
             resp = requests.get(url, headers=headers, params=params, timeout=15)
             if resp.status_code != 200:
+                print("  [REVIEWER] NWS API error for %s/%s: HTTP %d" % (city_code, target_date, resp.status_code))
                 return None
 
             features = resp.json().get("features", [])
@@ -1167,7 +1168,8 @@ class TradeReviewer:
                 self.state["actual_temps"][cache_key] = max_temp
 
             return max_temp
-        except Exception:
+        except Exception as e:
+            print("  [REVIEWER] NWS fetch error for %s/%s: %s" % (city_code, target_date, e))
             return None
 
     def _check_bias_drift(self):

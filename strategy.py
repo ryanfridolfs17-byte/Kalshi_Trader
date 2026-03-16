@@ -33,7 +33,7 @@ class Strategy:
         self.weather = WeatherEngine()
         self.confirmer = SignalConfirmer()
         self.reviewer = reviewer
-        self.balance_cents = 4000  # Default $40, updated by caller
+        self.balance_cents = config.BALANCE_FALLBACK_CENTS
 
     # ===========================================================
     # MAIN ENTRY
@@ -711,7 +711,7 @@ class Strategy:
 
         # Dispersion multiplier: high model disagreement = lower sizing
         if model_spread is not None and model_spread > 0:
-            dispersion_mult = 1.0 / (1.0 + model_spread / 5.0)
+            dispersion_mult = 1.0 / (1.0 + max(0.0, model_spread) / 5.0)
             fraction *= dispersion_mult
 
         bet_cents = fraction * balance_cents

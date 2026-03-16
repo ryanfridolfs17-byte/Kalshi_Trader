@@ -407,7 +407,7 @@ class MakerStrategy:
                 if now - placed_dt > stale_limit:
                     stale.append(order_id)
             except Exception:
-                stale.append(order_id)
+                print("  [MAKER] Skipping stale check for order %s: malformed timestamp '%s'" % (order_id[:8], placed))
 
         for oid in stale:
             self.cancel_order(oid)
@@ -473,7 +473,7 @@ class MakerStrategy:
 
     def _load_fill_tracking(self):
         """Load adverse selection tracking data."""
-        path = os.path.join(config.STATE_DIR, "fill_tracking.json")
+        path = getattr(config, "FILL_TRACKING_FILE", os.path.join(config.STATE_DIR, "fill_tracking.json"))
         try:
             if os.path.exists(path):
                 with open(path, "r") as f:
@@ -483,8 +483,13 @@ class MakerStrategy:
         return {}
 
     def _save_fill_tracking(self):
-        """Save adverse selection tracking data."""
-        path = os.path.join(config.STATE_DIR, "fill_tracking.json")
+        """Save adverse selection tracking data. Prunes entries older than 25h."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+        for key in list(self._fill_tracking.keys()):
+            entries = self._fill_tracking[key]
+            if isinstance(entries, list):
+                self._fill_tracking[key] = [t for t in entries if t > cutoff]
+        path = getattr(config, "FILL_TRACKING_FILE", os.path.join(config.STATE_DIR, "fill_tracking.json"))
         try:
             config.atomic_json_save(path, self._fill_tracking)
         except Exception as e:

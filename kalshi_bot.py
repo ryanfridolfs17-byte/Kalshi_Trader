@@ -521,7 +521,6 @@ def _execute_exit(maker, risk, ticker, position):
             return
         # place_exit_order returned None — retry once
         print("  [EXIT] First attempt returned None for %s, retrying..." % ticker)
-        import time
         time.sleep(2)
         order = maker.place_exit_order(position, limit_price=1)
         if order:

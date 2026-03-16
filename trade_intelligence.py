@@ -1042,6 +1042,12 @@ class TradeIntelligence:
     def _set_cached(self, key, data):
         "Store data in observation cache."
         self._obs_cache[key] = {"data": data, "fetched_at": datetime.now()}
+        # Prune stale entries to prevent unbounded memory growth
+        if len(self._obs_cache) > 200:
+            cutoff = datetime.now() - timedelta(hours=6)
+            stale = [k for k, v in self._obs_cache.items() if v["fetched_at"] < cutoff]
+            for k in stale:
+                del self._obs_cache[k]
 
     def _load_pnl(self):
         "Load P&L data from file."

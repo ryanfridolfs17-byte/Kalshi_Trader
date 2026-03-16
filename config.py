@@ -185,6 +185,7 @@ BOT_STATUS_FILE = os.path.join(STATE_DIR, "bot_status.json")
 MAKER_ORDERS_FILE = os.path.join(STATE_DIR, "maker_orders.json")
 SCAN_LOG_FILE = os.path.join(STATE_DIR, "scan_log.json")
 LEARNING_STATE_FILE = os.path.join(STATE_DIR, "learning_state.json")
+FILL_TRACKING_FILE = os.path.join(STATE_DIR, "fill_tracking.json")
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 
