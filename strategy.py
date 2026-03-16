@@ -568,9 +568,9 @@ class Strategy:
         2. Price cap: NO > 50c = reject
         3. Model divergence already checked in caller
         """
-        # Price cap
-        if price_cents > config.NO_SIDE_MAX_PRICE_CENTS:
-            return False, (f"NO price {price_cents}c > "
+        # Price cap (>= to match NO_SIDE_SIZING_MULTIPLIER check)
+        if price_cents >= config.NO_SIDE_MAX_PRICE_CENTS:
+            return False, (f"NO price {price_cents}c >= "
                            f"{config.NO_SIDE_MAX_PRICE_CENTS}c cap")
 
         # Dynamic separation from expanded bucket
@@ -804,7 +804,7 @@ class Strategy:
         forecast_mean = distribution.get("forecasted_high_mean", 0)
         model_spread = distribution.get("model_spread", 5.0)
         tracking_error = abs(obs_high - forecast_mean)
-        hour_factor = min(1.0, max(0.0, (local_hour - 13) / 5.0))
+        hour_factor = min(1.0, max(0.0, (local_hour - 13) / 4.0))
         score = (max(0.0, 1.0 - (tracking_error / 5.0))
                  * max(0.0, 1.0 - (model_spread / 8.0))
                  * hour_factor)

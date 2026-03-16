@@ -995,7 +995,12 @@ class TradeIntelligence:
             return None
 
     def get_todays_high(self, city_code):
-        """Get today's observed high so far. METAR primary, NWS fallback. Returns F or None."""
+        """Get today's observed high so far. Cross-checks METAR + NWS.
+
+        Uses conservative (lower) value when both sources available and
+        disagree by >2F.  Prevents METAR spikes from triggering false
+        CASE 1 confirmations — Kalshi settles on NWS, not METAR.
+        """
         station = self._get_station(city_code)
         if not station:
             return None
@@ -1007,14 +1012,43 @@ class TradeIntelligence:
         if cached is not None:
             return cached
 
-        # --- METAR primary ---
+        metar_high = None
+        nws_high = None
+
+        # --- METAR (fast, batch-cached) ---
         if getattr(config, "METAR_ENABLED", True):
             metar_high = self._get_metar_todays_high(city_code, station)
-            if metar_high is not None:
-                self._set_cached(cache_key, metar_high)
-                return metar_high
 
-        # --- NWS fallback ---
+        # --- NWS (separate cache, settlement source) ---
+        nws_cache_key = f"nws_obs_{station}"
+        nws_high = self._get_cached(nws_cache_key, max_age_sec=120)
+        if nws_high is None:
+            nws_high = self._fetch_nws_todays_high(city_code, station)
+            if nws_high is not None:
+                self._set_cached(nws_cache_key, nws_high)
+
+        # Cross-check: use conservative value when sources disagree
+        if metar_high is not None and nws_high is not None:
+            if metar_high > nws_high + 2:
+                # METAR spike not reflected in NWS — use NWS (settlement source)
+                result = nws_high
+            else:
+                result = metar_high  # Sources agree, use METAR (more frequent)
+        elif metar_high is not None:
+            result = metar_high
+        elif nws_high is not None:
+            result = nws_high
+        else:
+            return None
+
+        self._set_cached(cache_key, result)
+        return result
+
+    def _fetch_nws_todays_high(self, city_code, station):
+        """Fetch today's high from NWS observations. Returns F or None."""
+        cities = self._get_cities()
+        if not cities or city_code not in cities:
+            return None
         try:
             tz_name = cities[city_code].get("timezone", "America/New_York")
             tz = ZoneInfo(tz_name)
@@ -1044,9 +1078,7 @@ class TradeIntelligence:
                     if temp_c is not None:
                         temps.append(math.floor(temp_c * 9 / 5 + 32))
             if temps:
-                high = max(temps)
-                self._set_cached(cache_key, high)
-                return high
+                return max(temps)
         except Exception:
             pass
         return None
