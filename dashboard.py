@@ -347,8 +347,12 @@ def _check_alerts(bot_status, risk_state, pending):
 # HEALTH ENDPOINT LOGIC
 # ═══════════════════════════════════════════════════════
 
-def _build_health_response():
-    """Build the /api/health response."""
+def _build_health_response(authenticated=False):
+    """Build the /api/health response.
+
+    When *authenticated* is False only ``{status, timestamp}`` is returned.
+    Full operational details require an authenticated request.
+    """
     now = datetime.now(timezone.utc)
     bot_status = _read_json(STATE_FILES["bot_status"], default={})
     risk_state = _normalize_risk_state(_read_json(STATE_FILES["risk"], default={}))
@@ -381,6 +385,9 @@ def _build_health_response():
     if bot_status.get("observation_mode") or risk_state.get("observation_mode"):
         status = "observation"
 
+    if not authenticated:
+        return {"status": status, "timestamp": now.isoformat()}
+
     response = {
         "status": status,
         "last_scan": last_scan_str,
@@ -409,19 +416,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """Suppress default request logging to keep bot output clean."""
         pass
 
-    def _check_auth(self):
-        """Validate bearer token if DASHBOARD_TOKEN is configured. Returns True if authorized."""
+    def _is_authenticated(self):
+        """Check whether the request carries a valid token. Does NOT send a 401 on failure."""
         token = config.DASHBOARD_TOKEN
         if not token:
             return True  # No auth configured (local dev)
         auth_header = self.headers.get("Authorization", "")
         if auth_header == "Bearer %s" % token:
             return True
-        # Also accept ?token= query param for browser access
         from urllib.parse import parse_qs
         query = urlparse(self.path).query
         params = parse_qs(query)
         if params.get("token", [None])[0] == token:
+            return True
+        return False
+
+    def _check_auth(self):
+        """Validate bearer token if DASHBOARD_TOKEN is configured. Returns True if authorized."""
+        if self._is_authenticated():
             return True
         self._send_json({"error": "Unauthorized"}, 401)
         return False
@@ -454,7 +466,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_html("dashboard.html")
 
         elif path == "/api/health":
-            self._send_json(_build_health_response())
+            # Unauthenticated: minimal {status, timestamp}.
+            # Authenticated: full operational details.
+            is_authed = self._is_authenticated()
+            self._send_json(_build_health_response(authenticated=is_authed))
 
         elif path == "/api/state":
             if not self._check_auth():
@@ -498,6 +513,91 @@ class DashboardHandler(BaseHTTPRequestHandler):
             else:
                 result = _kalshi_client.get_balance()
                 self._send_json(result or {"error": "API call failed"})
+
+        elif path == "/api/performance":
+            if not self._check_auth():
+                return
+            # Load trade intelligence and compute metrics
+            try:
+                pnl_data = _read_json(STATE_FILES.get("pnl", "pnl_history.json"), default={})
+                daily_history = pnl_data.get("daily_history", [])
+
+                if not daily_history:
+                    self._send_json({"error": "No daily history available"})
+                    return
+
+                import math
+                daily_pnls = [d.get("pnl_cents", 0) for d in daily_history]
+                n = len(daily_pnls)
+
+                # Sharpe ratio (annualized)
+                sharpe = None
+                if n >= 5:
+                    mean_pnl = sum(daily_pnls) / n
+                    variance = sum((x - mean_pnl) ** 2 for x in daily_pnls) / (n - 1)
+                    std_pnl = math.sqrt(variance) if variance > 0 else 0
+                    if std_pnl > 0:
+                        sharpe = round((mean_pnl / std_pnl) * math.sqrt(252), 3)
+
+                # Max drawdown
+                cumulative = 0
+                peak = 0
+                max_dd_cents = 0
+                for pnl in daily_pnls:
+                    cumulative += pnl
+                    if cumulative > peak:
+                        peak = cumulative
+                    dd = peak - cumulative
+                    if dd > max_dd_cents:
+                        max_dd_cents = dd
+                max_dd_pct = round(max_dd_cents / peak, 4) if peak > 0 else 0
+
+                # Win rate
+                winning = sum(1 for p in daily_pnls if p > 0)
+                losing = sum(1 for p in daily_pnls if p < 0)
+                win_rate = round(winning / n, 3) if n > 0 else 0
+
+                # Profit factor
+                gross_profit = sum(p for p in daily_pnls if p > 0)
+                gross_loss = abs(sum(p for p in daily_pnls if p < 0))
+                profit_factor = round(gross_profit / gross_loss, 3) if gross_loss > 0 else None
+
+                self._send_json({
+                    "sharpe_ratio": sharpe,
+                    "max_drawdown_cents": max_dd_cents,
+                    "max_drawdown_pct": max_dd_pct,
+                    "win_rate": win_rate,
+                    "profit_factor": profit_factor,
+                    "winning_days": winning,
+                    "losing_days": losing,
+                    "total_days": n,
+                    "cumulative_pnl_cents": sum(daily_pnls),
+                    "rolling_5d_pnl_cents": pnl_data.get("rolling_5d_pnl_cents"),
+                })
+            except Exception as e:
+                self._send_json({"error": str(e)}, status=500)
+
+        elif path == "/api/equity-curve":
+            if not self._check_auth():
+                return
+            try:
+                pnl_data = _read_json(STATE_FILES.get("pnl", "pnl_history.json"), default={})
+                daily_history = pnl_data.get("daily_history", [])
+
+                cumulative = 0
+                curve = []
+                for entry in daily_history:
+                    cumulative += entry.get("pnl_cents", 0)
+                    curve.append({
+                        "date": entry.get("date"),
+                        "daily_pnl_cents": entry.get("pnl_cents", 0),
+                        "cumulative_pnl_cents": cumulative,
+                        "account_balance_cents": entry.get("account_balance_cents"),
+                    })
+
+                self._send_json(curve)
+            except Exception as e:
+                self._send_json({"error": str(e)}, status=500)
 
         else:
             self.send_error(404)

@@ -703,13 +703,14 @@ class Strategy:
             return 0
 
         prob_win = min(0.99, max(0.01, win_prob))
-        payout = 100 - price_cents
+        gross_payout = 100 - price_cents
+        net_payout = gross_payout * (1.0 - config.KALSHI_FEE_PCT)
         cost = price_cents
 
-        if payout <= 0:
+        if net_payout <= 0:
             return 0
 
-        kelly = ((prob_win * payout) - ((1.0 - prob_win) * cost)) / payout
+        kelly = ((prob_win * net_payout) - ((1.0 - prob_win) * cost)) / net_payout
         if kelly <= 0:
             return 0
 
