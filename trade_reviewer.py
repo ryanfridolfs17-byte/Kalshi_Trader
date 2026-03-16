@@ -252,15 +252,16 @@ class TradeReviewer:
             if len(entry["errors"]) > max_points:
                 entry["errors"] = entry["errors"][-max_points:]
 
-            # Only compute bias with 5+ data points
+            # Only compute bias with 3+ data points
             entry["count"] = len(entry["errors"])
-            if entry["count"] >= 5:
+            if entry["count"] >= 3:
                 # EMA over errors
                 ema = entry["errors"][0]
                 for e in entry["errors"][1:]:
                     ema = alpha * e + (1 - alpha) * ema
-                # Cap at +/- 8F
-                entry["bias"] = round(max(-8.0, min(8.0, ema)), 2)
+                # Small sample discount: 3pts = 60%, 4pts = 80%, 5+ = 100%
+                sample_factor = min(1.0, 0.4 + entry["count"] * 0.2)
+                entry["bias"] = round(max(-8.0, min(8.0, ema * sample_factor)), 2)
 
         self.state["city_biases"] = biases
 

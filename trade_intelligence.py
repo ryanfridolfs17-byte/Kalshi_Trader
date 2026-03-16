@@ -73,7 +73,9 @@ class TradeIntelligence:
         Exit rules (binary: hold or exit, no partial):
         1. Observation confirms loss -> EXIT (high urgency)
         2. Temp in rounding buffer after 2 PM local -> EXIT
-        3. Thesis still valid -> HOLD to settlement
+        3. Forecast edge deterioration (edge < -15% after 10 AM) -> EXIT
+        4. YES threshold unreachable after noon -> EXIT
+        5. Thesis still valid -> HOLD to settlement
         """
         exits = []
         for pos in positions:
@@ -200,6 +202,53 @@ class TradeIntelligence:
                     })
                     continue
 
+            # --- EXIT RULE 3: Forecast edge deterioration ---
+            # If current forecast probability shows deeply negative edge, exit.
+            if now_hour >= 10:
+                try:
+                    dist = self.weather.get_temperature_distribution(
+                        city_code, target_date=target_date
+                    ) if self.weather else None
+                    if dist:
+                        prob = self.weather.calculate_bucket_probability(
+                            dist, temp_low, temp_high
+                        )
+                        if prob is not None:
+                            # Get current market price
+                            cur_mkt = self._get_current_market_price(ticker, side)
+                            if cur_mkt is not None and cur_mkt > 0:
+                                if side == "yes":
+                                    cur_edge = prob - (cur_mkt / 100.0)
+                                else:
+                                    cur_edge = (1 - prob) - (cur_mkt / 100.0)
+                                if cur_edge < -0.15:
+                                    exits.append({
+                                        "ticker": ticker, "action": "sell", "urgency": "high",
+                                        "side": side,
+                                        "reason": (f"Edge deterioration: current edge "
+                                                   f"{cur_edge:.1%} (prob={prob:.1%}, "
+                                                   f"mkt={cur_mkt}c) after 10 AM"),
+                                    })
+                                    continue
+                except Exception as e:
+                    print(f"  [EXIT] Edge check error for {ticker}: {e}")
+
+            # --- EXIT RULE 4: YES threshold too far below after noon ---
+            if side == "yes" and now_hour >= 12 and temp_high >= 200:
+                if obs_high is not None:
+                    gap_below = temp_low - obs_high
+                    # After noon, need realistic heating to reach threshold
+                    max_remaining_heat = max(0, (18 - now_hour)) * 1.5  # ~1.5F/hour max
+                    if gap_below > max_remaining_heat + 2:  # 2F rounding buffer
+                        exits.append({
+                            "ticker": ticker, "action": "sell", "urgency": "high",
+                            "side": side,
+                            "reason": (f"Threshold unreachable: {obs_high:.0f}F needs "
+                                       f"+{gap_below:.0f}F to reach {temp_low}F, "
+                                       f"max remaining heat ~{max_remaining_heat:.0f}F"),
+                        })
+                        continue
+
         return exits
 
     def _get_forecast_mean_for_ticker(self, ticker):
@@ -217,6 +266,22 @@ class TradeIntelligence:
         except Exception:
             pass
         return None
+
+    def _get_current_market_price(self, ticker, side):
+        """Get current market bid price for a position's side."""
+        if not self.client:
+            return None
+        try:
+            data = self.client.get_market(ticker)
+            if not data:
+                return None
+            market = data.get("market", data)
+            if side == "yes":
+                return market.get("yes_bid", 0) or 0
+            else:
+                return market.get("no_bid", 0) or 0
+        except Exception:
+            return None
 
     # =====================================================
     # SETTLEMENT TRACKING
