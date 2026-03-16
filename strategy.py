@@ -798,8 +798,9 @@ class Strategy:
         score = (max(0.0, 1.0 - (tracking_error / 5.0))
                  * max(0.0, 1.0 - (model_spread / 8.0))
                  * hour_factor)
-        if score > 0.5:
-            print("  [CONVERGENCE] %s score=%.2f" % (city_code, score))
+        print(f"    [CONV] {city_code}: score={score:.2f} "
+              f"tracking_err={tracking_error:.1f}F spread={model_spread:.1f}F "
+              f"hour={local_hour} {'-> TRIGGERED' if score > config.CONVERGENCE_SCORE_THRESHOLD else ''}")
         return score
 
     # ===========================================================

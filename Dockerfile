@@ -15,4 +15,6 @@ RUN mkdir -p /data
 
 COPY . .
 
+RUN python -c "import kalshi_bot"
+
 CMD ["python", "kalshi_bot.py"]
