@@ -68,7 +68,7 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 - **Maker strategy** -- limit orders default. CASE 1 confirmed with edge >15% uses taker (market) orders for guaranteed execution.
 - **NWS settlement** -- Weather markets settle on NWS Daily Climate Reports
 - **NWS rounding** -- +/-1F DOS-era conversion error. Buffer: +/-1F = no trade, +/-2F = 50% size.
-- **NO-side separation** -- Dynamic: `max(2.0F, std_dev * 0.6)` from expanded boundary. CONFIRM gets 1.25x penalty.
+- **NO-side separation** -- Dynamic: `max(3.0F, std_dev * 0.6)` from expanded boundary. CONFIRM gets 1.25x penalty.
 - **Fee-adjusted edge** -- 7% fee drag. Side-aware formula.
 - **Only CASE 1 = CONFIRMED_OUTCOME** -- temp exceeded bucket, can't un-happen. CASE 2 DELETED. CASE 3 = STRONG.
 - **Binary exits** -- HOLD or EXIT. No PARE/HEDGE/TAKE_PROFIT.
@@ -102,7 +102,7 @@ Bankroll ~$48. All values in `config.py`. Cents = 100 per $1.00. `BALANCE_FALLBA
 ### Core Limits
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `MIN_EDGE` | 7% | Morning (before noon): 8.4% (1.2x). Next-day: 10.5% (1.5x). |
+| `MIN_EDGE` | 7% | Morning (before noon): 8.4% (1.2x). Next-day: 10.5% (1.5x). Early morning (6-9 AM local): 14% (2.0x). |
 | `CONFIRMED_MIN_EDGE` | 5% | CASE 1 confirmed outcomes |
 | `FEE_ADJUSTED_MIN_EDGE` | 3% | After 7% fee drag |
 | `MIN_PAYOUT_DOLLARS` | $0.25 | Minimum expected payout per trade |
@@ -128,14 +128,14 @@ Bankroll ~$48. All values in `config.py`. Cents = 100 per $1.00. `BALANCE_FALLBA
 
 ### Strategy Guards
 - **Rounding buffer**: +/-1F = no trade, +/-2F = 50% size
-- **NO-side separation**: `max(2.0F, std_dev * 0.6)`. CONFIRM gets 1.25x penalty.
+- **NO-side separation**: `max(3.0F, std_dev * 0.6)`. CONFIRM gets 1.25x penalty.
 - **Model divergence**: YES >8F = skip, NO >10F = skip. <2F = 1.2x boost.
-- **Longshot floor**: 5c. **Near-certainty cap**: 88c. **NO ceiling**: 60c (CASE1 bypasses).
+- **Longshot floor**: 5c. **Near-certainty cap**: 88c. **NO ceiling**: 50c (CASE1 bypasses).
 - **NO sizing**: >=50c gets 40% normal sizing.
 - **Next-day**: 1.5x edge threshold, 50% sizing.
 - **Same-day before 6 AM local**: BLOCKED. Overnight forecasts are stale.
-- **Same-day 6-9 AM local**: 1.5x edge threshold (same as next-day). Stale forecast penalty.
-- **Warm city bias defaults**: DEN +4F, Gulf/SE +3F, Desert +2F (hardcoded in weather_engine.py)
+- **Same-day 6-9 AM local**: 2.0x edge threshold (14%). Stale forecast penalty. NO-side gets additional 50% sizing reduction.
+- **Warm city bias defaults**: DEN +4F, Gulf/SE +3F, Desert +2F, PNW +2F/+1.5F (hardcoded in weather_engine.py). Applied in winter months (Dec-Mar).
 
 ### Confirmed Outcomes
 - **CASE 1** (high exceeded bucket): CONFIRMED_OUTCOME. Min 10 AM local. `obs_high > temp_high + 1F`.
@@ -213,6 +213,7 @@ If weakest position edge < 3% (`REBALANCE_MAX_OLD_EDGE`) AND at max capacity: ex
 | `ENSEMBLE_CACHE_TTL` | 900 | 15 min ensemble per-model cache |
 | `DISTRIBUTION_CACHE_TTL` | 900 | 15 min distribution cache |
 | `CLOUD_COVER_CACHE_TTL` | 1800 | 30 min cloud cover cache |
+| `EARLY_MORNING_EDGE_MULTIPLIER` | 2.0 | 6-9 AM local: 14% min edge (stale 00Z forecasts) |
 
 ### New State Files (v4.1)
 - `fill_tracking.json` — Adverse selection: per-side order/fill counts (rolling 24h)
@@ -220,6 +221,7 @@ If weakest position edge < 3% (`REBALANCE_MAX_OLD_EDGE`) AND at max capacity: ex
 ### Infrastructure Invariants
 - **Kalshi API field normalization (March 2026)**: Kalshi changed response field names: `yes_ask` → `yes_ask_dollars` (string), `volume` → `volume_fp` (string). Response `status` field changed to `"active"` but **query parameter** still uses `status=open`. `kalshi_client._normalize_market()` converts new dollar-string fields to integer cents for all internal code. `market_scanner.py` has its own `_normalize_scanner_market()` since it uses direct `requests.get`. All other files use cents integers unchanged.
 - **Open-Meteo rate limiting (March 2026)**: Free tier = 10K requests/day per IP. Railway shared IPs exhaust this. Fix: `_in_fetch_window()` in `weather_engine.py` gates ALL Open-Meteo calls to `OPEN_METEO_FETCH_START_ET` (8) – `OPEN_METEO_FETCH_END_ET` (18). Outside window: stale cache returned (any age) or None. Cache TTLs extended: ensemble 15 min (`ENSEMBLE_CACHE_TTL=900`), distribution 15 min (`DISTRIBUTION_CACHE_TTL=900`), cloud cover 30 min (`CLOUD_COVER_CACHE_TTL=1800`, was uncached!). `signal_confirmer.py` imports `_in_fetch_window` and gates deterministic model fetches. Strategy returns `"outside_fetch_window"` skip reason (not `"ensemble_fetch_failed"`). Exits use METAR/NWS (not Open-Meteo), so work 24/7. Set `OPEN_METEO_API_KEY` env var to bypass all limits (switches to `customer-api.open-meteo.com`). Budget: ~4,700 calls/day (53% margin).
+- **Early-morning guard tightening (March 2026)**: 6-9 AM local trades use 2.0x edge multiplier (14% threshold, was 1.5x/10.5%). NO-side trades in this window get additional 50% sizing penalty. Winter bias months extended to Dec-Mar (was Dec-Feb) to cover March transition month. SEA (+2F) and SFO (+1.5F) added to `_WARM_CITY_BIAS`. `NO_SIDE_MAX_PRICE_CENTS` lowered to 50 (was 60). `NO_SEPARATION_FLOOR_F` raised to 3.0 (was 2.0).
 - **METAR primary, NWS fallback**: `fetch_metar_batch()` fetches all 20 stations in one request via AviationWeather API. `get_todays_high()` and `get_current_temperature()` try METAR first, fall back to NWS on failure. Same ICAO station codes (KNYC, KMDW, etc.). METAR cache key: `metar_batch` (90s TTL). Per-station keys `obs_{station}` and `latest_{station}` shared between METAR and NWS paths. `METAR_ENABLED=False` in config disables METAR entirely.
 - **Dashboard outside restart loop**: `start_dashboard_server()` in `__main__` block, NOT inside `main()`.
 - **Python 3.12**: `import traceback as _tb` to avoid shadowing.

@@ -299,6 +299,9 @@ class Strategy:
             contracts = max(1, int(contracts * config.NEXT_DAY_SIZING_MULTIPLIER))
         if side == "no" and price_cents >= 50:
             contracts = max(1, int(contracts * config.NO_SIDE_SIZING_MULTIPLIER))
+        # Early morning NO penalty: stale forecasts + NO-side = compounding risk
+        if side == "no" and not is_next_day and local_hour is not None and local_hour < 9:
+            contracts = max(1, int(contracts * 0.5))
 
         # Minimum payout filter
         payout_per = 100 - price_cents
@@ -636,9 +639,9 @@ class Strategy:
         if is_next_day:
             return config.MIN_EDGE * config.NEXT_DAY_EDGE_MULTIPLIER
 
-        # Same-day early morning: stale forecast penalty (same as next-day)
+        # Same-day early morning: stale forecast penalty (stricter than next-day)
         if local_hour is not None and local_hour < 9:
-            return config.MIN_EDGE * config.NEXT_DAY_EDGE_MULTIPLIER
+            return config.MIN_EDGE * getattr(config, 'EARLY_MORNING_EDGE_MULTIPLIER', 2.0)
 
         if et_hour < 12:
             return config.MIN_EDGE * 1.2  # Morning: 20% premium over base
