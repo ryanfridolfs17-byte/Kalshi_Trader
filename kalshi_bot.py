@@ -543,9 +543,10 @@ def _execute_exit(maker, risk, ticker, position):
         print("  [EXIT] DRY RUN: Would exit %s" % ticker)
         return
 
-    # Dynamic exit price: YES sells at floor (1c), NO sells at ceiling (99c)
+    # Exit price: sell at floor (1c) for both sides — accept any bid
+    # For sell orders, limit_price = minimum we'll accept. 1c = "sell at any price".
     side = position.get("side", "yes")
-    exit_price = 99 if side == "no" else 1
+    exit_price = 1
 
     try:
         order = maker.place_exit_order(position, limit_price=exit_price)

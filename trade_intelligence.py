@@ -120,7 +120,7 @@ class TradeIntelligence:
                                    f"{temp_high}F + {config.ROUNDING_BUFFER_HARD_F}F rounding"),
                     })
                     continue
-                if current_temp is not None and now_hour >= 15:
+                if current_temp is not None and now_hour >= 14:
                     gap = temp_low - current_temp
                     if gap > 3:
                         exits.append({
