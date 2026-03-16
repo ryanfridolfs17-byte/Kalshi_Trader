@@ -23,7 +23,7 @@ PRIVATE_KEY_PATH = "kalshi_private_key.pem"
 # Railway env vars mangle PEM newlines. Handle all formats.
 _private_key_env = os.environ.get("KALSHI_PRIVATE_KEY", "")
 if _private_key_env:
-    _key_content = _private_key_env.replace("\n", "\n")
+    _key_content = _private_key_env.replace("\\n", "\n")
     if "\n" not in _key_content.strip():
         _stripped = _key_content
         for _tag in ["-----BEGIN RSA PRIVATE KEY-----", "-----END RSA PRIVATE KEY-----",

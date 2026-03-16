@@ -331,11 +331,15 @@ class RiskManager:
         }
 
     def get_pl_ratio(self):
-        """Compute rolling P/L ratio (avg win / avg loss). Target > 2.0."""
+        """Compute rolling P/L ratio (avg win / avg loss). Target > 2.0.
+        Returns neutral 2.0 if fewer than 5 trades on either side to avoid
+        over-leveraging or under-leveraging on tiny sample sizes."""
         wins = self.state.get("win_amounts", [])
         losses = self.state.get("loss_amounts", [])
-        avg_win = sum(wins) / len(wins) if wins else 0
-        avg_loss = sum(losses) / len(losses) if losses else 1
+        if len(wins) < 5 or len(losses) < 5:
+            return 2.0  # Neutral — don't adjust sizing on small sample
+        avg_win = sum(wins) / len(wins)
+        avg_loss = sum(losses) / len(losses)
         return avg_win / max(avg_loss, 1)
 
     def _ticker_exposure(self, ticker):
