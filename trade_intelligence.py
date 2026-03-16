@@ -539,6 +539,20 @@ class TradeIntelligence:
             if account_balance is not None and deposits > 0:
                 account_pnl = account_balance - deposits
 
+            # Diagnostic: expose first fill's raw fields for debugging
+            _diag_fill_keys = sorted(all_fills[0].keys()) if all_fills else []
+            _diag_fill_sample = {}
+            if all_fills:
+                _s = all_fills[0]
+                _diag_fill_sample = {
+                    k: str(v)[:50] for k, v in _s.items()
+                    if k in ("yes_price", "no_price", "price", "action",
+                             "side", "count", "ticker", "yes_price_dollars",
+                             "no_price_dollars", "yes_price_cents",
+                             "no_price_cents", "price_cents")
+                }
+            _diag_settle_keys = sorted(all_settlements[0].keys()) if all_settlements else []
+
             # Build and save -- THE ONLY WRITE to pnl_history.json
             self.pnl_data = {
                 "total_invested_cents": total_invested,
@@ -556,6 +570,9 @@ class TradeIntelligence:
                 "kalshi_fills": len(all_fills),
                 "kalshi_settlements": len(all_settlements),
                 "last_sync": datetime.now(timezone.utc).isoformat(),
+                "_diag_fill_keys": _diag_fill_keys,
+                "_diag_fill_sample": _diag_fill_sample,
+                "_diag_settle_keys": _diag_settle_keys,
             }
 
             # --- Daily P&L time series tracking ---
