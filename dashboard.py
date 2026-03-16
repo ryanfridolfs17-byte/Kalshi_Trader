@@ -410,6 +410,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """Suppress default request logging to keep bot output clean."""
         pass
 
+    def _check_auth(self):
+        """Validate bearer token if DASHBOARD_TOKEN is configured. Returns True if authorized."""
+        token = config.DASHBOARD_TOKEN
+        if not token:
+            return True  # No auth configured (local dev)
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header == "Bearer %s" % token:
+            return True
+        # Also accept ?token= query param for browser access
+        from urllib.parse import parse_qs
+        query = urlparse(self.path).query
+        params = parse_qs(query)
+        if params.get("token", [None])[0] == token:
+            return True
+        self._send_json({"error": "Unauthorized"}, 401)
+        return False
+
     def _send_json(self, data, status=200):
         body = json.dumps(data).encode("utf-8")
         self.send_response(status)
@@ -441,6 +458,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(_build_health_response())
 
         elif path == "/api/state":
+            if not self._check_auth():
+                return
             state = {}
             for key, filepath in STATE_FILES.items():
                 if key in ("trades", "reports", "attribution", "analysis", "scan_log"):
@@ -457,6 +476,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json([])
 
         elif path == "/api/fills":
+            if not self._check_auth():
+                return
             # Fetch recent fills from Kalshi API (buys + sells)
             if _kalshi_client is None:
                 self._send_json({"error": "KalshiClient not initialized"}, 503)
@@ -471,6 +492,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(_trade_reviewer.get_learning_summary())
 
         elif path == "/api/balance":
+            if not self._check_auth():
+                return
             if _kalshi_client is None:
                 self._send_json({"error": "KalshiClient not initialized"}, 503)
             else:
@@ -481,6 +504,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self):
+        if not self._check_auth():
+            return
         path = urlparse(self.path).path
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length) if content_length > 0 else b"{}"

@@ -395,6 +395,22 @@ class WeatherEngine:
             raw_uncorrected_highs.extend(highs)
             all_weights.extend([w] * len(corrected_highs))
 
+        # ─── CLOUD COVER / PRECIPITATION BIAS ───
+        # Applied BEFORE building distribution so bucket probabilities reflect the bias
+        cloud_data = self._fetch_cloud_cover(city_code, target_date)
+        cloud_adj = 0.0
+        precip_adj = 0.0
+        if cloud_data:
+            if cloud_data["cloud_cover_pct"] > config.CLOUD_COVER_THRESHOLD_PCT:
+                cloud_adj = config.CLOUD_COVER_TEMP_BIAS_F
+                print(f"  [WEATHER] {city_code}: cloud cover {cloud_data['cloud_cover_pct']:.0f}% > {config.CLOUD_COVER_THRESHOLD_PCT}% -> bias {cloud_adj:+.1f}F")
+            if cloud_data["precipitation_mm"] > config.PRECIP_THRESHOLD_MM:
+                precip_adj = config.PRECIP_TEMP_BIAS_F
+                print(f"  [WEATHER] {city_code}: precip {cloud_data['precipitation_mm']:.1f}mm > {config.PRECIP_THRESHOLD_MM}mm -> bias {precip_adj:+.1f}F")
+            total_weather_adj = cloud_adj + precip_adj
+            if total_weather_adj != 0:
+                all_highs = [t + total_weather_adj for t in all_highs]
+
         # Build the distribution with accuracy-based weights
         result = self._build_distribution(city_code, target_date, all_highs, sources_used, all_weights)
 
@@ -402,6 +418,9 @@ class WeatherEngine:
         # toward buckets and can block valid NO trades (especially winter warm cities)
         if raw_uncorrected_highs:
             result["raw_forecast_mean"] = round(sum(raw_uncorrected_highs) / len(raw_uncorrected_highs), 1)
+
+        result["cloud_cover_adj_f"] = cloud_adj
+        result["precip_adj_f"] = precip_adj
 
         # Add per-model family means for disagreement detection
         # Uses bias-corrected highs so model_spread reflects actual predictions
@@ -424,23 +443,6 @@ class WeatherEngine:
             result["model_spread"] = round(max(means_list) - min(means_list), 1)
         else:
             result["model_spread"] = 0.0
-
-        # ─── CLOUD COVER / PRECIPITATION BIAS ───
-        cloud_data = self._fetch_cloud_cover(city_code, target_date)
-        cloud_adj = 0.0
-        precip_adj = 0.0
-        if cloud_data:
-            if cloud_data["cloud_cover_pct"] > config.CLOUD_COVER_THRESHOLD_PCT:
-                cloud_adj = config.CLOUD_COVER_TEMP_BIAS_F
-                print(f"  [WEATHER] {city_code}: cloud cover {cloud_data['cloud_cover_pct']:.0f}% > {config.CLOUD_COVER_THRESHOLD_PCT}% -> bias {cloud_adj:+.1f}F")
-            if cloud_data["precipitation_mm"] > config.PRECIP_THRESHOLD_MM:
-                precip_adj = config.PRECIP_TEMP_BIAS_F
-                print(f"  [WEATHER] {city_code}: precip {cloud_data['precipitation_mm']:.1f}mm > {config.PRECIP_THRESHOLD_MM}mm -> bias {precip_adj:+.1f}F")
-            total_weather_adj = cloud_adj + precip_adj
-            if total_weather_adj != 0:
-                result["forecasted_high_mean"] = round(result["forecasted_high_mean"] + total_weather_adj, 1)
-        result["cloud_cover_adj_f"] = cloud_adj
-        result["precip_adj_f"] = precip_adj
 
         # Cache it
         self._cache[cache_key] = {

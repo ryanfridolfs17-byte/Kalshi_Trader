@@ -1138,10 +1138,14 @@ class TradeReviewer:
             return None
 
         try:
+            # Use a wide UTC window to capture all local-day observations.
+            # West Coast 4 PM PT = midnight UTC next day, so extend +8h past midnight.
+            from datetime import timedelta as _td
+            end_date = (datetime.strptime(target_date, "%Y-%m-%d") + _td(days=1, hours=8))
             url = "https://api.weather.gov/stations/%s/observations" % station
             params = {
-                "start": "%sT00:00:00Z" % target_date,
-                "end": "%sT23:59:59Z" % target_date,
+                "start": "%sT06:00:00Z" % target_date,
+                "end": end_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
             headers = {"User-Agent": "KalshiBot/4.0", "Accept": "application/geo+json"}
             resp = requests.get(url, headers=headers, params=params, timeout=15)

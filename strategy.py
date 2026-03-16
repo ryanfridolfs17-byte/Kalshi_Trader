@@ -290,18 +290,17 @@ class Strategy:
             return _side_skip("rounding_buffer",
                               confirmation_verdict=verdict)
 
-        # Step 10: Kelly sizing
+        # Step 10: Kelly sizing (convergence boost applied pre-caps via multiplier)
+        conv_mult = 1.0
+        if convergence_score > config.CONVERGENCE_SCORE_THRESHOLD:
+            conv_mult = 1.0 + config.CONVERGENCE_SIZING_BOOST * convergence_score
         contracts = self._kelly_size(
             edge, win_prob, price_cents, self.balance_cents,
-            conf_mult * rounding_mult, model_spread=model_spread
+            conf_mult * rounding_mult * conv_mult, model_spread=model_spread
         )
         if contracts <= 0:
             return _side_skip("kelly_undersized",
                               confirmation_verdict=verdict)
-
-        # Convergence sizing boost
-        if convergence_score > config.CONVERGENCE_SCORE_THRESHOLD:
-            contracts = max(1, int(contracts * (1.0 + config.CONVERGENCE_SIZING_BOOST * convergence_score)))
 
         # Step 11: Reductions
         if is_next_day:
@@ -643,8 +642,6 @@ class Strategy:
                 and local_hour >= 14):
             return config.CONFIRMED_MIN_EDGE
 
-        et_hour = datetime.now(ZoneInfo("America/New_York")).hour
-
         if is_next_day:
             return config.MIN_EDGE * config.NEXT_DAY_EDGE_MULTIPLIER
 
@@ -652,7 +649,8 @@ class Strategy:
         if local_hour is not None and local_hour < 9:
             return config.MIN_EDGE * getattr(config, 'EARLY_MORNING_EDGE_MULTIPLIER', 2.0)
 
-        if et_hour < 12:
+        # Morning premium: use local hour (not ET) so West Coast gets correct threshold
+        if local_hour is not None and local_hour < 12:
             return config.MIN_EDGE * 1.2  # Morning: 20% premium over base
         return config.MIN_EDGE
 

@@ -508,7 +508,7 @@ def _review_positions(client, strategy, positions_dict, risk):
 
 
 def _execute_exit(maker, risk, ticker, position):
-    """Execute an exit order for a position."""
+    """Execute an exit order for a position. Retries once on failure."""
     if not maker or config.DRY_RUN:
         print("  [EXIT] DRY RUN: Would exit %s" % ticker)
         risk.close_position(ticker)
@@ -518,6 +518,16 @@ def _execute_exit(maker, risk, ticker, position):
         order = maker.place_exit_order(position, limit_price=1)
         if order:
             print("  [EXIT] Exit order submitted for %s" % ticker)
+            return
+        # place_exit_order returned None — retry once
+        print("  [EXIT] First attempt returned None for %s, retrying..." % ticker)
+        import time
+        time.sleep(2)
+        order = maker.place_exit_order(position, limit_price=1)
+        if order:
+            print("  [EXIT] Exit order submitted on retry for %s" % ticker)
+        else:
+            print("  [EXIT] WARNING: Exit failed after retry for %s — will retry next cycle" % ticker)
     except Exception as e:
         print("  [EXIT] Error exiting %s: %s" % (ticker, e))
 
