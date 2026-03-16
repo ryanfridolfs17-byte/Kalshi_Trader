@@ -70,8 +70,7 @@ def _read_json(path, default=None):
 
 def _write_json(path, data):
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        config.atomic_json_save(path, data)
     except Exception:
         pass
 
@@ -902,7 +901,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.end_headers()
 
 

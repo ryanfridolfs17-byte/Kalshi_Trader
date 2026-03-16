@@ -38,7 +38,7 @@ class RiskManager:
             "loss_amounts": [],
         }
         for key, value in defaults.items():
-            if key not in self.state or not isinstance(self.state.get(key), type(value)):
+            if key not in self.state:
                 if isinstance(value, dict):
                     self.state[key] = dict(value)
                 elif isinstance(value, list):
