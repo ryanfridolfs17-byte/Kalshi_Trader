@@ -417,17 +417,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         pass
 
     def _is_authenticated(self):
-        """Check whether the request carries a valid token. Does NOT send a 401 on failure."""
+        """Check whether the request carries a valid Bearer token. Does NOT send a 401 on failure."""
         token = config.DASHBOARD_TOKEN
         if not token:
             return True  # No auth configured (local dev)
         auth_header = self.headers.get("Authorization", "")
         if auth_header == "Bearer %s" % token:
-            return True
-        from urllib.parse import parse_qs
-        query = urlparse(self.path).query
-        params = parse_qs(query)
-        if params.get("token", [None])[0] == token:
             return True
         return False
 
@@ -1082,6 +1077,8 @@ def start_dashboard_server(port=DASHBOARD_PORT):
     the bot recovers from crashes — keeping a zombie dashboard alive
     without the trading loop is worse than restarting the whole process.
     """
+    if not config.DASHBOARD_TOKEN and os.environ.get("RAILWAY_ENVIRONMENT"):
+        print("  [DASHBOARD] WARNING: No DASHBOARD_TOKEN set in production — all endpoints are unprotected!")
     server = HTTPServer(("0.0.0.0", port), DashboardHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

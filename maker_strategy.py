@@ -189,6 +189,15 @@ class MakerStrategy:
         ticker = signal.get("ticker", "")
         side = signal.get("side", "yes")
         contracts = signal.get("contracts", 1)
+
+        # NO ceiling cap — same guard as limit order path
+        if side == "no":
+            price_cents = signal.get("price_cents", 0)
+            if price_cents > config.NO_SIDE_MAX_PRICE_CENTS:
+                print("  [MAKER] TAKER BLOCKED: NO price %dc exceeds %dc ceiling for %s" % (
+                    price_cents, config.NO_SIDE_MAX_PRICE_CENTS, ticker))
+                return None
+
         if config.DRY_RUN:
             order = {
                 "order_id": "dry_taker_%s_%d" % (ticker, int(time.time())),
