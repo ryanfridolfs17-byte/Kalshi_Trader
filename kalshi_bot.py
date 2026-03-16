@@ -83,6 +83,9 @@ def main(shutdown_event=None):
 
             # --- STEP 1: Sync P&L from settled markets ---
             pnl_summary = intel.sync_pnl_from_kalshi()
+            # Invalidate risk manager's PNL cache so drawdown check reads fresh data
+            risk._pnl_cache = None
+            risk._pnl_cache_time = 0
             if pnl_summary and pnl_summary.get("trades", 0) > 0:
                 pnl_trades = pnl_summary.get("trades", 0)
                 pnl_total = pnl_summary.get("total_profit_cents", 0)
@@ -345,6 +348,14 @@ def main(shutdown_event=None):
             else:
                 time.sleep(30)
 
+    # Cleanup: cancel pending orders on shutdown
+    if shutdown_event and shutdown_event.is_set():
+        try:
+            print("  [BOT] Cancelling pending orders on shutdown...")
+            maker.cancel_all()
+        except Exception as e:
+            print("  [BOT] Error cancelling orders: %s" % e)
+
 
 def _check_rebalancing(client, strategy, risk, maker, cycle):
     """Every N cycles, check if low-edge positions should be exited for higher-edge opportunities."""
@@ -532,15 +543,19 @@ def _execute_exit(maker, risk, ticker, position):
         print("  [EXIT] DRY RUN: Would exit %s" % ticker)
         return
 
+    # Dynamic exit price: YES sells at floor (1c), NO sells at ceiling (99c)
+    side = position.get("side", "yes")
+    exit_price = 99 if side == "no" else 1
+
     try:
-        order = maker.place_exit_order(position, limit_price=1)
+        order = maker.place_exit_order(position, limit_price=exit_price)
         if order:
-            print("  [EXIT] Exit order submitted for %s" % ticker)
+            print("  [EXIT] Exit order submitted for %s (%s side @ %dc)" % (ticker, side, exit_price))
             return
         # place_exit_order returned None — retry once
         print("  [EXIT] First attempt returned None for %s, retrying..." % ticker)
         time.sleep(2)
-        order = maker.place_exit_order(position, limit_price=1)
+        order = maker.place_exit_order(position, limit_price=exit_price)
         if order:
             print("  [EXIT] Exit order submitted on retry for %s" % ticker)
         else:

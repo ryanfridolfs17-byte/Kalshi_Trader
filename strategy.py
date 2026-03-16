@@ -296,9 +296,10 @@ class Strategy:
         if (verdict != "REJECT"
                 and convergence_score > config.CONVERGENCE_SCORE_THRESHOLD):
             conv_mult = 1.0 + config.CONVERGENCE_SIZING_BOOST * convergence_score
+        total_mult = min(2.0, conf_mult * rounding_mult * conv_mult)
         contracts = self._kelly_size(
-            edge, win_prob, price_cents, self.balance_cents,
-            conf_mult * rounding_mult * conv_mult, model_spread=model_spread
+            fee_adjusted_edge, win_prob, price_cents, self.balance_cents,
+            total_mult, model_spread=model_spread
         )
         if contracts <= 0:
             return _side_skip("kelly_undersized",
@@ -397,12 +398,13 @@ class Strategy:
             # CASE1 bypasses NO_SIDE_MAX_PRICE_CENTS (near-guaranteed outcome)
 
             edge = 0.99 - (no_price / 100.0)
-            if edge < config.CASE1_MIN_EDGE:
+            fee_adj_edge = self._calculate_fee_adjusted_edge(0.99, no_price / 100.0)
+            if edge < config.CASE1_MIN_EDGE or fee_adj_edge < config.FEE_ADJUSTED_MIN_EDGE:
                 return None
 
             # Confirmed outcome sizing via Kelly with CONFIRMED_POSITION_PCT cap
             contracts = self._kelly_size(
-                edge, 0.99, no_price, self.balance_cents, 1.0,
+                fee_adj_edge, 0.99, no_price, self.balance_cents, 1.0,
                 is_confirmed=True
             )
             if contracts <= 0:
@@ -494,12 +496,13 @@ class Strategy:
                 case3_prob = 0.85 + 0.10 * (0.6 * gap_factor + 0.4 * hour_factor)
 
                 edge = case3_prob - (no_price / 100.0)
-                if edge < config.CONFIRMED_MIN_EDGE:
+                fee_adj_edge = self._calculate_fee_adjusted_edge(case3_prob, no_price / 100.0)
+                if edge < config.CONFIRMED_MIN_EDGE or fee_adj_edge < config.FEE_ADJUSTED_MIN_EDGE:
                     return None
 
                 case3_spread = dist.get("model_spread") if dist else None
                 case3_contracts = self._kelly_size(
-                    edge, case3_prob, no_price, self.balance_cents, 1.0,
+                    fee_adj_edge, case3_prob, no_price, self.balance_cents, 1.0,
                     model_spread=case3_spread
                 )
 

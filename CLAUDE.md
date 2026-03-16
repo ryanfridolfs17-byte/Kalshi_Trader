@@ -86,6 +86,14 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 - **Deploy gate** -- `RUN python -c "import kalshi_bot"` in Dockerfile catches syntax errors before Railway deploys.
 - **CORS origin restriction** -- `CORS_ORIGIN` env var (default `*`). Set to Railway URL in production.
 - **Dead endpoints** -- `/api/pending` and `/api/reports` return 410 Gone.
+- **Fee-adjusted Kelly** -- Kelly sizing uses fee-adjusted edge (not raw edge) across all trade paths (normal, CASE 1, CASE 3). Prevents oversizing on marginal trades.
+- **CASE 1 fee gate** -- CASE 1 confirmed outcomes must pass both `CASE1_MIN_EDGE` (raw) and `FEE_ADJUSTED_MIN_EDGE` (net). Prevents negative-expectancy trades after fees.
+- **NO-side exit pricing** -- Exit orders use `limit_price=99` for NO positions (was 1c, which wouldn't fill). YES exits still use 1c.
+- **Taker NO ceiling** -- `place_market_order()` rejects NO-side orders exceeding `NO_SIDE_MAX_PRICE_CENTS`. Matches limit order guard.
+- **Multiplier cap** -- Combined `conf_mult * rounding_mult * conv_mult` capped at 2.0x before Kelly sizing.
+- **PNL cache invalidation** -- `risk._pnl_cache` cleared immediately after `sync_pnl_from_kalshi()` so drawdown check uses fresh data.
+- **SIGTERM order cleanup** -- `maker.cancel_all()` called before main loop exits on SIGTERM.
+- **Dashboard auth hardened** -- Query parameter auth removed (Bearer header only). Production warning if `DASHBOARD_TOKEN` empty on Railway.
 
 ## NWS Station Mappings (20 Cities)
 
