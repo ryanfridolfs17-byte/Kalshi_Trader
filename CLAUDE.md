@@ -69,7 +69,7 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 - **Maker strategy** -- limit orders default. CASE 1 confirmed with edge >15% uses taker (market) orders for guaranteed execution.
 - **NWS settlement** -- Weather markets settle on NWS Daily Climate Reports
 - **NWS rounding** -- +/-1F DOS-era conversion error. Buffer: +/-1F = no trade, +/-2F = 50% size.
-- **NO-side separation** -- Dynamic: `max(3.0F, std_dev * 0.6)` from expanded boundary. CONFIRM gets 1.25x penalty.
+- **NO-side separation** -- Dynamic: `max(2.0F, std_dev * 0.6)` from expanded boundary. CONFIRM gets 1.25x penalty.
 - **Fee-adjusted edge** -- 7% fee drag. Side-aware formula.
 - **Only CASE 1 = CONFIRMED_OUTCOME** -- temp exceeded bucket, can't un-happen. CASE 2 DELETED. CASE 3 = STRONG.
 - **Binary exits** -- HOLD or EXIT. No PARE/HEDGE/TAKE_PROFIT.
@@ -151,9 +151,9 @@ Bankroll ~$48. All values in `config.py`. Cents = 100 per $1.00. `BALANCE_FALLBA
 
 ### Strategy Guards
 - **Rounding buffer**: +/-1F = no trade, +/-2F = 50% size
-- **NO-side separation**: `max(3.0F, std_dev * 0.6)`. CONFIRM gets 1.25x penalty.
+- **NO-side separation**: `max(2.0F, std_dev * 0.6)`. CONFIRM gets 1.25x penalty.
 - **Model divergence**: YES >8F = skip, NO >10F = skip. <2F = 1.2x boost.
-- **Longshot floor**: 3c. **Near-certainty cap**: 88c. **NO ceiling**: 50c (CASE1 bypasses).
+- **Longshot floor**: 3c. **Near-certainty cap**: 93c. **NO ceiling**: 50c (CASE1 bypasses).
 - **NO sizing**: >=50c gets 40% normal sizing.
 - **Next-day**: 1.5x edge threshold, 50% sizing.
 - **Same-day before 6 AM local**: BLOCKED. Overnight forecasts are stale.
@@ -172,6 +172,8 @@ Bankroll ~$48. All values in `config.py`. Cents = 100 per $1.00. `BALANCE_FALLBA
 | Threshold market approaching within 5F (10 AM-1 PM) | EXIT (high) |
 | Forecast divergence: obs high > forecast mean + 2F (10 AM+) | EXIT (high) |
 | Rounding buffer after 2 PM | EXIT (high) |
+| Edge deterioration: current edge < -15% (10 AM+) | EXIT (high) |
+| YES threshold unreachable: gap > remaining heat potential (noon+) | EXIT (high) |
 | Thesis valid | HOLD to settlement |
 
 ### Maker Strategy
@@ -242,9 +244,9 @@ If weakest position edge < 3% (`REBALANCE_MAX_OLD_EDGE`) AND at max capacity: ex
 - `fill_tracking.json` — Adverse selection: per-side order/fill counts (rolling 24h)
 
 ### Infrastructure Invariants
-- **Kalshi API field normalization (March 2026)**: Kalshi changed response field names: `yes_ask` → `yes_ask_dollars` (string), `volume` → `volume_fp` (string). Response `status` field changed to `"active"` but **query parameter** still uses `status=open`. `kalshi_client._normalize_market()` converts new dollar-string fields to integer cents for all internal code. `market_scanner.py` has its own `_normalize_scanner_market()` since it uses direct `requests.get`. All other files use cents integers unchanged.
+- **Kalshi API field normalization (March 2026)**: Kalshi changed response field names: `yes_ask` → `yes_ask_dollars` (string), `volume` → `volume_fp` (string), `count` → `count_fp` (string). Response `status` field changed to `"active"` but **query parameter** still uses `status=open`. `kalshi_client._normalize_market()` converts new dollar-string fields to integer cents for all internal code. `market_scanner.py` has its own `_normalize_scanner_market()` since it uses direct `requests.get`. **Fills API** (`/portfolio/fills`): `yes_price`/`no_price` are STRING cents ("5"), `yes_price_dollars`/`no_price_dollars` are STRING dollars ("0.0500"), `count_fp` is STRING ("5.00"). `trade_intelligence._normalize_fill()` converts all to int cents. **Settlements API** (`/portfolio/settlements`): `revenue` is int cents (no normalization needed). Market settlement status: check for `"settled"`, `"finalized"`, or `"closed"`.
 - **Open-Meteo rate limiting (March 2026)**: Free tier = 10K requests/day per IP. Railway shared IPs exhaust this. Fix: `_in_fetch_window()` in `weather_engine.py` gates ALL Open-Meteo calls to `OPEN_METEO_FETCH_START_ET` (8) – `OPEN_METEO_FETCH_END_ET` (18). Outside window: stale cache returned (any age) or None. Cache TTLs extended: ensemble 15 min (`ENSEMBLE_CACHE_TTL=900`), distribution 15 min (`DISTRIBUTION_CACHE_TTL=900`), cloud cover 30 min (`CLOUD_COVER_CACHE_TTL=1800`, was uncached!). `signal_confirmer.py` imports `_in_fetch_window` and gates deterministic model fetches. Strategy returns `"outside_fetch_window"` skip reason (not `"ensemble_fetch_failed"`). Exits use METAR/NWS (not Open-Meteo), so work 24/7. Set `OPEN_METEO_API_KEY` env var to bypass all limits (switches to `customer-api.open-meteo.com`). Budget: ~4,700 calls/day (53% margin).
-- **Early-morning guard tightening (March 2026)**: 6-9 AM local trades use 2.0x edge multiplier (14% threshold, was 1.5x/10.5%). NO-side trades in this window get additional 50% sizing penalty. Winter bias months extended to Dec-Mar (was Dec-Feb) to cover March transition month. SEA (+2F) and SFO (+1.5F) added to `_WARM_CITY_BIAS`. `NO_SIDE_MAX_PRICE_CENTS` lowered to 50 (was 60). `NO_SEPARATION_FLOOR_F` raised to 3.0 (was 2.0).
+- **Early-morning guard tightening (March 2026)**: 6-9 AM local trades use 2.0x edge multiplier (14% threshold, was 1.5x/10.5%). NO-side trades in this window get additional 50% sizing penalty. Winter bias months extended to Dec-Mar (was Dec-Feb) to cover March transition month. SEA (+2F) and SFO (+1.5F) added to `_WARM_CITY_BIAS`. `NO_SIDE_MAX_PRICE_CENTS` lowered to 50 (was 60). `NO_SEPARATION_FLOOR_F` reverted to 2.0 (guard blocking 70% winners).
 - **Confirmation & longshot loosening (March 2026)**: Guard effectiveness showed `confirmation_reject` blocking 63% winners and `longshot_floor` blocking profitable trades. Fixes: `LONGSHOT_FLOOR_CENTS` 5→3. Gray zone 2.0F→1.5F (more decisive votes). NWS veto softened: NWS DISAGREE + 2 models agree = CONFIRM at 0.5x sizing (was hard REJECT). High-edge bypass: edge ≥25% + same-day + after 9 AM local allows REJECT trades at 0.4x conf_mult.
 - **v4.2 bug fixes (March 2026)**: Morning edge premium now uses local_hour (was ET, broke West Coast). Convergence sizing boost applied pre-Kelly-caps via multiplier (was post-caps, getting wasted). Cloud/precip bias applied to ensemble members before distribution build (was only adjusting mean, bucket probs were stale). NWS actual temp query widened to 06:00Z-08:00Z+1d to capture West Coast late highs. Exit retry: `_execute_exit()` retries once on failure. P/L ratio returns neutral 2.0 with <5 trades (prevents wild sizing swings). `forecast_mean=None` guard in strategy. Cloud cover NaN/Inf filtered. Cache timezone fixed to UTC.
 - **v4.3 institutional review fixes (March 2026)**: CASE 1/3 edge was `(100-price)/100` (payout ratio) instead of `our_prob - market_prob` — inflated edge, wrong Kelly tier, oversized positions ~33%. Fixed. Bayesian observation update was double-shifting ensemble members already above obs — fixed to keep them as-is. Kill switch reset on every restart due to `isinstance(value, type(None))` check — fixed to only set defaults for missing keys. DRY_RUN exit was clearing real positions from risk state — removed `close_position()` call. Trade reconcile double-counted revenue (pair + settlement) — now uses max of the two. Market scanner lacked pagination — now follows cursor. CASE 3 Kelly omitted `model_spread` — added. Dashboard `_write_json` now uses `atomic_json_save`. Bucket probs recomputed after Bayesian update. Adverse selection fill_rate capped at 1.0. REJECT override no longer stacks with convergence boost. CORS: Authorization header added. CASE 1 min edge lowered to 2% (`CASE1_MIN_EDGE`), NO price cap raised to 98c (was 95c) to catch profitable confirmed outcomes.
