@@ -91,9 +91,13 @@ class RiskManager:
         self._refresh_exposure()
 
         if self.state.get("kill_switch_until"):
-            until = self.state["kill_switch_until"]
-            if datetime.now(timezone.utc).isoformat() < until:
-                return False, "Kill switch active until " + until
+            until_str = self.state["kill_switch_until"]
+            try:
+                until_dt = datetime.fromisoformat(until_str.replace("Z", "+00:00"))
+                if datetime.now(timezone.utc) < until_dt:
+                    return False, "Kill switch active until " + until_str
+            except (ValueError, AttributeError):
+                pass  # Malformed timestamp — clear it below
             self.state["kill_switch_until"] = None
             self.state["consecutive_losses"] = 0
             self._save_state()
