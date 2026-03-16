@@ -117,7 +117,7 @@ Bankroll ~$48. All values in `config.py`. Cents = 100 per $1.00. `BALANCE_FALLBA
 | `CONFIRMED_POSITION_PCT` | 10% | CASE 1 only |
 | `ARB_POSITION_PCT` | 15% | Near risk-free arbitrage |
 | `ARB_MIN_SPREAD_CENTS` | 7 | Min gap for arb trades (covers 7% fee) |
-| `MAX_TOTAL_EXPOSURE_PCT` | 40% | Confirmed bypass |
+| `MAX_TOTAL_EXPOSURE_PCT` | 50% | Confirmed bypass |
 | `MAX_PER_CITY_PCT` | 10% | Confirmed bypass |
 | `MAX_PER_TICKER_CENTS` | 400 ($4) | Always enforced |
 | `MAX_CONTRACTS_PER_TICKER` | 5 | Always enforced |
