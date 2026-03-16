@@ -261,8 +261,14 @@ class Strategy:
         conf_mult = confirmation["size_multiplier"]
 
         if verdict == "REJECT":
-            return _side_skip("confirmation_reject",
-                              confirmation_verdict="REJECT")
+            # High-edge override: if ensemble strongly disagrees with market AND
+            # it's not early morning, allow with minimal sizing
+            if (edge >= 0.25 and not is_next_day
+                    and local_hour is not None and local_hour >= 9):
+                conf_mult = 0.4  # Heavy penalty but not zero
+            else:
+                return _side_skip("confirmation_reject",
+                                  confirmation_verdict="REJECT")
 
         # Step 9: NO-side guards
         if side == "no":
