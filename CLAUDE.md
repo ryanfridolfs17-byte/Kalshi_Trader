@@ -103,7 +103,8 @@ Bankroll ~$48. All values in `config.py`. Cents = 100 per $1.00. `BALANCE_FALLBA
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | `MIN_EDGE` | 7% | Morning (before noon): 8.4% (1.2x). Next-day: 10.5% (1.5x). Early morning (6-9 AM local): 14% (2.0x). |
-| `CONFIRMED_MIN_EDGE` | 5% | CASE 1 confirmed outcomes |
+| `CONFIRMED_MIN_EDGE` | 5% | CASE 3 and convergence trades |
+| `CASE1_MIN_EDGE` | 2% | CASE 1 confirmed outcomes only (obs already exceeded bucket) |
 | `FEE_ADJUSTED_MIN_EDGE` | 3% | After 7% fee drag |
 | `MIN_PAYOUT_DOLLARS` | $0.25 | Minimum expected payout per trade |
 | `DAILY_LOSS_LIMIT_CENTS` | 600 ($6) | ~15% of bankroll |
@@ -138,7 +139,7 @@ Bankroll ~$48. All values in `config.py`. Cents = 100 per $1.00. `BALANCE_FALLBA
 - **Warm city bias defaults**: DEN +4F, Gulf/SE +3F, Desert +2F, PNW +2F/+1.5F (hardcoded in weather_engine.py). Applied in winter months (Dec-Mar).
 
 ### Confirmed Outcomes
-- **CASE 1** (high exceeded bucket): CONFIRMED_OUTCOME. Min 10 AM local. `obs_high > temp_high + 1F`.
+- **CASE 1** (high exceeded bucket): CONFIRMED_OUTCOME. Min 10 AM local. `obs_high > temp_high + 1F`. Edge = `0.99 - market_prob`. Min edge 2% (`CASE1_MIN_EDGE`). NO price cap 98c. Kelly with `is_confirmed=True` (10% max position). Taker mode if edge >15%.
 - **CASE 2**: DELETED from codebase.
 - **CASE 3** (gap too large): Returns STRONG (not confirmed). `confirmation_multiplier=1.0`. Cooling gate before 2 PM. Ensemble veto. Graduated gaps.
 
@@ -224,6 +225,7 @@ If weakest position edge < 3% (`REBALANCE_MAX_OLD_EDGE`) AND at max capacity: ex
 - **Early-morning guard tightening (March 2026)**: 6-9 AM local trades use 2.0x edge multiplier (14% threshold, was 1.5x/10.5%). NO-side trades in this window get additional 50% sizing penalty. Winter bias months extended to Dec-Mar (was Dec-Feb) to cover March transition month. SEA (+2F) and SFO (+1.5F) added to `_WARM_CITY_BIAS`. `NO_SIDE_MAX_PRICE_CENTS` lowered to 50 (was 60). `NO_SEPARATION_FLOOR_F` raised to 3.0 (was 2.0).
 - **Confirmation & longshot loosening (March 2026)**: Guard effectiveness showed `confirmation_reject` blocking 63% winners and `longshot_floor` blocking profitable trades. Fixes: `LONGSHOT_FLOOR_CENTS` 5→3. Gray zone 2.0F→1.5F (more decisive votes). NWS veto softened: NWS DISAGREE + 2 models agree = CONFIRM at 0.5x sizing (was hard REJECT). High-edge bypass: edge ≥25% + same-day + after 9 AM local allows REJECT trades at 0.4x conf_mult.
 - **v4.2 bug fixes (March 2026)**: Morning edge premium now uses local_hour (was ET, broke West Coast). Convergence sizing boost applied pre-Kelly-caps via multiplier (was post-caps, getting wasted). Cloud/precip bias applied to ensemble members before distribution build (was only adjusting mean, bucket probs were stale). NWS actual temp query widened to 06:00Z-08:00Z+1d to capture West Coast late highs. Exit retry: `_execute_exit()` retries once on failure. P/L ratio returns neutral 2.0 with <5 trades (prevents wild sizing swings). `forecast_mean=None` guard in strategy. Cloud cover NaN/Inf filtered. Cache timezone fixed to UTC.
+- **v4.3 institutional review fixes (March 2026)**: CASE 1/3 edge was `(100-price)/100` (payout ratio) instead of `our_prob - market_prob` — inflated edge, wrong Kelly tier, oversized positions ~33%. Fixed. Bayesian observation update was double-shifting ensemble members already above obs — fixed to keep them as-is. Kill switch reset on every restart due to `isinstance(value, type(None))` check — fixed to only set defaults for missing keys. DRY_RUN exit was clearing real positions from risk state — removed `close_position()` call. Trade reconcile double-counted revenue (pair + settlement) — now uses max of the two. Market scanner lacked pagination — now follows cursor. CASE 3 Kelly omitted `model_spread` — added. Dashboard `_write_json` now uses `atomic_json_save`. Bucket probs recomputed after Bayesian update. Adverse selection fill_rate capped at 1.0. REJECT override no longer stacks with convergence boost. CORS: Authorization header added. CASE 1 min edge lowered to 2% (`CASE1_MIN_EDGE`), NO price cap raised to 98c (was 95c) to catch profitable confirmed outcomes.
 - **Dashboard auth (March 2026)**: Bearer token auth via `DASHBOARD_TOKEN` env var. Protects `/api/state`, `/api/fills`, `/api/balance`, `/api/learning`, and all POST endpoints. `/api/health` stays public for Railway health checks. Token accepted via `Authorization: Bearer <token>` header or `?token=<token>` query param. Empty token = no auth (local dev).
 - **METAR primary, NWS fallback**: `fetch_metar_batch()` fetches all 20 stations in one request via AviationWeather API. `get_todays_high()` and `get_current_temperature()` try METAR first, fall back to NWS on failure. Same ICAO station codes (KNYC, KMDW, etc.). METAR cache key: `metar_batch` (90s TTL). Per-station keys `obs_{station}` and `latest_{station}` shared between METAR and NWS paths. `METAR_ENABLED=False` in config disables METAR entirely.
 - **Dashboard outside restart loop**: `start_dashboard_server()` in `__main__` block, NOT inside `main()`.
