@@ -324,18 +324,37 @@ class MakerStrategy:
                     new_contracts = prev_remaining - remaining
                     fill_info = dict(info)
                     fill_info["contracts"] = new_contracts
-                    fill_info["cost_cents"] = info.get("price_cents", 0) * new_contracts
+
+                    # Use actual fill price from API when available (fixes taker cost tracking)
+                    actual_price = None
+                    side = info.get("side", "yes")
+                    if side == "yes":
+                        actual_price = order.get("yes_price") or order.get("yes_price_cents")
+                    else:
+                        actual_price = order.get("no_price") or order.get("no_price_cents")
+                    if actual_price is not None:
+                        try:
+                            actual_price = int(actual_price)
+                        except (ValueError, TypeError):
+                            actual_price = None
+                    fill_price = actual_price if actual_price and actual_price > 0 else info.get("price_cents", 0)
+                    fill_info["price_cents"] = fill_price
+                    fill_info["cost_cents"] = fill_price * new_contracts
+
                     fill_info["order_status"] = status or "partially_filled"
                     filled.append(fill_info)
                     info["filled_contracts"] = int(info.get("filled_contracts", 0) or 0) + new_contracts
                     info["remaining_contracts"] = remaining
+                    # Update tracked price with actual fill price
+                    if actual_price and actual_price > 0:
+                        info["price_cents"] = fill_price
                     changed = True
                     ticker = info.get("ticker", "?")
                     print("  [MAKER] FILL: %s %s x%d @ %dc" % (
                         info.get("action", "buy").upper(),
                         ticker,
                         new_contracts,
-                        info.get("price_cents", 0),
+                        fill_price,
                     ))
                     if info.get("action", "buy") == "buy":
                         self._track_fill_side(info.get("side", "yes"))
