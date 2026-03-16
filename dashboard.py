@@ -599,6 +599,66 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send_json({"error": str(e)}, status=500)
 
+        elif path == "/api/positions":
+            if not self._check_auth():
+                return
+            risk_state = _read_json(STATE_FILES["risk"], default={})
+            positions = risk_state.get("positions", {})
+            pending = risk_state.get("pending_orders", {})
+            self._send_json({"positions": positions, "pending_orders": pending})
+
+        elif path == "/api/risk":
+            if not self._check_auth():
+                return
+            risk_state = _normalize_risk_state(_read_json(STATE_FILES["risk"], default={}))
+            self._send_json({
+                "daily_pnl_cents": risk_state.get("daily_pnl_cents", 0),
+                "consecutive_losses": risk_state.get("consecutive_losses", 0),
+                "kill_switch_until": risk_state.get("kill_switch_until"),
+                "total_exposure_cents": risk_state.get("total_exposure_cents", 0),
+                "positions_count": len(risk_state.get("positions", {})),
+                "pending_count": len(risk_state.get("pending_orders", {})),
+            })
+
+        elif path == "/api/pnl":
+            if not self._check_auth():
+                return
+            pnl = _read_json(STATE_FILES["pnl"], default={})
+            # Exclude daily_history (large) — use /api/equity-curve for that
+            pnl.pop("daily_history", None)
+            self._send_json(pnl)
+
+        elif path.startswith("/api/trades"):
+            if not self._check_auth():
+                return
+            from urllib.parse import parse_qs
+            parsed = urlparse(self.path)
+            qs = parse_qs(parsed.query)
+            page = int(qs.get("page", ["1"])[0])
+            per_page = min(int(qs.get("per_page", ["20"])[0]), 100)
+            city_filter = qs.get("city", [None])[0]
+
+            trades = _read_json(STATE_FILES["trades"], default=[])
+            if not isinstance(trades, list):
+                trades = trades.get("trades", [])
+
+            # Filter by city if specified
+            if city_filter:
+                trades = [t for t in trades if t.get("city_code") == city_filter]
+
+            # Sort latest first
+            trades.sort(key=lambda t: t.get("timestamp", ""), reverse=True)
+
+            # Paginate
+            start = (page - 1) * per_page
+            end = start + per_page
+            self._send_json({
+                "trades": trades[start:end],
+                "total": len(trades),
+                "page": page,
+                "per_page": per_page,
+            })
+
         else:
             self.send_error(404)
 

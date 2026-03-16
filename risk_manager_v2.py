@@ -138,6 +138,20 @@ class RiskManager:
                     return False, "Rolling 5-day drawdown limit: %dc (limit %dc)" % (
                         int(rolling_5d), int(drawdown_limit))
 
+        # Regional correlation cap (confirmed outcomes bypass)
+        if not signal.get("is_confirmed", False):
+            city_code = signal.get("city_code")
+            if city_code:
+                region = self._get_region(city_code)
+                if region:
+                    region_exp = self._region_exposure(region)
+                    signal_cost = signal.get("cost_cents", 0)
+                    balance = self._get_balance_cents()
+                    region_limit = balance * config.MAX_PER_REGION_PCT
+                    if region_exp + signal_cost > region_limit:
+                        return False, "Region %s exposure %dc + %dc > limit %dc" % (
+                            region, region_exp, signal_cost, int(region_limit))
+
         last = self.state.get("last_trade_time")
         if last and not signal.get("same_cycle", False):
             if isinstance(last, str):
@@ -398,6 +412,25 @@ class RiskManager:
             if order.get("ticker") == ticker and int(order.get("remaining_contracts", 0) or 0) > 0:
                 sides.add(order.get("side", ""))
         return {side for side in sides if side}
+
+    def _get_region(self, city_code):
+        """Look up which weather region a city belongs to."""
+        for region, cities in config.CITY_REGIONS.items():
+            if city_code in cities:
+                return region
+        return None
+
+    def _region_exposure(self, region):
+        """Sum exposure (cost_cents) for all positions/pending orders in a region."""
+        region_cities = set(config.CITY_REGIONS.get(region, []))
+        total = 0
+        for pos in self.state["positions"].values():
+            if pos.get("city_code") in region_cities:
+                total += int(pos.get("cost_cents", 0) or 0)
+        for order in self.state["pending_orders"].values():
+            if order.get("city_code") in region_cities:
+                total += int(order.get("remaining_cost_cents", 0) or 0)
+        return total
 
     def _city_exposure(self, city):
         total = 0
