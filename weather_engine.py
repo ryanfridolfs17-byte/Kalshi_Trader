@@ -350,12 +350,13 @@ class WeatherEngine:
             except Exception:
                 target_month = None
 
-        is_winter = target_month in (12, 1, 2) if target_month else False
+        is_winter = target_month in (12, 1, 2, 3) if target_month else False
         # Hardcoded warm city bias defaults (replaces config dependency)
         _WARM_CITY_BIAS = {
             "DEN": 4.0, "HOU": 3.0, "NOLA": 3.0, "MIA": 3.0,
             "ATL": 3.0, "AUS": 3.0, "DAL": 3.0, "SATX": 3.0, "OKC": 3.0,
             "PHX": 2.0, "LV": 2.0,
+            "SEA": 2.0, "SFO": 1.5,
         }
 
         all_highs = []
