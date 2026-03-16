@@ -88,6 +88,7 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 - **Dead endpoints** -- `/api/pending` and `/api/reports` return 410 Gone.
 - **Fee-adjusted Kelly** -- Kelly sizing uses fee-adjusted edge (not raw edge) across all trade paths (normal, CASE 1, CASE 3). Prevents oversizing on marginal trades.
 - **CASE 1 fee gate** -- CASE 1 confirmed outcomes must pass both `CASE1_MIN_EDGE` (raw, 2%) and `CASE1_FEE_ADJUSTED_MIN_EDGE` (net, 1%). Lower than normal `FEE_ADJUSTED_MIN_EDGE` (3%) because outcome is near-guaranteed.
+- **CASE 1/3 rejection logging** -- All rejection paths in `_check_confirmed_outcome()` print `[CASE1-SKIP]` or `[CASE3-SKIP]` with city, reason, and values. Eliminates blind spot where confirmed outcomes were silently rejected.
 - **Exit pricing** -- ALL exit orders (YES and NO) use `limit_price=1` (accept any bid). For sell orders, limit_price = minimum acceptable price. 1c = "sell at any price" = fills at current bid.
 - **Taker NO ceiling** -- `place_market_order()` rejects NO-side orders exceeding `NO_SIDE_MAX_PRICE_CENTS`. Matches limit order guard.
 - **Multiplier cap** -- Combined `conf_mult * rounding_mult * conv_mult` capped at 2.0x before Kelly sizing.
@@ -121,12 +122,12 @@ Bankroll ~$48. All values in `config.py`. Cents = 100 per $1.00. `BALANCE_FALLBA
 ### Core Limits
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `MIN_EDGE` | 7% | Morning (before noon): 8.4% (1.2x). Next-day: 10.5% (1.5x). Early morning (6-9 AM local): 14% (2.0x). |
+| `MIN_EDGE` | 6% | Morning (before noon): 7.2% (1.2x). Next-day: 9% (1.5x). Early morning (6-9 AM local): 12% (2.0x). |
 | `CONFIRMED_MIN_EDGE` | 5% | CASE 3 and convergence trades |
 | `CASE1_MIN_EDGE` | 2% | CASE 1 confirmed outcomes only (obs already exceeded bucket) |
 | `FEE_ADJUSTED_MIN_EDGE` | 3% | After 7% fee drag |
 | `CASE1_FEE_ADJUSTED_MIN_EDGE` | 1% | CASE 1 only: lower bar since outcome is confirmed |
-| `MIN_PAYOUT_DOLLARS` | $0.25 | Minimum expected payout per trade |
+| `MIN_PAYOUT_DOLLARS` | $0.10 | Minimum expected payout per trade |
 | `DAILY_LOSS_LIMIT_CENTS` | 600 ($6) | ~15% of bankroll |
 | `CONSECUTIVE_LOSS_PAUSE` | 3 losses / 60 min | |
 | `KILL_SWITCH_CONSEC_LOSSES` | 3 | 4-hour pause, then auto-resume |
