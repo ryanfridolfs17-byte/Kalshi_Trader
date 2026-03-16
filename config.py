@@ -91,6 +91,7 @@ KILL_SWITCH_PAUSE_HOURS = 4
 # === EDGE & PRICING ===
 MIN_EDGE = 0.07
 CONFIRMED_MIN_EDGE = 0.05
+CASE1_MIN_EDGE = 0.02       # CASE 1 only: obs already exceeded bucket, near-guaranteed
 ARB_MIN_SPREAD_CENTS = 7
 ENABLE_ARBITRAGE_STRATEGY = False
 KALSHI_FEE_PCT = 0.07

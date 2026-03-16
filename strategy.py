@@ -392,12 +392,12 @@ class Strategy:
         # this bucket. Buy NO on this bucket (temp was above, not in it).
         if todays_high > temp_high + config.ROUNDING_BUFFER_HARD_F:
             no_price = market.get("no_ask", 0) or (100 - ref_price)
-            if no_price <= 0 or no_price >= 95:
+            if no_price <= 0 or no_price >= 98:
                 return None
             # CASE1 bypasses NO_SIDE_MAX_PRICE_CENTS (near-guaranteed outcome)
 
             edge = 0.99 - (no_price / 100.0)
-            if edge < config.CONFIRMED_MIN_EDGE:
+            if edge < config.CASE1_MIN_EDGE:
                 return None
 
             # Confirmed outcome sizing via Kelly with CONFIRMED_POSITION_PCT cap
