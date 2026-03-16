@@ -323,10 +323,14 @@ class Strategy:
                               suggested_contracts=contracts)
 
         # Model convergence boost (sizing only, not edge)
-        if model_spread < config.MODEL_CONVERGENCE_BOOST_F:
+        # Require >= 2 models to avoid false boost when only 1 model fetched (spread=0)
+        total_members = distribution.get("total_members", 0)
+        num_models = len(distribution.get("model_means", {}))
+        if (model_spread < config.MODEL_CONVERGENCE_BOOST_F
+                and num_models >= 2 and total_members >= 80):
             contracts = max(1, int(contracts * 1.2))
 
-        total_members = distribution.get("total_members", "?")
+        total_members_str = distribution.get("total_members", "?")
 
         return {
             "signal": "buy",
@@ -344,7 +348,7 @@ class Strategy:
                 f"edge={edge:.1%} (fee-adj={fee_adjusted_edge:.1%}). "
                 f"Verdict={verdict}. "
                 f"Mean={forecast_mean:.1f}F, spread={model_spread:.1f}F. "
-                f"{total_members} members."
+                f"{total_members_str} members."
             ),
             "strategy": "S1-Weather",
             "confirmation_verdict": verdict,
@@ -399,7 +403,8 @@ class Strategy:
 
             edge = 0.99 - (no_price / 100.0)
             fee_adj_edge = self._calculate_fee_adjusted_edge(0.99, no_price / 100.0)
-            if edge < config.CASE1_MIN_EDGE or fee_adj_edge < config.FEE_ADJUSTED_MIN_EDGE:
+            case1_fee_min = getattr(config, "CASE1_FEE_ADJUSTED_MIN_EDGE", 0.01)
+            if edge < config.CASE1_MIN_EDGE or fee_adj_edge < case1_fee_min:
                 return None
 
             # Confirmed outcome sizing via Kelly with CONFIRMED_POSITION_PCT cap
@@ -500,7 +505,9 @@ class Strategy:
                 if edge < config.CONFIRMED_MIN_EDGE or fee_adj_edge < config.FEE_ADJUSTED_MIN_EDGE:
                     return None
 
-                case3_spread = dist.get("model_spread") if dist else None
+                # Use conservative default spread (8F) when ensemble unavailable
+                # to ensure dispersion penalty is applied even without model data
+                case3_spread = dist.get("model_spread", 8.0) if dist else 8.0
                 case3_contracts = self._kelly_size(
                     fee_adj_edge, case3_prob, no_price, self.balance_cents, 1.0,
                     model_spread=case3_spread

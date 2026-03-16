@@ -176,7 +176,9 @@ class RiskManager:
         # P/L ratio dynamic position cap
         if not is_confirmed and not is_arb:
             pl_ratio = self.get_pl_ratio()
-            if pl_ratio < 2.0 and len(self.state.get("win_amounts", [])) >= 5:
+            if (pl_ratio < 2.0
+                    and len(self.state.get("win_amounts", [])) >= 5
+                    and len(self.state.get("loss_amounts", [])) >= 5):
                 dynamic_pct = 0.03  # Tighten to 3%
             elif pl_ratio > 3.0:
                 dynamic_pct = 0.07  # Loosen to 7%
@@ -525,7 +527,7 @@ class RiskManager:
 
     def _get_balance_cents(self):
         now = time.time()
-        if self._cached_balance and now - self._balance_cache_time < 60:
+        if self._cached_balance is not None and now - self._balance_cache_time < 60:
             return self._cached_balance
         if self.client:
             try:
@@ -536,7 +538,7 @@ class RiskManager:
                     return self._cached_balance
             except Exception:
                 pass
-        if self._cached_balance:
+        if self._cached_balance is not None:
             return self._cached_balance
         return getattr(config, "BALANCE_FALLBACK_CENTS", 4800)
 
