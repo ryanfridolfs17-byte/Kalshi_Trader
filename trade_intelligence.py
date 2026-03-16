@@ -817,7 +817,7 @@ class TradeIntelligence:
             temp_c = props.get("temperature", {}).get("value")
             if temp_c is None:
                 return None
-            temp_f = round(temp_c * 9 / 5 + 32)
+            temp_f = math.floor(temp_c * 9 / 5 + 32)
             self._set_cached(cache_key, temp_f)
             return temp_f
         except Exception:
@@ -871,7 +871,7 @@ class TradeIntelligence:
                 if obs_local_date == local_date:
                     temp_c = props.get("temperature", {}).get("value")
                     if temp_c is not None:
-                        temps.append(round(temp_c * 9 / 5 + 32))
+                        temps.append(math.floor(temp_c * 9 / 5 + 32))
             if temps:
                 high = max(temps)
                 self._set_cached(cache_key, high)

@@ -423,12 +423,16 @@ class WeatherEngine:
         result["precip_adj_f"] = precip_adj
 
         # Add per-model family means for disagreement detection
-        # Uses bias-corrected highs so model_spread reflects actual predictions
+        # Uses bias-corrected highs WITH cloud/precip adjustment so model_spread
+        # reflects actual predictions (not inflated by missing weather bias)
+        total_weather_adj_val = (cloud_adj + precip_adj) if cloud_data else 0.0
         model_means = {}
         for model_name, highs in corrected_family_highs.items():
             if highs:
-                model_means[model_name] = round(sum(highs) / len(highs), 1)
+                adj_mean = sum(highs) / len(highs) + total_weather_adj_val
+                model_means[model_name] = round(adj_mean, 1)
         # Per-model standard deviations for CRPS-based weighting
+        # (stds are unaffected by a constant shift, no adjustment needed)
         model_stds = {}
         for model_name, highs in corrected_family_highs.items():
             if highs and len(highs) >= 2:
