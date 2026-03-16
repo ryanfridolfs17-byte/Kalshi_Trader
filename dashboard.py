@@ -551,6 +551,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 cumulative = 0
                 peak = 0
                 max_dd_cents = 0
+                max_dd_pct = 0.0
                 for pnl in daily_pnls:
                     cumulative += pnl
                     if cumulative > peak:
@@ -558,7 +559,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     dd = peak - cumulative
                     if dd > max_dd_cents:
                         max_dd_cents = dd
-                max_dd_pct = round(max_dd_cents / peak, 4) if peak > 0 else 0
+                        max_dd_pct = round(dd / peak, 4) if peak > 0 else 0
 
                 # Win rate
                 winning = sum(1 for p in daily_pnls if p > 0)

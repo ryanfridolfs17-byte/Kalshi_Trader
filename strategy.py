@@ -706,7 +706,7 @@ class Strategy:
         """
         if edge <= 0 or price_cents <= 0 or balance_cents <= 0:
             return 0
-        if balance_cents < 500:  # Below  -- not enough to trade safely
+        if balance_cents < 500:  # Below $5 -- not enough to trade safely
             return 0
 
         prob_win = min(0.99, max(0.01, win_prob))
