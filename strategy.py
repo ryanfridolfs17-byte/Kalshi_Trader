@@ -284,7 +284,7 @@ class Strategy:
 
         # Rounding buffer (YES and NO)
         rounding_mult = self._rounding_buffer_multiplier(
-            forecast_mean, temp_low, temp_high, side
+            forecast_mean, temp_low, temp_high, side, price_cents=price_cents
         )
         if rounding_mult == 0.0:
             return _side_skip("rounding_buffer",
@@ -628,8 +628,14 @@ class Strategy:
     # ===========================================================
 
     def _rounding_buffer_multiplier(self, forecast_mean, temp_low, temp_high,
-                                     side):
-        """NWS rounding buffer. Returns sizing multiplier (0.0 = no trade)."""
+                                     side, price_cents=0):
+        """NWS rounding buffer. Returns sizing multiplier (0.0 = no trade).
+
+        Blocks trades where the forecast mean is within the NWS rounding error
+        margin of a bucket boundary. Hard buffer (1F) = no trade. Soft buffer
+        (2F) = 50% sizing, UNLESS the contract is expensive (>50c) — then
+        a 1F rounding error means total loss on an expensive bet.
+        """
         if side == "no":
             eff_low = temp_low - config.ROUNDING_BUFFER_HARD_F
             eff_high = temp_high + config.ROUNDING_BUFFER_HARD_F
@@ -649,6 +655,10 @@ class Strategy:
         if nearest <= config.ROUNDING_BUFFER_HARD_F:
             return 0.0
         elif nearest <= config.ROUNDING_BUFFER_SOFT_F:
+            # Expensive contracts in soft buffer = too much risk for rounding uncertainty.
+            # A 1F NWS rounding error on an 80c contract = 80c loss.
+            if price_cents > 50:
+                return 0.0
             return 0.5
         return 1.0
 
