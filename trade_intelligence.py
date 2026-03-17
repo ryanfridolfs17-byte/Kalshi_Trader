@@ -122,7 +122,10 @@ class TradeIntelligence:
                                 city_code, target_date, temp_low, temp_high, side
                             )
                             if cur_prob is not None:
-                                prob_drop = entry_prob - cur_prob
+                                # entry_prob is YES-side (convention), cur_prob is side-adjusted
+                                # For NO: convert entry_prob to NO-side for apples-to-apples
+                                effective_entry_prob = (1.0 - entry_prob) if side == "no" else entry_prob
+                                prob_drop = effective_entry_prob - cur_prob
                                 prob_drop_threshold = getattr(config, 'PROFIT_EXIT_PROB_DROP', 0.15)
                                 if prob_drop >= prob_drop_threshold:
                                     profit_pct = ((cur_mkt - entry_price) / entry_price) * 100
@@ -369,7 +372,10 @@ class TradeIntelligence:
                             city_code, target_date, temp_low, temp_high, side
                         )
                         if cur_prob is not None:
-                            prob_drop = entry_prob - cur_prob
+                            # entry_prob is YES-side (convention), cur_prob is side-adjusted
+                            # For NO: convert entry_prob to NO-side for apples-to-apples
+                            effective_entry_prob = (1.0 - entry_prob) if side == "no" else entry_prob
+                            prob_drop = effective_entry_prob - cur_prob
                             if prob_drop >= prob_drop_threshold:
                                 profit_pct = ((cur_mkt - entry_price) / entry_price) * 100
                                 print(f"  [PROFIT-EXIT] {ticker} forecast shift: "
@@ -665,13 +671,14 @@ class TradeIntelligence:
                         if fside == "yes":
                             can_pair = min(count, no_held)
                             pair_revenue += f.get("yes_price", 0) * count  # Sell = revenue
-                            pair_revenue += can_pair * 100
+                            # Paired NO contracts consumed: reduce cost by their purchase price
+                            # (no extra 100c bonus — sell price already captures YES value)
                             no_held -= can_pair
                             yes_held = max(0, yes_held - (count - can_pair))  # Floor at 0
                         elif fside == "no":
                             can_pair = min(count, yes_held)
                             pair_revenue += f.get("no_price", 0) * count  # Sell = revenue
-                            pair_revenue += can_pair * 100
+                            # Paired YES contracts consumed: reduce cost by their purchase price
                             yes_held -= can_pair
                             no_held = max(0, no_held - (count - can_pair))  # Floor at 0
                 ticker_flows[ticker] = {
@@ -739,7 +746,7 @@ class TradeIntelligence:
             total_pnl = total_returned - total_invested
 
             # Today settlements (same double-count guard as above)
-            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            today_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
             today_wins, today_losses, today_pnl = 0, 0, 0
             filled_tickers = set(ticker_flows.keys())
             for s in all_settlements:

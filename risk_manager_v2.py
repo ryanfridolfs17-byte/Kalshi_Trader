@@ -138,19 +138,21 @@ class RiskManager:
                     return False, "Rolling 5-day drawdown limit: %dc (limit %dc)" % (
                         int(rolling_5d), int(drawdown_limit))
 
-        # Regional correlation cap (confirmed outcomes bypass)
+        # Regional correlation cap (confirmed outcomes bypass) — checked later for size-down
+        _region_for_sizedown = None
         if not signal.get("is_confirmed", False):
             city_code = signal.get("city_code")
             if city_code:
                 region = self._get_region(city_code)
                 if region:
                     region_exp = self._region_exposure(region)
-                    signal_cost = signal.get("cost_cents", 0)
-                    balance = self._get_balance_cents()
-                    region_limit = balance * config.MAX_PER_REGION_PCT
-                    if region_exp + signal_cost > region_limit:
-                        return False, "Region %s exposure %dc + %dc > limit %dc" % (
-                            region, region_exp, signal_cost, int(region_limit))
+                    raw_bal = self._get_balance_cents()
+                    region_limit = raw_bal * config.MAX_PER_REGION_PCT
+                    region_room = int(region_limit - region_exp)
+                    if region_room <= 0:
+                        return False, "Region %s exposure %dc >= limit %dc" % (
+                            region, region_exp, int(region_limit))
+                    _region_for_sizedown = (region, region_room)
 
         last = self.state.get("last_trade_time")
         if last and not signal.get("same_cycle", False):
@@ -170,7 +172,9 @@ class RiskManager:
         if existing_sides and side not in existing_sides:
             return False, "Opposite-side exposure already exists for %s" % ticker
 
-        balance = self._get_balance_cents()
+        raw_balance = self._get_balance_cents()
+        # Apply liquidity reserve — keep 20% untouchable for fees/margin
+        balance = int(raw_balance * (1.0 - config.LIQUIDITY_RESERVE_PCT))
         max_contracts = contracts
 
         # P/L ratio dynamic position cap
@@ -221,6 +225,11 @@ class RiskManager:
         if max_by_contract_limit <= 0:
             return False, "Contract limit reached for %s" % ticker
         max_contracts = min(max_contracts, max_by_contract_limit)
+
+        # Region cap size-down (deferred from earlier check)
+        if _region_for_sizedown and price_cents > 0:
+            region_name, region_room = _region_for_sizedown
+            max_contracts = min(max_contracts, region_room // price_cents)
 
         if max_contracts < 1:
             return False, "All caps exceeded - cannot fit even 1 contract"
@@ -284,11 +293,21 @@ class RiskManager:
     def record_win(self, profit_cents):
         self.state["daily_pnl_cents"] += profit_cents
         self.state["consecutive_losses"] = 0
+        # Feed P/L ratio tracking
+        if profit_cents > 0:
+            self.state["win_amounts"].append(profit_cents)
+            if len(self.state["win_amounts"]) > 50:
+                self.state["win_amounts"] = self.state["win_amounts"][-50:]
         self._save_state()
 
     def record_loss(self, cost_cents):
         self.state["daily_pnl_cents"] -= cost_cents
         self.state["consecutive_losses"] += 1
+        # Feed P/L ratio tracking
+        if cost_cents > 0:
+            self.state["loss_amounts"].append(cost_cents)
+            if len(self.state["loss_amounts"]) > 50:
+                self.state["loss_amounts"] = self.state["loss_amounts"][-50:]
         self._save_state()
 
     def close_position(self, ticker):
@@ -348,7 +367,7 @@ class RiskManager:
         pos = self.state["positions"].get(ticker)
         if not pos:
             return
-        if order_id and pos.get("exit_order_id") not in ("", order_id):
+        if order_id and pos.get("exit_order_id") not in ("", None, order_id):
             return
         pos["order_status"] = "executed"
         pos.pop("exit_order_id", None)
@@ -508,8 +527,8 @@ class RiskManager:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "order_id": fill_info.get("order_id", ""),
             "order_status": "executed",
-            "is_confirmed": fill_info.get("is_confirmed", False),
-            "is_arb": fill_info.get("is_arb", False),
+            "is_confirmed": fill_info.get("is_confirmed", False) or (existing.get("is_confirmed", False) if existing else False),
+            "is_arb": fill_info.get("is_arb", False) or (existing.get("is_arb", False) if existing else False),
             "entry_prob": fill_info.get("our_prob") or existing_entry_prob,
             "entry_forecast_mean": fill_info.get("predicted_high") or existing_entry_forecast,
             "peak_price_cents": max(existing_peak, avg_price),

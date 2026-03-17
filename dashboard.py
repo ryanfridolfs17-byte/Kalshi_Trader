@@ -503,6 +503,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(result or {"error": "API call failed"})
 
         elif path == "/api/learning":
+            if not self._check_auth():
+                return
             if _trade_reviewer is None:
                 self._send_json({"error": "TradeReviewer not initialized"}, 503)
             else:
@@ -1022,7 +1024,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not isinstance(new_trades, list):
                 self._send_json({"error": "Missing or invalid 'trades' array"}, 400)
                 return
-            old_count = len(_read_json(STATE_FILES["trades"], default=[]))
+            if len(new_trades) > 5000:
+                self._send_json({"error": "Trade array too large (max 5000)"}, 400)
+                return
+            # Backup old trade log before overwriting
+            old_trades = _read_json(STATE_FILES["trades"], default=[])
+            old_count = len(old_trades)
+            try:
+                import shutil
+                backup_path = STATE_FILES["trades"] + ".bak"
+                if os.path.exists(STATE_FILES["trades"]):
+                    shutil.copy2(STATE_FILES["trades"], backup_path)
+            except Exception:
+                pass
             _write_json(STATE_FILES["trades"], new_trades)
             self._send_json({
                 "ok": True,
@@ -1035,6 +1049,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "Endpoint removed in v4.0"}, 410)
 
         elif path == "/api/reset":
+            # Require explicit confirmation
+            if not payload.get("confirm"):
+                self._send_json({"error": "Must include 'confirm': true to reset"}, 400)
+                return
+            # Backup all state files before wiping
+            try:
+                import shutil
+                for key, fpath in STATE_FILES.items():
+                    if os.path.exists(fpath):
+                        shutil.copy2(fpath, fpath + ".bak")
+            except Exception:
+                pass
             # Wipe all runtime state files to start fresh
             clean_state = {
                 "trades": [],

@@ -16,7 +16,7 @@ Single writer for learning_state.json.
 import json
 import math
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 import requests
 import config
@@ -49,6 +49,14 @@ class TradeReviewer:
         for k, v in defaults.items():
             if k not in self.state:
                 self.state[k] = v
+
+        # Prune actual_temps older than 30 days
+        if "actual_temps" in self.state and len(self.state["actual_temps"]) > 100:
+            cutoff = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+            self.state["actual_temps"] = {
+                k: v for k, v in self.state["actual_temps"].items()
+                if k.split("_")[-1] >= cutoff  # key format: {city}_{date}
+            }
 
     # ===========================================================
     # PUBLIC API
@@ -208,9 +216,11 @@ class TradeReviewer:
         Uses exponential moving average (alpha=0.15), rolling 30-point window.
         Positive bias = model runs hot (forecast > actual).
         """
-        # Match snapshots to settled trades
+        # Match snapshots to settled trades (only real buy_fill entries)
         settled = {}
         for t in trade_log:
+            if t.get("entry_type") != "buy_fill":
+                continue
             ticker = t.get("ticker", "")
             if t.get("settled") or t.get("result") in ("win", "loss"):
                 settled[ticker] = t
@@ -296,6 +306,8 @@ class TradeReviewer:
         """
         settled = {}
         for t in trade_log:
+            if t.get("entry_type") != "buy_fill":
+                continue
             ticker = t.get("ticker", "")
             if t.get("settled") or t.get("result") in ("win", "loss"):
                 settled[ticker] = t
@@ -391,6 +403,8 @@ class TradeReviewer:
         num_losses = 0
 
         for t in trade_log:
+            if t.get("entry_type") != "buy_fill":
+                continue
             result = t.get("result")
             pnl = t.get("profit_cents", 0)
             if result == "win" and pnl > 0:
@@ -461,6 +475,8 @@ class TradeReviewer:
         }
 
         for t in trade_log:
+            if t.get("entry_type") != "buy_fill":
+                continue
             result = t.get("result")
             if result not in ("win", "loss"):
                 continue
@@ -1035,6 +1051,8 @@ class TradeReviewer:
         # Filter today's settled trades
         todays_trades = []
         for t in trade_log:
+            if t.get("entry_type") != "buy_fill":
+                continue
             ts = t.get("timestamp", "")
             if today in ts and t.get("result") in ("win", "loss"):
                 todays_trades.append(t)
@@ -1159,7 +1177,8 @@ class TradeReviewer:
             for obs in features:
                 temp_c = obs.get("properties", {}).get("temperature", {}).get("value")
                 if temp_c is not None:
-                    temp_f = round(temp_c * 9 / 5 + 32)
+                    import math
+                    temp_f = math.floor(temp_c * 9 / 5 + 32)
                     if max_temp is None or temp_f > max_temp:
                         max_temp = temp_f
 

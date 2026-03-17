@@ -197,8 +197,8 @@ class SignalConfirmer:
                     temp = round(temps[i])
                     self._cache[cache_key] = (time.time(), temp)
                     return temp
-        except Exception:
-            pass
+        except Exception as e:
+            print("  [CONFIRMER] %s fetch failed for %s: %s" % (source_key, city_info.get("name", "?"), e))
         return None
 
     def _get_nws_point_forecast(self, city_info, target_date):
@@ -241,8 +241,8 @@ class SignalConfirmer:
                     if temp is not None:
                         self._cache[cache_key] = (time.time(), int(temp))
                         return int(temp)
-        except Exception:
-            pass
+        except Exception as e:
+            print("  [CONFIRMER] NWS point forecast failed for %s: %s" % (city_info.get("name", "?"), e))
         return None
 
     def _cast_vote(self, forecast_high, temp_low, temp_high, our_prob,
