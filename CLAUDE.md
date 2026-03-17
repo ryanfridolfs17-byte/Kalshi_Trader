@@ -95,6 +95,11 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 - **Multiplier cap** -- Combined `conf_mult * rounding_mult * conv_mult` capped at 2.0x before Kelly sizing.
 - **PNL cache invalidation** -- `risk._pnl_cache` cleared immediately after `sync_pnl_from_kalshi()` so drawdown check uses fresh data.
 - **SIGTERM order cleanup** -- `maker.cancel_all()` called before main loop exits on SIGTERM.
+- **Exit pricing** -- ALL exit orders (YES and NO) use `limit_price=1` (accept any bid). For sell orders, limit_price = minimum acceptable price. 1c = "sell at any price" = fills at current bid.
+- **Taker NO ceiling** -- `place_market_order()` rejects NO-side orders exceeding `NO_SIDE_MAX_PRICE_CENTS`. Matches limit order guard.
+- **Multiplier cap** -- Combined `conf_mult * rounding_mult * conv_mult` capped at 2.0x before Kelly sizing.
+- **PNL cache invalidation** -- `risk._pnl_cache` cleared immediately after `sync_pnl_from_kalshi()` so drawdown check uses fresh data.
+- **SIGTERM order cleanup** -- `maker.cancel_all()` called before main loop exits on SIGTERM.
 - **Dashboard auth hardened** -- Query parameter auth removed (Bearer header only). Production warning if `DASHBOARD_TOKEN` empty on Railway.
 
 ## NWS Station Mappings (20 Cities)
@@ -170,12 +175,14 @@ Bankroll ~$48. All values in `config.py`. Cents = 100 per $1.00. `BALANCE_FALLBA
 ### Exit Logic (Binary: HOLD or EXIT)
 | Trigger | Action |
 |---------|--------|
-| Obs confirms loss / approaching bucket (1-7 PM) | EXIT (high) |
+| Next-day positions: Rules 5+6 only (price-based, no obs) | EXIT if triggered |
+| Obs confirms loss / approaching bucket (noon-7 PM, gap>5 noon-2PM, gap>3 after) | EXIT (high) |
 | Threshold market approaching within 5F (10 AM-1 PM) | EXIT (high) |
 | Forecast divergence: obs high > forecast mean + 2F (10 AM+) | EXIT (high) |
 | Rounding buffer after 2 PM | EXIT (high) |
-| Edge deterioration: current edge < -15% (10 AM+) | EXIT (high) |
-| YES threshold unreachable: gap > remaining heat potential (noon+) | EXIT (high) |
+| Edge deterioration: current edge < -15% (10 AM+, cached for post-6PM) | EXIT (high) |
+| YES bucket unreachable: gap > remaining heat potential (noon+, all buckets) | EXIT (high) |
+| Near settlement: within 2h of close AND underwater | EXIT (high) |
 | Forecast shift: entry_prob - current_prob >= 15% AND profitable (50%+) | EXIT (high) |
 | Peak drawdown: price dropped 20%+ from peak (min 20c) AND profitable | EXIT (high) |
 | Thesis valid | HOLD to settlement |

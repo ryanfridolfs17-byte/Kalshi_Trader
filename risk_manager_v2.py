@@ -542,8 +542,11 @@ class RiskManager:
         remaining_contracts = cur_contracts - contracts
         existing["contracts"] = remaining_contracts
         existing["cost_cents"] = int(round(avg_cost * remaining_contracts))
-        existing["order_status"] = "executed"
-        existing.pop("exit_order_id", None)
+        # Preserve exit_pending if this is a partial fill of an exit order
+        # (the remaining contracts still have an open exit order)
+        if existing.get("order_status") != "exit_pending":
+            existing["order_status"] = "executed"
+            existing.pop("exit_order_id", None)
 
     def _get_balance_cents(self):
         now = time.time()
