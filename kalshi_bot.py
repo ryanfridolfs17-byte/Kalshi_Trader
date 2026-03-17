@@ -344,6 +344,10 @@ def main(shutdown_event=None):
 
         except KeyboardInterrupt:
             print("\n  [BOT] Shutting down gracefully...")
+            try:
+                maker.cancel_all()
+            except Exception:
+                pass
             break
         except Exception as e:
             print("  [BOT] ERROR in cycle %d: %s" % (cycle, e))
@@ -470,7 +474,8 @@ def _fetch_observed_highs(markets, intel=None):
         try:
             max_temp = intel.get_todays_high(city_code)
             if max_temp is not None:
-                obs_highs[city_code] = int(max_temp)
+                import math
+                obs_highs[city_code] = math.floor(max_temp)
         except Exception:
             continue
 
