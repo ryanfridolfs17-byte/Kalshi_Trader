@@ -33,6 +33,7 @@ SETTLEMENT SOURCE:
 import requests
 import math
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from collections import defaultdict
 import json
 import time
@@ -271,7 +272,7 @@ class WeatherEngine:
             return None
 
         if target_date is None:
-            target_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            target_date = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
 
         # Check cache — models update every 6 hours, 15-min cache is appropriate.
         weights_key = ""
@@ -286,7 +287,7 @@ class WeatherEngine:
         in_window = _in_fetch_window()
         if cache_key in self._cache:
             cached = self._cache[cache_key]
-            age = (datetime.now() - cached["fetched_at"]).total_seconds()
+            age = (datetime.now(timezone.utc) - cached["fetched_at"]).total_seconds()
             ttl = 60 if cached["data"] is None else pos_ttl
             # Outside fetch window: return ANY cached data (even stale)
             if not in_window or age < ttl:
@@ -337,7 +338,7 @@ class WeatherEngine:
             # Negative cache: avoid re-hitting failed API for 60s
             self._cache[cache_key] = {
                 "data": None,
-                "fetched_at": datetime.now(),
+                "fetched_at": datetime.now(timezone.utc),
             }
             return None
 
@@ -454,9 +455,9 @@ class WeatherEngine:
         # Cache it
         self._cache[cache_key] = {
             "data": result,
-            "fetched_at": datetime.now(),
+            "fetched_at": datetime.now(timezone.utc),
         }
-        self.last_fetch_time = datetime.now()
+        self.last_fetch_time = datetime.now(timezone.utc)
 
         return result
 
@@ -477,13 +478,13 @@ class WeatherEngine:
 
         # Default target_date BEFORE building cache key to avoid "None" in key
         if target_date is None:
-            target_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            target_date = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
 
         cache_key = f"nws_{city_code}_{target_date}"
         in_window = _in_fetch_window()
         if cache_key in self._nws_cache:
             cached = self._nws_cache[cache_key]
-            age = (datetime.now() - cached["fetched_at"]).total_seconds()
+            age = (datetime.now(timezone.utc) - cached["fetched_at"]).total_seconds()
             if not in_window or age < 1800:
                 return cached["data"]
 
@@ -518,7 +519,7 @@ class WeatherEngine:
                     }
                     self._nws_cache[cache_key] = {
                         "data": result,
-                        "fetched_at": datetime.now(),
+                        "fetched_at": datetime.now(timezone.utc),
                     }
                     return result
 
@@ -543,7 +544,7 @@ class WeatherEngine:
         in_window = _in_fetch_window()
         if ens_key in self._cache:
             cached = self._cache[ens_key]
-            age = (datetime.now() - cached["fetched_at"]).total_seconds()
+            age = (datetime.now(timezone.utc) - cached["fetched_at"]).total_seconds()
             ttl = 60 if cached["data"] is None else pos_ttl
             if not in_window or age < ttl:
                 return cached["data"]
@@ -553,7 +554,7 @@ class WeatherEngine:
             return None
 
         result = self._fetch_ensemble_raw(city, target_date, model)
-        self._cache[ens_key] = {"data": result, "fetched_at": datetime.now()}
+        self._cache[ens_key] = {"data": result, "fetched_at": datetime.now(timezone.utc)}
         return result
 
     def _fetch_ensemble_raw(self, city, target_date, model):
@@ -1013,7 +1014,7 @@ class WeatherEngine:
 
         for key, cached in self._cache.items():
             data = cached["data"]
-            age_min = (datetime.now() - cached["fetched_at"]).total_seconds() / 60
+            age_min = (datetime.now(timezone.utc) - cached["fetched_at"]).total_seconds() / 60
             print(f"  [WEATHER] {data['city']} {data['target_date']}: "
                   f"mean={data['forecasted_high_mean']}°F, "
                   f"spread=±{data['std_dev']}°F, "
