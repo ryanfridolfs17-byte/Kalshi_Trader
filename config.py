@@ -174,6 +174,12 @@ REBALANCE_INTERVAL_CYCLES = 15
 REBALANCE_MIN_NEW_EDGE = 0.15
 REBALANCE_MAX_OLD_EDGE = 0.03
 
+# === PROFIT PROTECTION EXITS ===
+PROFIT_EXIT_PROB_DROP = 0.15        # Exit if current_prob drops 15%+ below entry_prob
+PROFIT_EXIT_MIN_PROFIT_PCT = 0.50   # Position must be up >= 50% from entry to trigger
+PROFIT_EXIT_PEAK_DROP_PCT = 0.20    # Safety net: exit if price drops 20% from peak
+PROFIT_EXIT_MIN_PEAK_CENTS = 20     # Peak must reach 20c+ (ignore penny noise)
+
 # === TAKER MODE ===
 TAKER_MODE_MIN_EDGE = 0.15
 

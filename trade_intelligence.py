@@ -75,7 +75,9 @@ class TradeIntelligence:
         2. Temp in rounding buffer after 2 PM local -> EXIT
         3. Forecast edge deterioration (edge < -15% after 10 AM) -> EXIT
         4. YES threshold unreachable after noon -> EXIT
-        5. Thesis still valid -> HOLD to settlement
+        5. Forecast shift: prob dropped 15%+ from entry AND profitable -> EXIT
+        6. Peak drawdown: price dropped 20%+ from peak AND profitable -> EXIT
+        7. Thesis still valid -> HOLD to settlement
         """
         exits = []
         for pos in positions:
@@ -254,7 +256,88 @@ class TradeIntelligence:
                         })
                         continue
 
+            # --- EXIT RULE 5: Forecast shift (probability dropped from entry) ---
+            # If forecast no longer supports our thesis AND we're in profit, lock gains.
+            # This detects the exact moment the ensemble shifts against the position.
+            if not pos.get("is_confirmed", False):
+                entry_prob = pos.get("entry_prob")
+                entry_price = pos.get("price_cents", 0)
+                prob_drop_threshold = getattr(config, 'PROFIT_EXIT_PROB_DROP', 0.15)
+                min_profit_pct = getattr(config, 'PROFIT_EXIT_MIN_PROFIT_PCT', 0.50)
+
+                if entry_prob is not None and entry_price > 0:
+                    cur_mkt = self._get_current_market_price(ticker, side)
+                    if cur_mkt is not None and cur_mkt > entry_price * (1.0 + min_profit_pct):
+                        cur_prob = self._compute_current_prob(
+                            city_code, target_date, temp_low, temp_high, side
+                        )
+                        if cur_prob is not None:
+                            prob_drop = entry_prob - cur_prob
+                            if prob_drop >= prob_drop_threshold:
+                                profit_pct = ((cur_mkt - entry_price) / entry_price) * 100
+                                print(f"  [PROFIT-EXIT] {ticker} forecast shift: "
+                                      f"entry_prob={entry_prob:.1%} -> cur_prob={cur_prob:.1%} "
+                                      f"(drop={prob_drop:.1%}), price {entry_price}c->{cur_mkt}c "
+                                      f"(+{profit_pct:.0f}%)")
+                                exits.append({
+                                    "ticker": ticker, "action": "sell", "urgency": "high",
+                                    "side": side,
+                                    "reason": (f"Forecast shift: prob {entry_prob:.0%}->{cur_prob:.0%} "
+                                               f"(dropped {prob_drop:.0%}), still +{profit_pct:.0f}% "
+                                               f"from entry ({entry_price}c->{cur_mkt}c)"),
+                                })
+                                continue
+
+            # --- EXIT RULE 6: Peak drawdown safety net ---
+            # If price spiked and is now dropping hard, exit before it crashes to 0.
+            # Market makers reprice faster than ensemble updates.
+            if not pos.get("is_confirmed", False):
+                entry_price = pos.get("price_cents", 0)
+                peak_price = pos.get("peak_price_cents", entry_price)
+                peak_drop_pct = getattr(config, 'PROFIT_EXIT_PEAK_DROP_PCT', 0.20)
+                min_peak = getattr(config, 'PROFIT_EXIT_MIN_PEAK_CENTS', 20)
+
+                if peak_price >= min_peak and entry_price > 0:
+                    cur_mkt = self._get_current_market_price(ticker, side)
+                    if cur_mkt is not None and cur_mkt > entry_price:
+                        drop = (peak_price - cur_mkt) / peak_price if peak_price > 0 else 0
+                        if drop >= peak_drop_pct:
+                            profit_pct = ((cur_mkt - entry_price) / entry_price) * 100
+                            print(f"  [PEAK-EXIT] {ticker} peak drawdown: "
+                                  f"peak={peak_price}c now={cur_mkt}c "
+                                  f"(dropped {drop:.0%}), entry={entry_price}c "
+                                  f"(still +{profit_pct:.0f}%)")
+                            exits.append({
+                                "ticker": ticker, "action": "sell", "urgency": "high",
+                                "side": side,
+                                "reason": (f"Peak drawdown: {peak_price}c->{cur_mkt}c "
+                                           f"(dropped {drop:.0%} from peak), "
+                                           f"still +{profit_pct:.0f}% from entry {entry_price}c"),
+                            })
+                            continue
+
         return exits
+
+    def _compute_current_prob(self, city_code, target_date, temp_low, temp_high, side):
+        """Compute current forecast probability for a bucket. Returns float or None."""
+        if not self.weather:
+            return None
+        try:
+            dist = self.weather.get_temperature_distribution(
+                city_code, target_date=target_date
+            )
+            if not dist:
+                return None
+            prob = self.weather.calculate_bucket_probability(dist, temp_low, temp_high)
+            if prob is None:
+                return None
+            # Return probability for the position's side
+            if side == "yes":
+                return prob
+            else:
+                return 1.0 - prob
+        except Exception:
+            return None
 
     def _get_forecast_mean_for_ticker(self, ticker):
         """Look up the entry-time forecast mean for a ticker from learning state."""

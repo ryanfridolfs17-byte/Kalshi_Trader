@@ -119,6 +119,13 @@ def main(shutdown_event=None):
                 if pos.get("order_status", "executed") == "executed"
             }
             if positions_dict:
+                # Update peak prices BEFORE exit evaluation
+                _update_peak_prices(client, risk, positions_dict)
+                # Re-read positions after peak update (state may have changed)
+                positions_dict = {
+                    tk: pos for tk, pos in risk.get_positions().items()
+                    if pos.get("order_status", "executed") == "executed"
+                }
                 # Convert to list format for check_exits
                 positions_list = list(positions_dict.values())
                 trade_log = _load_trade_log()
@@ -467,6 +474,29 @@ def _fetch_observed_highs(markets, intel=None):
 
     return obs_highs
 
+
+
+def _update_peak_prices(client, risk, positions_dict):
+    """Fetch current bid for each position and update peak_price_cents in risk state.
+    Must run BEFORE check_exits() so profit-protection has fresh peak data."""
+    for tk, pos in positions_dict.items():
+        if pos.get("order_status") == "exit_pending":
+            continue
+        side = pos.get("side", "yes")
+        try:
+            mkt = client.get_market(tk)
+            if mkt and "market" in mkt:
+                mkt = mkt["market"]
+            if not mkt:
+                continue
+            if side == "yes":
+                cur_bid = mkt.get("yes_bid", 0) or 0
+            else:
+                cur_bid = mkt.get("no_bid", 0) or 0
+            if cur_bid > 0:
+                risk.update_peak_price(tk, cur_bid)
+        except Exception:
+            continue
 
 
 def _review_positions(client, strategy, positions_dict, risk):
