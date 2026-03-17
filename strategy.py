@@ -330,6 +330,8 @@ class Strategy:
                 and num_models >= 2 and total_members >= 80):
             contracts = max(1, int(contracts * 1.2))
             contracts = min(contracts, config.MAX_CONTRACTS_PER_TICKER)  # Re-cap after boost
+            if price_cents > 0:
+                contracts = min(contracts, config.MAX_PER_TICKER_CENTS // price_cents)  # Cost cap
 
         total_members_str = distribution.get("total_members", "?")
 
@@ -418,7 +420,8 @@ class Strategy:
                 is_confirmed=True, raw_edge=edge
             )
             if contracts <= 0:
-                contracts = 1
+                print(f"  [CASE1-SKIP] {city_code} Kelly=0 (edge too thin after fees or balance too low)")
+                return None
             # Apply NO sizing multiplier for expensive NO contracts
             if no_price >= 50:
                 contracts = max(1, int(contracts * config.NO_SIDE_SIZING_MULTIPLIER))
@@ -434,7 +437,7 @@ class Strategy:
                 "edge": round(edge, 4),
                 "fee_adjusted_edge": round(self._calculate_fee_adjusted_edge(0.99, no_price / 100.0), 4),
                 "our_prob": 0.01,  # YES probability (convention: our_prob = YES bucket prob)
-                "market_prob": round(no_price / 100.0, 4),
+                "market_prob": round((100 - no_price) / 100.0, 4),  # YES-side market prob (convention)
                 "price_cents": no_price,
                 "suggested_contracts": contracts,
                 "reasoning": (
@@ -524,6 +527,9 @@ class Strategy:
                     fee_adj_edge, case3_prob, no_price, self.balance_cents, 1.0,
                     model_spread=case3_spread, raw_edge=edge
                 )
+                if case3_contracts <= 0:
+                    print(f"  [CASE3-SKIP] {city_code} Kelly=0 (edge too thin after fees)")
+                    return None
 
                 print(f"  [CASE3] {city_code} high={todays_high}F, "
                       f"bucket {temp_low}-{temp_high}F, "
@@ -536,7 +542,7 @@ class Strategy:
                     "edge": round(edge, 4),
                     "fee_adjusted_edge": round(self._calculate_fee_adjusted_edge(case3_prob, no_price / 100.0), 4),
                     "our_prob": round(1.0 - case3_prob, 4),  # YES probability (convention)
-                    "market_prob": round(no_price / 100.0, 4),
+                    "market_prob": round((100 - no_price) / 100.0, 4),  # YES-side market prob (convention)
                     "price_cents": no_price,
                     "suggested_contracts": case3_contracts,
                     "reasoning": (
@@ -574,10 +580,10 @@ class Strategy:
                                 price_cents, confirmation_verdict):
         """Consolidated NO-side guards. Returns (passed, reason).
 
-        1. Dynamic separation: max(3.0F, std_dev * 0.8)
+        1. Dynamic separation: max(2.0F, std_dev * 0.6)
            - NO-side expands bucket by +/-1F for NWS rounding
-           - CONFIRM gets 1.5x penalty
-        2. Price cap: NO > 50c = reject
+           - CONFIRM gets 1.25x penalty
+        2. Price cap: NO >= 50c = reject
         3. Model divergence already checked in caller
         """
         # Price cap (>= to match NO_SIDE_SIZING_MULTIPLIER check)
@@ -671,12 +677,12 @@ class Strategy:
                             convergence_score=0.0):
         """Minimum raw edge threshold.
 
-        Confirmed: 5%
-        Convergence (score > 0.7, afternoon, same-day): 5%
-        Same-day before 9 AM local: 15% (stale forecast penalty)
-        Morning (before noon ET): 12%
-        Afternoon: 10% (MIN_EDGE)
-        Next-day: 15% (1.5x)
+        Confirmed: 5% (CONFIRMED_MIN_EDGE)
+        Convergence (score > 0.5, afternoon, same-day): 5%
+        Next-day: 9% (MIN_EDGE * 1.5)
+        Early morning (6-9 AM local): 12% (MIN_EDGE * 2.0)
+        Morning (before noon local): 7.2% (MIN_EDGE * 1.2)
+        Afternoon: 6% (MIN_EDGE)
         """
         if is_confirmed:
             return config.CONFIRMED_MIN_EDGE

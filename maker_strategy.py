@@ -373,7 +373,8 @@ class MakerStrategy:
                         else:
                             self.risk.clear_pending_order(order_id=order_id)
 
-            except Exception:
+            except Exception as e:
+                print("  [MAKER] Fill check failed for %s: %s" % (order_id[:8] if order_id else "?", e))
                 continue
 
         for oid in to_remove:
