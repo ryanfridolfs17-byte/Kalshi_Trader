@@ -157,7 +157,7 @@ Bankroll ~$48. All values in `config.py`. Cents = 100 per $1.00. `BALANCE_FALLBA
 | `TRADE_COOLDOWN` | 120 sec | Same-cycle exempt |
 
 ### Strategy Guards
-- **Rounding buffer**: +/-1F = no trade, +/-2F = 50% size
+- **Rounding buffer**: +/-1F = no trade, +/-2F = 50% size. Expensive contracts (>50c) in the soft buffer (1-2F) are BLOCKED (0.0) — a 1F NWS rounding error on an 80c contract = 80c loss.
 - **NO-side separation**: `max(2.0F, std_dev * 0.6)`. CONFIRM gets 1.25x penalty.
 - **Model divergence**: YES >8F = skip, NO >10F = skip. <2F = 1.2x boost.
 - **Longshot floor**: 3c. **Near-certainty cap**: 93c. **NO ceiling**: 50c (CASE1 bypasses).
