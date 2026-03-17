@@ -72,7 +72,7 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 - **NO-side separation** -- Dynamic: `max(2.0F, std_dev * 0.6)` from expanded boundary. CONFIRM gets 1.25x penalty.
 - **Fee-adjusted edge** -- 7% fee drag. Side-aware formula.
 - **Only CASE 1 = CONFIRMED_OUTCOME** -- temp exceeded bucket, can't un-happen. CASE 2 DELETED. CASE 3 = STRONG.
-- **Binary exits** -- HOLD or EXIT. No PARE/HEDGE/TAKE_PROFIT.
+- **Binary exits** -- HOLD or EXIT. Profit protection added: forecast shift detection + peak drawdown trailing stop. CASE 1 confirmed outcomes bypass profit protection.
 - **Single-writer P&L** -- Only `sync_pnl_from_kalshi()` writes `pnl_history.json`. No exceptions.
 - **Size-down, not reject** -- When caps are exceeded, risk manager reduces contracts to fit instead of blocking.
 - **Kill switch** -- Daily loss = stop for day (auto-resume). 3 consecutive = 4h pause. No Sharpe-based shutdown.
@@ -89,6 +89,7 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 - **Fee-adjusted Kelly** -- Kelly sizing uses fee-adjusted edge (not raw edge) across all trade paths (normal, CASE 1, CASE 3). Prevents oversizing on marginal trades.
 - **CASE 1 fee gate** -- CASE 1 confirmed outcomes must pass both `CASE1_MIN_EDGE` (raw, 2%) and `CASE1_FEE_ADJUSTED_MIN_EDGE` (net, 1%). Lower than normal `FEE_ADJUSTED_MIN_EDGE` (3%) because outcome is near-guaranteed.
 - **CASE 1/3 rejection logging** -- All rejection paths in `_check_confirmed_outcome()` print `[CASE1-SKIP]` or `[CASE3-SKIP]` with city, reason, and values. Eliminates blind spot where confirmed outcomes were silently rejected.
+- **Forecast-aware profit protection** -- Two new exit rules protect unrealized gains. Rule 5: detects forecast shift (ensemble probability dropped 15%+ from entry) while position is profitable (50%+). Rule 6: peak drawdown safety net (price dropped 20%+ from tracked peak, min 20c peak). Both bypass for CASE 1 confirmed outcomes. `entry_prob` and `peak_price_cents` stored in position dict, peak updated every cycle before exit evaluation. Logs: `[PROFIT-EXIT]` and `[PEAK-EXIT]`.
 - **Exit pricing** -- ALL exit orders (YES and NO) use `limit_price=1` (accept any bid). For sell orders, limit_price = minimum acceptable price. 1c = "sell at any price" = fills at current bid.
 - **Taker NO ceiling** -- `place_market_order()` rejects NO-side orders exceeding `NO_SIDE_MAX_PRICE_CENTS`. Matches limit order guard.
 - **Multiplier cap** -- Combined `conf_mult * rounding_mult * conv_mult` capped at 2.0x before Kelly sizing.
@@ -175,6 +176,8 @@ Bankroll ~$48. All values in `config.py`. Cents = 100 per $1.00. `BALANCE_FALLBA
 | Rounding buffer after 2 PM | EXIT (high) |
 | Edge deterioration: current edge < -15% (10 AM+) | EXIT (high) |
 | YES threshold unreachable: gap > remaining heat potential (noon+) | EXIT (high) |
+| Forecast shift: entry_prob - current_prob >= 15% AND profitable (50%+) | EXIT (high) |
+| Peak drawdown: price dropped 20%+ from peak (min 20c) AND profitable | EXIT (high) |
 | Thesis valid | HOLD to settlement |
 
 ### Maker Strategy
@@ -240,6 +243,10 @@ If weakest position edge < 3% (`REBALANCE_MAX_OLD_EDGE`) AND at max capacity: ex
 | `DISTRIBUTION_CACHE_TTL` | 900 | 15 min distribution cache |
 | `CLOUD_COVER_CACHE_TTL` | 1800 | 30 min cloud cover cache |
 | `EARLY_MORNING_EDGE_MULTIPLIER` | 2.0 | 6-9 AM local: 14% min edge (stale 00Z forecasts) |
+| `PROFIT_EXIT_PROB_DROP` | 0.15 | Exit if current_prob drops 15%+ below entry_prob |
+| `PROFIT_EXIT_MIN_PROFIT_PCT` | 0.50 | Position must be up >= 50% from entry to trigger |
+| `PROFIT_EXIT_PEAK_DROP_PCT` | 0.20 | Safety net: exit if price drops 20% from peak |
+| `PROFIT_EXIT_MIN_PEAK_CENTS` | 20 | Peak must reach 20c+ (ignore penny noise) |
 
 ### New State Files (v4.1)
 - `fill_tracking.json` — Adverse selection: per-side order/fill counts (rolling 24h)

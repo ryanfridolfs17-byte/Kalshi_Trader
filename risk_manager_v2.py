@@ -486,10 +486,17 @@ class RiskManager:
             total_contracts = int(existing.get("contracts", 0) or 0) + contracts
             total_cost = int(existing.get("cost_cents", 0) or 0) + cost_cents
             avg_price = int(round(float(total_cost) / float(total_contracts))) if total_contracts else price_cents
+            # Preserve existing peak and entry_prob on incremental fills
+            existing_peak = existing.get("peak_price_cents", int(existing.get("price_cents", 0) or 0))
+            existing_entry_prob = existing.get("entry_prob")
+            existing_entry_forecast = existing.get("entry_forecast_mean")
         else:
             total_contracts = contracts
             total_cost = cost_cents
             avg_price = price_cents
+            existing_peak = avg_price
+            existing_entry_prob = None
+            existing_entry_forecast = None
 
         self.state["positions"][ticker] = {
             "ticker": ticker,
@@ -503,7 +510,20 @@ class RiskManager:
             "order_status": "executed",
             "is_confirmed": fill_info.get("is_confirmed", False),
             "is_arb": fill_info.get("is_arb", False),
+            "entry_prob": fill_info.get("our_prob") or existing_entry_prob,
+            "entry_forecast_mean": fill_info.get("predicted_high") or existing_entry_forecast,
+            "peak_price_cents": max(existing_peak, avg_price),
         }
+
+    def update_peak_price(self, ticker, current_bid_cents):
+        """Update peak market price for a position. Called every cycle before exit eval."""
+        pos = self.state["positions"].get(ticker)
+        if not pos:
+            return
+        current_peak = pos.get("peak_price_cents", pos.get("price_cents", 0))
+        if current_bid_cents > current_peak:
+            pos["peak_price_cents"] = current_bid_cents
+            self._save_state()
 
     def _apply_sell_fill(self, fill_info, contracts):
         ticker = fill_info.get("ticker", "")
