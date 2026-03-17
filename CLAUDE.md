@@ -227,7 +227,7 @@ If weakest position edge < 3% (`REBALANCE_MAX_OLD_EDGE`) AND at max capacity: ex
 ### New Config Parameters (v4.1)
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `CONVERGENCE_SCORE_THRESHOLD` | 0.7 | Min score to trigger convergence trading |
+| `CONVERGENCE_SCORE_THRESHOLD` | 0.5 | Min score to trigger convergence trading |
 | `CONVERGENCE_MIN_LOCAL_HOUR` | 14 | Only after 2 PM local |
 | `CONVERGENCE_SIZING_BOOST` | 0.5 | Up to 1.5x sizing at score=1.0 |
 | `CLOUD_COVER_THRESHOLD_PCT` | 70 | Above = apply temp bias |
@@ -300,7 +300,7 @@ If weakest position edge < 3% (`REBALANCE_MAX_OLD_EDGE`) AND at max capacity: ex
 - **Ensemble fetch logging**: Failed API calls logged with model name and error (was silently swallowed).
 - **Sell P&L fix**: `sync_pnl_from_kalshi()` correctly treats sell proceeds as revenue (was adding to cost). Position direction corrected for unpaired sells.
 - **Reviewer dedup**: `_learn_forecast_bias()` and `_learn_model_accuracy()` rebuild from scratch each night (was appending to existing, duplicating errors).
-- **Graduated Kelly sizing**: `_kelly_size()` uses graduated divisor (6/4/3) based on edge + dispersion multiplier. `model_spread` parameter added.
+- **Graduated Kelly sizing**: `_kelly_size()` uses graduated divisor (6/4/3) based on **raw** edge (not fee-adjusted) + dispersion multiplier. `raw_edge` parameter selects divisor tier; fee-adjusted edge drives Kelly fraction. Convergence boost re-capped to `MAX_CONTRACTS_PER_TICKER` after 1.2x.
 - **Taker mode**: CASE 1 confirmed outcomes with edge > 15% bypass maker limit pricing, use `place_market_order()`.
 - **Time-decay stale cleanup**: `_get_stale_threshold_minutes()` returns 30/15/5 based on ET hour. Near settlement = faster cancellation.
 - **Adverse selection**: `fill_tracking.json` tracks per-side fill rates. >70% = widen, >85% = pause. Integrated into `calculate_limit_price()`.
@@ -308,4 +308,4 @@ If weakest position edge < 3% (`REBALANCE_MAX_OLD_EDGE`) AND at max capacity: ex
 - **P/L ratio sizing**: Risk manager tracks rolling win/loss amounts. Ratio < 2.0 = 3% max position. Ratio > 3.0 = 7% max position.
 - **Bayesian obs update**: `update_distribution_with_observation()` shifts ensemble based on NWS observations, weight scaling with hour.
 - **Cloud cover bias**: `_fetch_cloud_cover()` gets cloud/precip data from Open-Meteo. High overcast = negative temp bias.
-- **Portfolio rebalancing**: `_check_rebalancing()` runs every 15 cycles. Exits weakest position if at max capacity and edge < 3%.
+- **Portfolio rebalancing**: `_check_rebalancing()` runs every 15 cycles. Only exits weakest position if edge is negative (actively losing EV). Positive-edge positions held even at max capacity.
