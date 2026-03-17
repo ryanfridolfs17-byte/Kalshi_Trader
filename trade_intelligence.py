@@ -71,10 +71,12 @@ class TradeIntelligence:
         auto-execute; medium/low require manual review.
 
         Exit rules (binary: hold or exit, no partial):
+        0. Next-day positions: Rules 5+6 only (no obs available)
         1. Observation confirms loss -> EXIT (high urgency)
         2. Temp in rounding buffer after 2 PM local -> EXIT
-        3. Forecast edge deterioration (edge < -15% after 10 AM) -> EXIT
-        4. YES threshold unreachable after noon -> EXIT
+        3. Forecast edge deterioration (edge < -15% after 10 AM, cached for post-6PM) -> EXIT
+        4. YES bucket unreachable after noon (all buckets, not just threshold) -> EXIT
+        4b. Near settlement + underwater -> EXIT
         5. Forecast shift: prob dropped 15%+ from entry AND profitable -> EXIT
         6. Peak drawdown: price dropped 20%+ from peak AND profitable -> EXIT
         7. Thesis still valid -> HOLD to settlement
@@ -104,7 +106,55 @@ class TradeIntelligence:
             temp_high = parsed["temp_high"]
             target_date = parsed.get("target_date")
             is_today = (target_date == today_str) if target_date else True
+
+            # Next-day positions: only evaluate price-based exits (Rules 5+6)
+            # No observations available yet, but market price movements still matter.
             if not is_today:
+                if not pos.get("is_confirmed", False):
+                    entry_price = pos.get("price_cents", 0)
+                    entry_prob = pos.get("entry_prob")
+                    # Rule 5 (forecast shift) for next-day
+                    if entry_prob is not None and entry_price > 0:
+                        cur_mkt = self._get_current_market_price(ticker, side)
+                        min_profit_pct = getattr(config, 'PROFIT_EXIT_MIN_PROFIT_PCT', 0.50)
+                        if cur_mkt is not None and cur_mkt > entry_price * (1.0 + min_profit_pct):
+                            cur_prob = self._compute_current_prob(
+                                city_code, target_date, temp_low, temp_high, side
+                            )
+                            if cur_prob is not None:
+                                prob_drop = entry_prob - cur_prob
+                                prob_drop_threshold = getattr(config, 'PROFIT_EXIT_PROB_DROP', 0.15)
+                                if prob_drop >= prob_drop_threshold:
+                                    profit_pct = ((cur_mkt - entry_price) / entry_price) * 100
+                                    print(f"  [PROFIT-EXIT] {ticker} next-day forecast shift: "
+                                          f"entry_prob={entry_prob:.1%} -> cur_prob={cur_prob:.1%}, "
+                                          f"price {entry_price}c->{cur_mkt}c (+{profit_pct:.0f}%)")
+                                    exits.append({
+                                        "ticker": ticker, "action": "sell", "urgency": "high",
+                                        "side": side,
+                                        "reason": (f"Next-day forecast shift: prob {entry_prob:.0%}->"
+                                                   f"{cur_prob:.0%}, +{profit_pct:.0f}% from entry"),
+                                    })
+                                    continue
+                    # Rule 6 (peak drawdown) for next-day
+                    peak_price = pos.get("peak_price_cents", entry_price)
+                    min_peak = getattr(config, 'PROFIT_EXIT_MIN_PEAK_CENTS', 20)
+                    if peak_price >= min_peak and entry_price > 0:
+                        cur_mkt = self._get_current_market_price(ticker, side)
+                        if cur_mkt is not None and cur_mkt > entry_price:
+                            drop = (peak_price - cur_mkt) / peak_price if peak_price > 0 else 0
+                            peak_drop_pct = getattr(config, 'PROFIT_EXIT_PEAK_DROP_PCT', 0.20)
+                            if drop >= peak_drop_pct:
+                                profit_pct = ((cur_mkt - entry_price) / entry_price) * 100
+                                print(f"  [PEAK-EXIT] {ticker} next-day peak drawdown: "
+                                      f"peak={peak_price}c now={cur_mkt}c ({drop:.0%} drop)")
+                                exits.append({
+                                    "ticker": ticker, "action": "sell", "urgency": "high",
+                                    "side": side,
+                                    "reason": (f"Next-day peak drawdown: {peak_price}c->{cur_mkt}c "
+                                               f"({drop:.0%} drop), +{profit_pct:.0f}% from entry"),
+                                })
+                                continue
                 continue
 
             obs_high = self.get_todays_high(city_code)
@@ -122,9 +172,11 @@ class TradeIntelligence:
                                    f"{temp_high}F + {config.ROUNDING_BUFFER_HARD_F}F rounding"),
                     })
                     continue
-                if current_temp is not None and now_hour >= 14:
+                if current_temp is not None and now_hour >= 12:
                     gap = temp_low - current_temp
-                    if gap > 3:
+                    # Wider gap threshold before 2 PM (still heating), tighter after
+                    gap_threshold = 5 if now_hour < 14 else 3
+                    if gap > gap_threshold:
                         exits.append({
                             "ticker": ticker, "action": "sell", "urgency": "high",
                             "side": side,
@@ -174,6 +226,9 @@ class TradeIntelligence:
                 # If observations already disprove our thesis, exit early.
                 if obs_high is not None and now_hour >= 10:
                     forecast_mean = self._get_forecast_mean_for_ticker(ticker)
+                    # Fallback to position's stored entry_forecast_mean
+                    if forecast_mean is None:
+                        forecast_mean = pos.get("entry_forecast_mean")
                     if forecast_mean is not None and obs_high > forecast_mean + 2:
                         exits.append({
                             "ticker": ticker, "action": "sell", "urgency": "high",
@@ -210,6 +265,8 @@ class TradeIntelligence:
             # Negative edge + loss = our thesis is wrong (exit).
             entry_price = pos.get("price_cents", 0)
             if now_hour >= 10 and entry_price > 0:
+                cur_edge = None
+                cur_mkt = self._get_current_market_price(ticker, side)
                 try:
                     dist = self.weather.get_temperature_distribution(
                         city_code, target_date=target_date
@@ -218,43 +275,83 @@ class TradeIntelligence:
                         prob = self.weather.calculate_bucket_probability(
                             dist, temp_low, temp_high
                         )
-                        if prob is not None:
-                            cur_mkt = self._get_current_market_price(ticker, side)
-                            if cur_mkt is not None and cur_mkt > 0:
-                                if side == "yes":
-                                    cur_edge = prob - (cur_mkt / 100.0)
-                                else:
-                                    cur_edge = (1 - prob) - (cur_mkt / 100.0)
-                                # Only exit if edge deeply negative AND underwater
-                                is_underwater = cur_mkt < entry_price
-                                if cur_edge < -0.15 and is_underwater:
-                                    exits.append({
-                                        "ticker": ticker, "action": "sell", "urgency": "high",
-                                        "side": side,
-                                        "reason": (f"Edge deterioration: edge "
-                                                   f"{cur_edge:.1%} (prob={prob:.1%}, "
-                                                   f"mkt={cur_mkt}c, entry={entry_price}c) "
-                                                   f"-- underwater + thesis wrong"),
-                                    })
-                                    continue
+                        if prob is not None and cur_mkt is not None and cur_mkt > 0:
+                            if side == "yes":
+                                cur_edge = prob - (cur_mkt / 100.0)
+                            else:
+                                cur_edge = (1 - prob) - (cur_mkt / 100.0)
+                            # Cache last-known edge on position for post-fetch-window use
+                            pos["_cached_edge"] = cur_edge
                 except Exception as e:
                     print(f"  [EXIT] Edge check error for {ticker}: {e}")
 
-            # --- EXIT RULE 4: YES threshold too far below after noon ---
-            if side == "yes" and now_hour >= 12 and temp_high >= 200:
-                if obs_high is not None:
-                    gap_below = temp_low - obs_high
-                    # After noon, need realistic heating to reach threshold
+                # Fallback: use cached edge when ensemble unavailable (e.g. after 6 PM ET)
+                if cur_edge is None:
+                    cur_edge = pos.get("_cached_edge")
+
+                if cur_edge is not None and cur_mkt is not None and cur_mkt > 0:
+                    is_underwater = cur_mkt < entry_price
+                    if cur_edge < -0.15 and is_underwater:
+                        exits.append({
+                            "ticker": ticker, "action": "sell", "urgency": "high",
+                            "side": side,
+                            "reason": (f"Edge deterioration: edge "
+                                       f"{cur_edge:.1%} "
+                                       f"(mkt={cur_mkt}c, entry={entry_price}c) "
+                                       f"-- underwater + thesis wrong"),
+                        })
+                        continue
+
+            # --- EXIT RULE 4: YES bucket unreachable after noon ---
+            # Works for both threshold markets (temp_high >= 200) and normal buckets.
+            # If obs_high is far below bucket floor and not enough heating time remains, exit.
+            if side == "yes" and now_hour >= 12 and obs_high is not None:
+                gap_below = temp_low - obs_high
+                if gap_below > 0:
+                    # After noon, need realistic heating to reach bucket
                     max_remaining_heat = max(0, (18 - now_hour)) * 1.5  # ~1.5F/hour max
                     if gap_below > max_remaining_heat + 2:  # 2F rounding buffer
                         exits.append({
                             "ticker": ticker, "action": "sell", "urgency": "high",
                             "side": side,
-                            "reason": (f"Threshold unreachable: {obs_high:.0f}F needs "
+                            "reason": (f"Bucket unreachable: {obs_high:.0f}F needs "
                                        f"+{gap_below:.0f}F to reach {temp_low}F, "
                                        f"max remaining heat ~{max_remaining_heat:.0f}F"),
                         })
                         continue
+
+            # --- EXIT RULE 4b: Near-settlement underwater exit ---
+            # If market closes soon and we're losing, cut losses rather than gamble
+            # on settlement. Fetches close_time from Kalshi market data.
+            entry_price = pos.get("price_cents", 0)
+            if entry_price > 0:
+                try:
+                    mkt_data = self.client.get_market(ticker) if self.client else None
+                    if mkt_data:
+                        market_info = mkt_data.get("market", mkt_data)
+                        close_time_str = market_info.get("close_time", "")
+                        if close_time_str:
+                            close_dt = datetime.fromisoformat(
+                                close_time_str.replace("Z", "+00:00"))
+                            hours_to_close = (
+                                close_dt - datetime.now(timezone.utc)
+                            ).total_seconds() / 3600
+                            if 0 < hours_to_close <= config.SETTLEMENT_PROXIMITY_HOURS:
+                                cur_mkt = self._get_current_market_price(ticker, side)
+                                if cur_mkt is not None and cur_mkt < entry_price:
+                                    loss_pct = ((entry_price - cur_mkt) / entry_price) * 100
+                                    print(f"  [SETTLE-EXIT] {ticker} near settlement: "
+                                          f"{hours_to_close:.1f}h to close, "
+                                          f"underwater {entry_price}c->{cur_mkt}c (-{loss_pct:.0f}%)")
+                                    exits.append({
+                                        "ticker": ticker, "action": "sell", "urgency": "high",
+                                        "side": side,
+                                        "reason": (f"Near settlement ({hours_to_close:.1f}h), "
+                                                   f"underwater {entry_price}c->{cur_mkt}c"),
+                                    })
+                                    continue
+                except Exception:
+                    pass
 
             # --- EXIT RULE 5: Forecast shift (probability dropped from entry) ---
             # If forecast no longer supports our thesis AND we're in profit, lock gains.
