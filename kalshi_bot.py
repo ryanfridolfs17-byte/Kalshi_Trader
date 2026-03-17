@@ -424,9 +424,15 @@ def _check_rebalancing(client, strategy, risk, maker, cycle):
     if weakest_edge > max_old_edge:
         return  # All positions still have decent edge
     
-    print("  [REBALANCE] Weakest position: %s edge=%.1f%% (threshold %.1f%%)" % (
-        weakest_tk, weakest_edge * 100, max_old_edge * 100))
-    print("  [REBALANCE] Exiting %s to free capacity" % weakest_tk)
+    # Only exit if edge is negative (actively losing EV to hold)
+    # Prevents blindly exiting 2% edge positions when nothing better exists
+    if weakest_edge >= 0:
+        print("  [REBALANCE] Weakest position: %s edge=%.1f%% — still positive, holding" % (
+            weakest_tk, weakest_edge * 100))
+        return
+
+    print("  [REBALANCE] Weakest position: %s edge=%.1f%% (negative — exiting)" % (
+        weakest_tk, weakest_edge * 100))
     _execute_exit(maker, risk, weakest_tk, weakest_pos)
 
 
@@ -635,15 +641,8 @@ def _write_bot_status(cycle, risk, intel, maker, signals_count, trades_count, ne
     """Write bot_status.json for dashboard."""
     try:
         rs = risk.get_state_summary()
-        # Get balance directly from risk manager's client
-        balance = 4000  # fallback ~$40 bankroll
-        try:
-            if hasattr(intel, 'client') and intel.client:
-                bal = intel.client.get_balance()
-                if bal and "balance" in bal:
-                    balance = bal["balance"]
-        except Exception:
-            pass
+        # Use risk manager's cached balance (60s cache, avoids redundant API call)
+        balance = risk._get_balance_cents()
         account_pnl = balance - config.TOTAL_DEPOSITS_CENTS
         status = {
             "version": "4.0",

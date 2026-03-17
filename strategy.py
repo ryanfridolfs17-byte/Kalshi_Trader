@@ -299,7 +299,7 @@ class Strategy:
         total_mult = min(2.0, conf_mult * rounding_mult * conv_mult)
         contracts = self._kelly_size(
             fee_adjusted_edge, win_prob, price_cents, self.balance_cents,
-            total_mult, model_spread=model_spread
+            total_mult, model_spread=model_spread, raw_edge=edge
         )
         if contracts <= 0:
             return _side_skip("kelly_undersized",
@@ -329,6 +329,7 @@ class Strategy:
         if (model_spread < config.MODEL_CONVERGENCE_BOOST_F
                 and num_models >= 2 and total_members >= 80):
             contracts = max(1, int(contracts * 1.2))
+            contracts = min(contracts, config.MAX_CONTRACTS_PER_TICKER)  # Re-cap after boost
 
         total_members_str = distribution.get("total_members", "?")
 
@@ -414,7 +415,7 @@ class Strategy:
             # Confirmed outcome sizing via Kelly with CONFIRMED_POSITION_PCT cap
             contracts = self._kelly_size(
                 fee_adj_edge, 0.99, no_price, self.balance_cents, 1.0,
-                is_confirmed=True
+                is_confirmed=True, raw_edge=edge
             )
             if contracts <= 0:
                 contracts = 1
@@ -432,7 +433,7 @@ class Strategy:
                 "side": "no",
                 "edge": round(edge, 4),
                 "fee_adjusted_edge": round(self._calculate_fee_adjusted_edge(0.99, no_price / 100.0), 4),
-                "our_prob": 0.99,
+                "our_prob": 0.01,  # YES probability (convention: our_prob = YES bucket prob)
                 "market_prob": round(no_price / 100.0, 4),
                 "price_cents": no_price,
                 "suggested_contracts": contracts,
@@ -521,7 +522,7 @@ class Strategy:
                 case3_spread = dist.get("model_spread", 8.0) if dist else 8.0
                 case3_contracts = self._kelly_size(
                     fee_adj_edge, case3_prob, no_price, self.balance_cents, 1.0,
-                    model_spread=case3_spread
+                    model_spread=case3_spread, raw_edge=edge
                 )
 
                 print(f"  [CASE3] {city_code} high={todays_high}F, "
@@ -534,7 +535,7 @@ class Strategy:
                     "side": "no",
                     "edge": round(edge, 4),
                     "fee_adjusted_edge": round(self._calculate_fee_adjusted_edge(case3_prob, no_price / 100.0), 4),
-                    "our_prob": round(case3_prob, 4),
+                    "our_prob": round(1.0 - case3_prob, 4),  # YES probability (convention)
                     "market_prob": round(no_price / 100.0, 4),
                     "price_cents": no_price,
                     "suggested_contracts": case3_contracts,
@@ -722,10 +723,10 @@ class Strategy:
 
     def _kelly_size(self, edge, win_prob, price_cents, balance_cents,
                      confirmation_multiplier, is_confirmed=False,
-                     is_arb=False, model_spread=None):
+                     is_arb=False, model_spread=None, raw_edge=None):
         """Graduated Kelly position sizing for binary markets.
 
-        Graduated divisor based on edge magnitude:
+        Graduated divisor based on raw edge magnitude (not fee-adjusted):
           Edge 5-10%:  Kelly/6 (conservative on thin edges)
           Edge 10-20%: Kelly/4 (standard)
           Edge 20%+:   Kelly/3 (aggressive on fat edges)
@@ -752,8 +753,10 @@ class Strategy:
         if kelly <= 0:
             return 0
 
-        # Continuous Kelly divisor: edge 5% -> 6.0, edge 20%+ -> 3.0 (linear)
-        divisor = max(3.0, min(6.0, 6.0 - (edge - 0.05) * 20.0))
+        # Continuous Kelly divisor: raw edge 5% -> 6.0, raw edge 20%+ -> 3.0 (linear)
+        # Uses raw (pre-fee) edge for tier selection — fee already in Kelly fraction
+        divisor_edge = raw_edge if raw_edge is not None else edge
+        divisor = max(3.0, min(6.0, 6.0 - (divisor_edge - 0.05) * 20.0))
 
         fraction = kelly / divisor * confirmation_multiplier
 
