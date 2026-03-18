@@ -941,8 +941,9 @@ class WeatherEngine:
         if forecast_mean is None:
             return distribution
 
-        # Later in day = more weight on observation (max 0.8 at 6 PM)
-        obs_weight = min(0.8, local_hour / 18.0)
+        # Later in day = more weight on observation
+        # Conservative early: 7% at 10AM, 20% at noon, 33% at 2PM, 53% at 5PM
+        obs_weight = min(0.6, max(0.0, (local_hour - 9) / 15.0))
         shift = (obs_high - forecast_mean) * obs_weight
 
         raw_highs = distribution.get('raw_highs')

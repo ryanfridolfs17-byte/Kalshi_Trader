@@ -535,13 +535,35 @@ class RiskManager:
         }
 
     def update_peak_price(self, ticker, current_bid_cents):
-        """Update peak market price for a position. Called every cycle before exit eval."""
+        """Update peak market price and trailing floor for a position.
+        Called every cycle before exit eval."""
         pos = self.state["positions"].get(ticker)
         if not pos:
             return
+        changed = False
         current_peak = pos.get("peak_price_cents", pos.get("price_cents", 0))
         if current_bid_cents > current_peak:
             pos["peak_price_cents"] = current_bid_cents
+            changed = True
+
+        # Compute tiered trailing floor that ratchets up as profit grows
+        entry_price = pos.get("price_cents", 0) or pos.get("avg_price", 0) or 0
+        if entry_price > 0 and current_bid_cents > entry_price:
+            gain_pct = (current_bid_cents - entry_price) / entry_price
+            if gain_pct >= 1.0:
+                floor = int(entry_price * 1.50)   # Up 100%+: lock in 50% gain
+            elif gain_pct >= 0.60:
+                floor = int(entry_price * 1.30)   # Up 60%+: lock in 30% gain
+            elif gain_pct >= 0.30:
+                floor = int(entry_price * 1.10)   # Up 30%+: lock in 10% gain
+            else:
+                floor = 0  # Not enough profit yet
+            old_floor = pos.get("trailing_floor_cents", 0) or 0
+            if floor > old_floor:
+                pos["trailing_floor_cents"] = floor
+                changed = True
+
+        if changed:
             self._save_state()
 
     def _apply_sell_fill(self, fill_info, contracts):

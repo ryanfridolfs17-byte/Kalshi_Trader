@@ -835,7 +835,8 @@ class Strategy:
         model_spread = distribution.get("model_spread", 5.0)
         tracking_error = abs(obs_high - forecast_mean)
         hour_factor = min(1.0, max(0.0, (local_hour - 13) / 4.0))
-        score = (max(0.0, 1.0 - (tracking_error / 5.0))
+        # Tighter formula: tracking_error/3 (was /5) requires <1.2F error at 2PM
+        score = (max(0.0, 1.0 - (tracking_error / 3.0))
                  * max(0.0, 1.0 - (model_spread / 8.0))
                  * hour_factor)
         print(f"    [CONV] {city_code}: score={score:.2f} "
