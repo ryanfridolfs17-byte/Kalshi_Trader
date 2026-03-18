@@ -239,7 +239,11 @@ def main(shutdown_event=None):
             print("  [BOT] Found %d actionable signals" % len(buy_signals))
 
             trades_this_cycle = 0
+            max_per_cycle = 3  # Prevent concentrated losses (data: 6 trades in 22min, all lost)
             for signal in buy_signals:
+                if trades_this_cycle >= max_per_cycle:
+                    print("  [BOT] Per-cycle limit reached (%d trades), deferring rest" % max_per_cycle)
+                    break
                 ticker = signal.get("ticker", "")
                 edge = signal.get("edge", 0)
                 side = signal.get("side", "?")

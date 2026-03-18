@@ -761,7 +761,9 @@ class Strategy:
 
         # Continuous Kelly divisor: raw edge 5% -> 6.0, raw edge 20%+ -> 3.0 (linear)
         # Uses raw (pre-fee) edge for tier selection — fee already in Kelly fraction
+        # Edge capped at 40% for divisor — data shows 60%+ edge trades went 0-4 (overconfident)
         divisor_edge = raw_edge if raw_edge is not None else edge
+        divisor_edge = min(divisor_edge, 0.40)  # Cap: treat anything above 40% as 40%
         divisor = max(3.0, min(6.0, 6.0 - (divisor_edge - 0.05) * 20.0))
 
         fraction = kelly / divisor * confirmation_multiplier
