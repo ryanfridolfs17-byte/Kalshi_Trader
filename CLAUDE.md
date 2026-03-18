@@ -256,7 +256,39 @@ If weakest position edge < 3% (`REBALANCE_MAX_OLD_EDGE`) AND at max capacity: ex
 | `PROFIT_EXIT_MIN_PEAK_CENTS` | 20 | Peak must reach 20c+ (ignore penny noise) |
 
 ### New State Files (v4.1)
-- `fill_tracking.json` — Adverse selection: per-side order/fill counts (rolling 24h)
+- `fill_tracking.json` — Adverse selection: per-side order/fill counts (rolling 72h, was 24h)
+
+### v4.5 Data-Driven Fixes (March 18, 2026)
+
+Based on comprehensive trade history analysis (89 positions, 200 fills, 104 settlements):
+- **Account: -$57.12 from $100 deposits**. Recent 5-day rolling P&L positive (+$1.45). Profit factor 2.07.
+- **NO trades lost $140 total; YES trades earned +$138.** NO-side strategy was fundamentally broken at 50c pricing.
+- **60%+ edge trades went 0-4.** Ensemble systematically overconfident at extreme values.
+- **6 trades in 22min on Mar 16, all lost.** Concentration risk with no per-cycle limit.
+- **Morning entries went 0-6.** All morning-entered settled trades lost.
+- **ATL, SEA, OKC, HOU profitable; DAL, AUS, DEN, PHX, DC losing.**
+
+#### Changes
+- **NO_SIDE_MAX_PRICE_CENTS**: 50 → 35. NO at 50c is a coin flip minus fees.
+- **NO_SIDE_SIZING_MULTIPLIER**: 0.40 → 0.30. Further reduce NO exposure.
+- **Per-cycle entry limit**: Max 3 new trades per scan cycle. Prevents concentrated losses.
+- **Kelly edge cap**: `divisor_edge = min(divisor_edge, 0.40)`. Prevents oversizing on overconfident signals.
+- **City-specific edge multipliers**: `CITY_EDGE_MULTIPLIERS` in config.py. DAL/AUS: 1.5x, PHX/DEN/DC: 1.3x, CHI: 1.2x. Applied in `_get_edge_threshold()`.
+- **Model spread → maker buffer**: `buffer += max(0, int(model_spread / 4))`. Wide model disagreement = wider spread (1c per 4F).
+- **Expanded taker mode**: STRONG verdict + fee_adj_edge > 12% now uses taker (not just CASE 1 confirmed). Fill certainty worth the ~1c price improvement lost.
+- **Adverse selection window**: 24h → 72h. With ~5 trades/day, 72h gives ~15 data points. Min order threshold 3 → 5.
+- **Wind speed bias**: `wind_speed_10m_max` fetched from Open-Meteo (0 extra API calls, added to existing daily request). Wind > 32 km/h: -1F bias. Boundary layer mixing suppresses peak highs.
+- **Datetime UTC consistency**: ALL `datetime.now()` across weather_engine, trade_intelligence, dashboard, trade_reviewer replaced with `datetime.now(timezone.utc)`. Completes incomplete v4.2 fix.
+- **Default target_date**: weather_engine uses ET (not UTC) for default target_date. Prevents wrong-day fetches midnight-5AM.
+- **Observed high truncation**: `math.floor()` instead of `int()` in `_fetch_observed_highs()`. Matches NWS conservative C→F approach.
+- **KeyboardInterrupt cleanup**: `maker.cancel_all()` now called on Ctrl+C (was only SIGTERM).
+
+#### New Config Parameters (v4.5)
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| `CITY_EDGE_MULTIPLIERS` | dict | Per-city edge threshold multiplier. DAL/AUS: 1.5x, PHX/DEN/DC: 1.3x, CHI: 1.2x |
+| `WIND_SPEED_THRESHOLD_KMH` | 32 | ~20 mph; above this, boundary layer mixing suppresses highs |
+| `WIND_SPEED_TEMP_BIAS_F` | -1.0 | Applied when wind exceeds threshold |
 
 ### Infrastructure Invariants
 - **Kalshi API field normalization (March 2026)**: Kalshi changed response field names: `yes_ask` → `yes_ask_dollars` (string), `volume` → `volume_fp` (string), `count` → `count_fp` (string). Response `status` field changed to `"active"` but **query parameter** still uses `status=open`. `kalshi_client._normalize_market()` converts new dollar-string fields to integer cents for all internal code. `market_scanner.py` has its own `_normalize_scanner_market()` since it uses direct `requests.get`. **Fills API** (`/portfolio/fills`): `yes_price`/`no_price` are STRING cents ("5"), `yes_price_dollars`/`no_price_dollars` are STRING dollars ("0.0500"), `count_fp` is STRING ("5.00"). `trade_intelligence._normalize_fill()` converts all to int cents. **Settlements API** (`/portfolio/settlements`): `revenue` is int cents (no normalization needed). Market settlement status: check for `"settled"`, `"finalized"`, or `"closed"`.

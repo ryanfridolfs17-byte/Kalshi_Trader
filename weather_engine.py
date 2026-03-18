@@ -404,6 +404,7 @@ class WeatherEngine:
         cloud_data = self._fetch_cloud_cover(city_code, target_date)
         cloud_adj = 0.0
         precip_adj = 0.0
+        wind_adj = 0.0
         if cloud_data:
             if cloud_data["cloud_cover_pct"] > config.CLOUD_COVER_THRESHOLD_PCT:
                 cloud_adj = config.CLOUD_COVER_TEMP_BIAS_F
@@ -411,7 +412,13 @@ class WeatherEngine:
             if cloud_data["precipitation_mm"] > config.PRECIP_THRESHOLD_MM:
                 precip_adj = config.PRECIP_TEMP_BIAS_F
                 print(f"  [WEATHER] {city_code}: precip {cloud_data['precipitation_mm']:.1f}mm > {config.PRECIP_THRESHOLD_MM}mm -> bias {precip_adj:+.1f}F")
-            total_weather_adj = cloud_adj + precip_adj
+            # High wind mixes boundary layer, suppresses peak highs
+            wind_kmh = cloud_data.get("wind_speed_max_kmh", 0)
+            wind_threshold = getattr(config, 'WIND_SPEED_THRESHOLD_KMH', 32)
+            if wind_kmh > wind_threshold:
+                wind_adj = getattr(config, 'WIND_SPEED_TEMP_BIAS_F', -1.0)
+                print(f"  [WEATHER] {city_code}: wind {wind_kmh:.0f}km/h > {wind_threshold}km/h -> bias {wind_adj:+.1f}F")
+            total_weather_adj = cloud_adj + precip_adj + wind_adj
             if total_weather_adj != 0:
                 all_highs = [t + total_weather_adj for t in all_highs]
 
@@ -425,11 +432,12 @@ class WeatherEngine:
 
         result["cloud_cover_adj_f"] = cloud_adj
         result["precip_adj_f"] = precip_adj
+        result["wind_adj_f"] = wind_adj
 
         # Add per-model family means for disagreement detection
-        # Uses bias-corrected highs WITH cloud/precip adjustment so model_spread
+        # Uses bias-corrected highs WITH cloud/precip/wind adjustment so model_spread
         # reflects actual predictions (not inflated by missing weather bias)
-        total_weather_adj_val = (cloud_adj + precip_adj) if cloud_data else 0.0
+        total_weather_adj_val = (cloud_adj + precip_adj + wind_adj) if cloud_data else 0.0
         model_means = {}
         for model_name, highs in corrected_family_highs.items():
             if highs:
@@ -667,7 +675,7 @@ class WeatherEngine:
             _cc_params = {
                 "latitude": city["lat"],
                 "longitude": city["lon"],
-                "daily": "cloud_cover_mean,precipitation_sum",
+                "daily": "cloud_cover_mean,precipitation_sum,wind_speed_10m_max",
                 "timezone": "auto",
                 "start_date": target_date,
                 "end_date": target_date,
@@ -682,17 +690,25 @@ class WeatherEngine:
             daily = data.get("daily", {})
             cloud_vals = daily.get("cloud_cover_mean", [])
             precip_vals = daily.get("precipitation_sum", [])
+            wind_vals = daily.get("wind_speed_10m_max", [])
 
             cloud_cover = cloud_vals[0] if cloud_vals and cloud_vals[0] is not None else 0.0
             precip = precip_vals[0] if precip_vals and precip_vals[0] is not None else 0.0
+            wind_speed = wind_vals[0] if wind_vals and wind_vals[0] is not None else 0.0
 
             import math
             if not isinstance(cloud_cover, (int, float)) or math.isnan(cloud_cover) or math.isinf(cloud_cover):
                 cloud_cover = 0.0
             if not isinstance(precip, (int, float)) or math.isnan(precip) or math.isinf(precip):
                 precip = 0.0
+            if not isinstance(wind_speed, (int, float)) or math.isnan(wind_speed) or math.isinf(wind_speed):
+                wind_speed = 0.0
 
-            result = {"cloud_cover_pct": float(cloud_cover), "precipitation_mm": float(precip)}
+            result = {
+                "cloud_cover_pct": float(cloud_cover),
+                "precipitation_mm": float(precip),
+                "wind_speed_max_kmh": float(wind_speed),
+            }
             self._cloud_cache[cc_key] = {"data": result, "fetched_at": datetime.now(timezone.utc)}
             return result
 
