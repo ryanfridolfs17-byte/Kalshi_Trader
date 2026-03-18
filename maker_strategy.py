@@ -214,17 +214,47 @@ class MakerStrategy:
             if result and result.get("order"):
                 order = result["order"]
                 order_id = order.get("order_id", "")
+                price_used = signal.get("price_cents", 0)
                 print("  [MAKER] TAKER MODE: %s %s x%d (order %s)" % (
                     side.upper(), ticker, contracts, order_id[:8]))
+
+                # Track in open_orders so check_fills() can detect the fill
+                self.open_orders[order_id] = {
+                    "order_id": order_id,
+                    "ticker": ticker,
+                    "side": side,
+                    "price_cents": price_used,
+                    "requested_contracts": contracts,
+                    "remaining_contracts": contracts,
+                    "filled_contracts": 0,
+                    "placed_at": datetime.now(timezone.utc).isoformat(),
+                    "order_status": order.get("status", "resting"),
+                    "action": "buy",
+                    "city_code": signal.get("city_code", ""),
+                    "is_confirmed": True,
+                    "is_arb": signal.get("is_arb", False),
+                    "edge": signal.get("edge", 0),
+                    "our_prob": signal.get("our_prob", 0),
+                    "strategy": signal.get("strategy", ""),
+                    "confirmation_verdict": signal.get("confirmation_verdict", ""),
+                    "predicted_high": signal.get("predicted_high"),
+                    "model_means": signal.get("model_means", {}),
+                    "model_spread": signal.get("model_spread"),
+                    "target_date": signal.get("target_date", ""),
+                }
+                self._save_open_orders()
+
                 if self.risk:
                     self.risk.add_pending_order({
                         "ticker": ticker, "city_code": signal.get("city_code", ""),
-                        "side": side, "price_cents": signal.get("price_cents", 0),
+                        "side": side, "price_cents": price_used,
                         "contracts": contracts,
-                        "cost_cents": signal.get("price_cents", 0) * contracts,
+                        "cost_cents": price_used * contracts,
                         "order_id": order_id,
                         "order_status": order.get("status", "resting"),
                         "is_confirmed": True, "is_arb": False,
+                        "our_prob": signal.get("our_prob", 0),
+                        "predicted_high": signal.get("predicted_high"),
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     })
                 return order

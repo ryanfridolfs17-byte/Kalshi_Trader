@@ -116,8 +116,11 @@ class TradeIntelligence:
                     # Rule 5 (forecast shift) for next-day
                     if entry_prob is not None and entry_price > 0:
                         cur_mkt = self._get_current_market_price(ticker, side)
-                        min_profit_pct = getattr(config, 'PROFIT_EXIT_MIN_PROFIT_PCT', 0.50)
-                        if cur_mkt is not None and cur_mkt > entry_price * (1.0 + min_profit_pct):
+                        # Profit gate: 30%+ gain OR 15c+ absolute gain
+                        is_profitable = (cur_mkt is not None and
+                                         (cur_mkt > entry_price * 1.30 or
+                                          (cur_mkt - entry_price) >= 15))
+                        if is_profitable:
                             cur_prob = self._compute_current_prob(
                                 city_code, target_date, temp_low, temp_high, side
                             )
@@ -294,14 +297,16 @@ class TradeIntelligence:
 
                 if cur_edge is not None and cur_mkt is not None and cur_mkt > 0:
                     is_underwater = cur_mkt < entry_price
-                    if cur_edge < -0.15 and is_underwater:
+                    cost_cents = pos.get("cost_cents", 0) or 0
+                    # Tighter exit: -10% edge AND (underwater OR large position)
+                    if cur_edge < -0.10 and (is_underwater or cost_cents > 100):
                         exits.append({
                             "ticker": ticker, "action": "sell", "urgency": "high",
                             "side": side,
                             "reason": (f"Edge deterioration: edge "
                                        f"{cur_edge:.1%} "
-                                       f"(mkt={cur_mkt}c, entry={entry_price}c) "
-                                       f"-- underwater + thesis wrong"),
+                                       f"(mkt={cur_mkt}c, entry={entry_price}c, cost={cost_cents}c) "
+                                       f"-- thesis wrong"),
                         })
                         continue
 
@@ -367,7 +372,11 @@ class TradeIntelligence:
 
                 if entry_prob is not None and entry_price > 0:
                     cur_mkt = self._get_current_market_price(ticker, side)
-                    if cur_mkt is not None and cur_mkt > entry_price * (1.0 + min_profit_pct):
+                    # Profit gate: 30%+ gain OR 15c+ absolute gain (helps expensive contracts)
+                    is_profitable = (cur_mkt is not None and
+                                     (cur_mkt > entry_price * 1.30 or
+                                      (cur_mkt - entry_price) >= 15))
+                    if is_profitable:
                         cur_prob = self._compute_current_prob(
                             city_code, target_date, temp_low, temp_high, side
                         )
@@ -397,8 +406,13 @@ class TradeIntelligence:
             if not pos.get("is_confirmed", False):
                 entry_price = pos.get("price_cents", 0)
                 peak_price = pos.get("peak_price_cents", entry_price)
-                peak_drop_pct = getattr(config, 'PROFIT_EXIT_PEAK_DROP_PCT', 0.20)
                 min_peak = getattr(config, 'PROFIT_EXIT_MIN_PEAK_CENTS', 20)
+                # Dynamic peak drawdown: tighter near settlement
+                peak_drop_pct = 0.30  # Default: early day, allow volatility
+                if now_hour >= 16:
+                    peak_drop_pct = 0.15  # Tight near settlement
+                elif now_hour >= 14:
+                    peak_drop_pct = 0.20  # Standard afternoon
 
                 if peak_price >= min_peak and entry_price > 0:
                     cur_mkt = self._get_current_market_price(ticker, side)
@@ -418,6 +432,26 @@ class TradeIntelligence:
                                            f"still +{profit_pct:.0f}% from entry {entry_price}c"),
                             })
                             continue
+
+            # --- EXIT RULE 7: Trailing floor breach ---
+            # Tiered trailing stop that ratchets up as profit grows.
+            # Once a profit tier is reached, the floor never drops.
+            trailing_floor = pos.get("trailing_floor_cents", 0) or 0
+            if trailing_floor > 0 and not pos.get("is_confirmed", False):
+                cur_mkt = self._get_current_market_price(ticker, side)
+                if cur_mkt is not None and cur_mkt < trailing_floor:
+                    entry_price = pos.get("price_cents", 0)
+                    pnl = cur_mkt - entry_price if entry_price else 0
+                    print(f"  [FLOOR-EXIT] {ticker} below trailing floor: "
+                          f"floor={trailing_floor}c now={cur_mkt}c entry={entry_price}c "
+                          f"(locking {pnl}c gain)")
+                    exits.append({
+                        "ticker": ticker, "action": "sell", "urgency": "high",
+                        "side": side,
+                        "reason": (f"Trailing floor: {cur_mkt}c < floor {trailing_floor}c "
+                                   f"(entry {entry_price}c, locking {pnl}c gain)"),
+                    })
+                    continue
 
         return exits
 
