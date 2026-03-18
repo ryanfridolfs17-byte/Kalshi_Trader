@@ -1498,17 +1498,17 @@ class TradeIntelligence:
         "Return cached value if fresh enough, else None."
         if key in self._obs_cache:
             entry = self._obs_cache[key]
-            age = (datetime.now() - entry["fetched_at"]).total_seconds()
+            age = (datetime.now(timezone.utc) - entry["fetched_at"]).total_seconds()
             if age < max_age_sec:
                 return entry["data"]
         return None
 
     def _set_cached(self, key, data):
         "Store data in observation cache."
-        self._obs_cache[key] = {"data": data, "fetched_at": datetime.now()}
+        self._obs_cache[key] = {"data": data, "fetched_at": datetime.now(timezone.utc)}
         # Prune stale entries to prevent unbounded memory growth
         if len(self._obs_cache) > 200:
-            cutoff = datetime.now() - timedelta(hours=6)
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=6)
             stale = [k for k, v in self._obs_cache.items() if v["fetched_at"] < cutoff]
             for k in stale:
                 del self._obs_cache[k]
