@@ -52,7 +52,7 @@ class TradeReviewer:
 
         # Prune actual_temps older than 30 days
         if "actual_temps" in self.state and len(self.state["actual_temps"]) > 100:
-            cutoff = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
             self.state["actual_temps"] = {
                 k: v for k, v in self.state["actual_temps"].items()
                 if k.split("_")[-1] >= cutoff  # key format: {city}_{date}
@@ -1144,7 +1144,7 @@ class TradeReviewer:
         try:
             from datetime import timedelta
             target = datetime.strptime(target_date, "%Y-%m-%d")
-            if (datetime.now() - target).days > 7:
+            if (datetime.now(timezone.utc) - target).days > 7:
                 return None
         except Exception:
             return None

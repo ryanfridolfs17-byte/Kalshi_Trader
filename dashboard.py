@@ -320,7 +320,7 @@ def _check_alerts(bot_status, risk_state, pending):
             continue
         try:
             created = datetime.fromisoformat(ts)
-            age_min = (datetime.now() - created).total_seconds() / 60
+            age_min = (datetime.now(timezone.utc) - created).total_seconds() / 60
             if age_min > getattr(config, "PENDING_ALERT_MINUTES", 30):
                 tid = trade.get("id", "?")
                 _alert_once(f"pending_{tid}",
