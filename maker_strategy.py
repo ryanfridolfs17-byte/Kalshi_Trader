@@ -39,13 +39,18 @@ class MakerStrategy:
         else:
             return signal.get("price_cents", 0)  # arb
 
-        # Dynamic spread buffer
+        # Dynamic spread buffer based on edge
         if edge > 0.15:
             buffer = 1
         elif edge > 0.10:
             buffer = config.MAKER_SPREAD_BUFFER_CENTS
         else:
             buffer = 3
+
+        # Widen buffer when models disagree (high model_spread = less confident fair value)
+        model_spread = signal.get("model_spread")
+        if model_spread is not None and model_spread > 0:
+            buffer += max(0, int(model_spread / 4))  # +1c per 4F of disagreement
 
         # Adverse selection adjustment
         spread_adj = self.get_spread_adjustment(side)
@@ -496,7 +501,7 @@ class MakerStrategy:
     def get_adverse_selection_info(self):
         """Compute 24h rolling fill rate per side. Warn if lopsided."""
         now = datetime.now(timezone.utc)
-        cutoff = (now - timedelta(hours=24)).isoformat()
+        cutoff = (now - timedelta(hours=72)).isoformat()
         result = {}
         for side in ("yes", "no"):
             fills = [t for t in self._fill_tracking.get("%s_fills" % side, []) if t > cutoff]
@@ -517,11 +522,11 @@ class MakerStrategy:
     def get_spread_adjustment(self, side):
         """Returns spread adjustment: 0 normal, 1 widen, None pause."""
         now = datetime.now(timezone.utc)
-        cutoff = (now - timedelta(hours=24)).isoformat()
+        cutoff = (now - timedelta(hours=72)).isoformat()
         fills = [t for t in self._fill_tracking.get("%s_fills" % side, []) if t > cutoff]
         orders = [t for t in self._fill_tracking.get("%s_orders" % side, []) if t > cutoff]
         order_count = len(orders)
-        if order_count < 3:
+        if order_count < 5:  # Need 5+ orders in 72h window for meaningful fill rate
             return 0
         fill_rate = len(fills) / order_count
         if fill_rate > 0.85:

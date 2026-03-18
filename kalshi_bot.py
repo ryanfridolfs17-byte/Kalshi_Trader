@@ -306,9 +306,16 @@ def main(shutdown_event=None):
                 order_signal["is_arb"] = is_arb
                 signal["limit_price"] = limit_price  # For trade log accuracy
 
-                # Taker mode for confirmed outcomes with strong edge
-                if is_confirmed and edge > getattr(config, 'TAKER_MODE_MIN_EDGE', 0.15):
-                    print("  [TRADE] TAKER MODE: confirmed %s edge=%.1f%%" % (ticker, edge * 100))
+                # Taker mode: confirmed outcomes with strong edge, OR STRONG verdict with high fee-adj edge
+                fee_adj_edge = signal.get("fee_adjusted_edge", 0)
+                verdict = signal.get("confirmation_verdict", "")
+                use_taker = (
+                    (is_confirmed and edge > getattr(config, 'TAKER_MODE_MIN_EDGE', 0.15))
+                    or (verdict == "STRONG" and fee_adj_edge > 0.12)
+                )
+                if use_taker:
+                    reason = "confirmed" if is_confirmed else "STRONG+high_edge"
+                    print("  [TRADE] TAKER MODE (%s): %s edge=%.1f%%" % (reason, ticker, edge * 100))
                     order = maker.place_market_order(order_signal)
                 else:
                     order = maker.place_order(order_signal, limit_price=limit_price)

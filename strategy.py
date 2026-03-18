@@ -231,7 +231,8 @@ class Strategy:
         min_edge = self._get_edge_threshold(
             is_next_day, is_confirmed=False,
             local_hour=local_hour if not is_next_day else None,
-            convergence_score=convergence_score)
+            convergence_score=convergence_score,
+            city_code=city_code)
         if edge < min_edge:
             return _side_skip("edge_below_threshold",
                               min_edge_required=round(min_edge, 4))
@@ -674,7 +675,7 @@ class Strategy:
     # ===========================================================
 
     def _get_edge_threshold(self, is_next_day, is_confirmed, local_hour=None,
-                            convergence_score=0.0):
+                            convergence_score=0.0, city_code=None):
         """Minimum raw edge threshold.
 
         Confirmed: 5% (CONFIRMED_MIN_EDGE)
@@ -683,6 +684,7 @@ class Strategy:
         Early morning (6-9 AM local): 12% (MIN_EDGE * 2.0)
         Morning (before noon local): 7.2% (MIN_EDGE * 1.2)
         Afternoon: 6% (MIN_EDGE)
+        City multiplier: losing cities get higher thresholds (config.CITY_EDGE_MULTIPLIERS)
         """
         if is_confirmed:
             return config.CONFIRMED_MIN_EDGE
@@ -695,16 +697,17 @@ class Strategy:
             return config.CONFIRMED_MIN_EDGE
 
         if is_next_day:
-            return config.MIN_EDGE * config.NEXT_DAY_EDGE_MULTIPLIER
+            base = config.MIN_EDGE * config.NEXT_DAY_EDGE_MULTIPLIER
+        elif local_hour is not None and local_hour < 9:
+            base = config.MIN_EDGE * getattr(config, 'EARLY_MORNING_EDGE_MULTIPLIER', 2.0)
+        elif local_hour is not None and local_hour < 12:
+            base = config.MIN_EDGE * 1.2
+        else:
+            base = config.MIN_EDGE
 
-        # Same-day early morning: stale forecast penalty (stricter than next-day)
-        if local_hour is not None and local_hour < 9:
-            return config.MIN_EDGE * getattr(config, 'EARLY_MORNING_EDGE_MULTIPLIER', 2.0)
-
-        # Morning premium: use local hour (not ET) so West Coast gets correct threshold
-        if local_hour is not None and local_hour < 12:
-            return config.MIN_EDGE * 1.2  # Morning: 20% premium over base
-        return config.MIN_EDGE
+        # City-specific multiplier for historically losing cities
+        city_mult = getattr(config, 'CITY_EDGE_MULTIPLIERS', {}).get(city_code, 1.0)
+        return base * city_mult
 
     # ===========================================================
     # FEE-ADJUSTED EDGE

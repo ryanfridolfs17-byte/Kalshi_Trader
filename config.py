@@ -117,6 +117,18 @@ EARLY_MORNING_EDGE_MULTIPLIER = 2.0  # 6-9 AM local: 14% min edge (stale 00Z for
 NEXT_DAY_SIZING_MULTIPLIER = 0.50
 MIN_PAYOUT_DOLLARS = 0.10
 
+# === CITY-SPECIFIC EDGE MULTIPLIERS ===
+# Data-driven: cities with negative P&L get higher edge thresholds.
+# 1.0 = no change, 1.5 = 50% higher min edge for that city.
+CITY_EDGE_MULTIPLIERS = {
+    "DAL": 1.5,   # Worst city: -$20.81
+    "AUS": 1.5,   # -$19.49
+    "PHX": 1.3,   # -$16.13
+    "DEN": 1.3,   # -$15.08
+    "DC":  1.3,   # -$14.39
+    "CHI": 1.2,   # -$8.61
+}
+
 # === NWS & FORECAST GUARDS ===
 ROUNDING_BUFFER_HARD_F = 1
 ROUNDING_BUFFER_SOFT_F = 2
@@ -168,6 +180,8 @@ CLOUD_COVER_THRESHOLD_PCT = 70
 CLOUD_COVER_TEMP_BIAS_F = -1.5
 PRECIP_THRESHOLD_MM = 0.5
 PRECIP_TEMP_BIAS_F = -1.0
+WIND_SPEED_THRESHOLD_KMH = 32    # ~20 mph; above this, boundary layer mixing suppresses highs
+WIND_SPEED_TEMP_BIAS_F = -1.0    # Applied when wind exceeds threshold
 
 # === PORTFOLIO REBALANCING ===
 REBALANCE_INTERVAL_CYCLES = 15
