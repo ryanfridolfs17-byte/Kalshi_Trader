@@ -609,9 +609,50 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not self._check_auth():
                 return
             risk_state = _read_json(STATE_FILES["risk"], default={})
-            positions = risk_state.get("positions", {})
+            cached_positions = risk_state.get("positions", {})
             pending = risk_state.get("pending_orders", {})
-            self._send_json({"positions": positions, "pending_orders": pending})
+            source = "cached"
+            positions = cached_positions
+
+            # Try live Kalshi positions as ground truth
+            if _kalshi_client:
+                try:
+                    resp = _kalshi_client.get_positions()
+                    if resp and "market_positions" in resp:
+                        live = {}
+                        for mp in resp["market_positions"]:
+                            ticker = mp.get("ticker", "")
+                            pos_count = mp.get("position", 0)
+                            if isinstance(pos_count, str):
+                                pos_count = int(float(pos_count))
+                            if pos_count == 0 or not ticker:
+                                continue
+                            side = "yes" if pos_count > 0 else "no"
+                            contracts = abs(pos_count)
+                            # Merge with cached metadata if available
+                            cached = cached_positions.get(ticker, {})
+                            live[ticker] = {
+                                "ticker": ticker,
+                                "side": side,
+                                "contracts": contracts,
+                                "price_cents": cached.get("price_cents", 0),
+                                "cost_cents": cached.get("cost_cents", 0),
+                                "city_code": cached.get("city_code", ""),
+                                "order_status": "executed",
+                                "peak_price_cents": cached.get("peak_price_cents", 0),
+                                "entry_prob": cached.get("entry_prob"),
+                                "is_confirmed": cached.get("is_confirmed", False),
+                            }
+                        positions = live
+                        source = "live"
+                except Exception:
+                    pass  # Fall back to cached
+
+            self._send_json({
+                "positions": positions,
+                "pending_orders": pending,
+                "source": source,
+            })
 
         elif path == "/api/risk":
             if not self._check_auth():

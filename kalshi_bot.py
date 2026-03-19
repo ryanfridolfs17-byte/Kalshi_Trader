@@ -26,6 +26,78 @@ from maker_strategy import MakerStrategy
 from trade_reviewer import TradeReviewer
 
 
+def _reconcile_positions(client, risk):
+    """Sync risk_state positions with Kalshi's actual portfolio.
+
+    Removes phantom positions (in risk_state but not on Kalshi) and adds
+    missing positions (on Kalshi but not in risk_state). Runs every cycle
+    so the dashboard always shows accurate data.
+    """
+    try:
+        resp = client.get_positions()
+        if not resp or "market_positions" not in resp:
+            return
+        kalshi_positions = resp["market_positions"]
+        # Build set of tickers with non-zero position on Kalshi
+        kalshi_tickers = {}
+        for mp in kalshi_positions:
+            ticker = mp.get("ticker", "")
+            # market_positions has position (net contracts) — skip zeros
+            pos_count = mp.get("position", 0)
+            if isinstance(pos_count, str):
+                pos_count = int(float(pos_count))
+            if pos_count != 0 and ticker:
+                kalshi_tickers[ticker] = mp
+
+        local_tickers = set(risk.state.get("positions", {}).keys())
+
+        # Remove phantoms: in risk_state but not on Kalshi
+        phantoms = local_tickers - set(kalshi_tickers.keys())
+        for ticker in phantoms:
+            print("  [RECONCILE] Removing phantom position: %s" % ticker)
+            risk.close_position(ticker)
+
+        # Add missing: on Kalshi but not in risk_state
+        missing = set(kalshi_tickers.keys()) - local_tickers
+        for ticker in missing:
+            mp = kalshi_tickers[ticker]
+            pos_count = mp.get("position", 0)
+            if isinstance(pos_count, str):
+                pos_count = int(float(pos_count))
+            # Determine side and contracts
+            side = "yes" if pos_count > 0 else "no"
+            contracts = abs(pos_count)
+            # Try to get price from market_avg_price or resting_orders
+            avg_price = mp.get("market_avg_price", 0)
+            if isinstance(avg_price, str):
+                avg_price = int(round(float(avg_price) * 100))  # dollars -> cents
+            cost = avg_price * contracts if avg_price else 0
+            # Extract city code from ticker (e.g., KXHIGHTATL-26MAR19-T71 -> ATL)
+            city_code = ""
+            for city in ["NYC", "CHI", "MIA", "AUS", "LAX", "DEN", "PHI", "ATL",
+                         "BOS", "DAL", "HOU", "LV", "MIN", "NOLA", "OKC", "PHX",
+                         "SATX", "SEA", "SFO", "DC"]:
+                if city in ticker.upper():
+                    city_code = city
+                    break
+            print("  [RECONCILE] Adding missing position: %s (%d %s @ %dc)" % (
+                ticker, contracts, side, avg_price))
+            risk.state["positions"][ticker] = {
+                "ticker": ticker,
+                "side": side,
+                "contracts": contracts,
+                "price_cents": avg_price,
+                "cost_cents": cost,
+                "city_code": city_code,
+                "order_status": "executed",
+                "peak_price_cents": avg_price,
+            }
+            risk._refresh_exposure()
+            risk._save_state()
+    except Exception as e:
+        print("  [RECONCILE] Position sync failed: %s" % e)
+
+
 def _reconcile_position_prices(client, risk):
     """Correct position entry prices from Kalshi fills API.
 
@@ -154,6 +226,12 @@ def main(shutdown_event=None):
                     config.atomic_json_save(config.TRADE_LOG_FILE, trade_log)
             except Exception as e:
                 print("  [BOT] Settlement reconciliation error: %s" % e)
+
+            # --- STEP 1c: Reconcile positions with Kalshi portfolio ---
+            try:
+                _reconcile_positions(client, risk)
+            except Exception as e:
+                print("  [BOT] Position reconciliation error: %s" % e)
 
             # --- STEP 2: Check resting order fills ---
             filled = maker.check_fills()
