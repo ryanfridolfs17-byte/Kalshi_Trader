@@ -26,6 +26,57 @@ from maker_strategy import MakerStrategy
 from trade_reviewer import TradeReviewer
 
 
+def _reconcile_position_prices(client, risk):
+    """Correct position entry prices from Kalshi fills API.
+
+    Fixes bug where check_fills() stored fair-value estimates instead of
+    actual fill prices due to missing dollar-string field normalization.
+    Runs at startup; only modifies positions whose stored price differs
+    from the actual fill price.
+    """
+    positions = risk.state.get("positions", {})
+    if not positions:
+        return
+    try:
+        fills_resp = client.get_fills(limit=200)
+        if not fills_resp or "fills" not in fills_resp:
+            return
+        fills = fills_resp["fills"]
+        # Normalize fills using trade_intelligence's method
+        for f in fills:
+            TradeIntelligence._normalize_fill(f)
+
+        corrected = 0
+        for ticker, pos in positions.items():
+            side = pos.get("side", "yes")
+            price_field = "yes_price" if side == "yes" else "no_price"
+            ticker_fills = [
+                f for f in fills
+                if f.get("ticker") == ticker and f.get("action") == "buy"
+            ]
+            if not ticker_fills:
+                continue
+            total_cost = sum(f.get(price_field, 0) * f.get("count", 0) for f in ticker_fills)
+            total_contracts = sum(f.get("count", 0) for f in ticker_fills)
+            if total_contracts <= 0:
+                continue
+            actual_avg = int(round(total_cost / total_contracts))
+            old_price = pos.get("price_cents", 0)
+            if actual_avg > 0 and actual_avg != old_price:
+                print("  [RECONCILE] %s: price_cents %d -> %d, cost_cents %d -> %d" % (
+                    ticker, old_price, actual_avg,
+                    pos.get("cost_cents", 0), actual_avg * total_contracts))
+                pos["price_cents"] = actual_avg
+                pos["cost_cents"] = actual_avg * total_contracts
+                pos["peak_price_cents"] = max(pos.get("peak_price_cents", 0), actual_avg)
+                corrected += 1
+        if corrected:
+            risk._save_state()
+            print("  [RECONCILE] Corrected %d position(s)" % corrected)
+    except Exception as e:
+        print("  [RECONCILE] Failed: %s" % e)
+
+
 def main(shutdown_event=None):
     """Main bot loop."""
     print()
@@ -55,6 +106,9 @@ def main(shutdown_event=None):
             dashboard.set_trade_reviewer(reviewer)
     except Exception:
         pass
+
+    # Reconcile position entry prices with actual Kalshi fill data
+    _reconcile_position_prices(client, risk)
 
     cycle = 0
     while True:
