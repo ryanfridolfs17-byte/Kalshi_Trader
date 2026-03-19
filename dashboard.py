@@ -665,6 +665,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "per_page": per_page,
             })
 
+        elif path == "/api/sync":
+            if not self._check_auth():
+                return
+            sync_data = {}
+            for key, filepath in STATE_FILES.items():
+                default = [] if key in ("trades", "scan_log") else {}
+                sync_data[key] = _read_json(filepath, default=default)
+            # Include fill_tracking (not in STATE_FILES dict)
+            sync_data["fill_tracking"] = _read_json(
+                config.FILL_TRACKING_FILE, default={}
+            )
+            sync_data["synced_at"] = datetime.now(timezone.utc).isoformat()
+            self._send_json(sync_data)
+
         else:
             self.send_error(404)
 
