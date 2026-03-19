@@ -345,8 +345,29 @@ class KalshiClient:
         """Get details of a specific order by ID."""
         result = self._request("GET", "/portfolio/orders/%s" % order_id, authenticated=True)
         if result and "order" in result:
-            return result["order"]
+            order = result["order"]
+            self._normalize_order(order)
+            return order
         return result
+
+    @staticmethod
+    def _normalize_order(o):
+        """Normalize order response fields from dollar strings to int cents.
+
+        Kalshi API (March 2026) returns yes_price_dollars/no_price_dollars
+        as string dollars on order responses. Convert to yes_price/no_price
+        int cents so downstream code (check_fills) works correctly.
+        """
+        if not isinstance(o, dict):
+            return o
+        for field in ("yes_price", "no_price"):
+            dollar_field = field + "_dollars"
+            if dollar_field in o:
+                try:
+                    o[field] = int(round(float(o[dollar_field]) * 100))
+                except (ValueError, TypeError):
+                    pass
+        return o
 
     def get_orders(self, ticker=None, status=None):
         """Get your orders."""
