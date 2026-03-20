@@ -613,6 +613,7 @@ class RiskManager:
             self.state["daily_date"] = today
             self.state["daily_pnl_cents"] = 0
             self.state["trade_count_today"] = 0
+            self.state["consecutive_losses"] = 0  # Fresh day, fresh counter
             self._save_state()
 
     def _load_state(self):

@@ -691,7 +691,7 @@ def _review_positions(client, strategy, positions_dict, risk):
                 target_date = parsed.get("target_date") if parsed else None
                 dist = weather.get_temperature_distribution(city_code, target_date=target_date)
                 if dist:
-                    review["forecast_mean"] = dist.get("mean", dist.get("raw_forecast_mean"))
+                    review["forecast_mean"] = dist.get("forecasted_high_mean", dist.get("raw_forecast_mean"))
                     review["forecast_min"] = dist.get("min")
                     review["forecast_max"] = dist.get("max")
                     review["forecast_confidence"] = dist.get("confidence")

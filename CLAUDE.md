@@ -182,7 +182,7 @@ Bankroll ~$48. All values in `config.py`. Cents = 100 per $1.00. `BALANCE_FALLBA
 | Threshold market approaching within 5F (10 AM-1 PM) | EXIT (high) |
 | Forecast divergence: obs high > forecast mean + 2F (10 AM+) | EXIT (high) |
 | Rounding buffer after 2 PM | EXIT (high) |
-| Edge deterioration: current edge < -15% (10 AM+, cached for post-6PM) | EXIT (high) |
+| Edge deterioration: current edge < -10% AND (underwater OR cost > $1) (10 AM+, cached for post-6PM) | EXIT (high) |
 | YES bucket unreachable: gap > remaining heat potential (noon+, all buckets) | EXIT (high) |
 | Near settlement: within 2h of close AND underwater | EXIT (high) |
 | Forecast shift: entry_prob - current_prob >= 15% AND profitable (50%+) | EXIT (high) |
@@ -232,7 +232,7 @@ If weakest position edge < 3% (`REBALANCE_MAX_OLD_EDGE`) AND at max capacity: ex
 |-----------|-------|-------|
 | `CONVERGENCE_SCORE_THRESHOLD` | 0.5 | Min score to trigger convergence trading |
 | `CONVERGENCE_MIN_LOCAL_HOUR` | 14 | Only after 2 PM local |
-| `CONVERGENCE_SIZING_BOOST` | 0.5 | Up to 1.5x sizing at score=1.0 |
+| `CONVERGENCE_SIZING_BOOST` | 0.7 | Up to 1.7x sizing at score=1.0 |
 | `CLOUD_COVER_THRESHOLD_PCT` | 70 | Above = apply temp bias |
 | `CLOUD_COVER_TEMP_BIAS_F` | -1.5 | Overcast day bias |
 | `PRECIP_THRESHOLD_MM` | 0.5 | Above = apply additional bias |

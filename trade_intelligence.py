@@ -1380,7 +1380,7 @@ class TradeIntelligence:
                     temp_c = props.get("temperature", {}).get("value")
                     if temp_c is not None:
                         obs_list.append(
-                            (obs_utc, round(temp_c * 9 / 5 + 32)))
+                            (obs_utc, math.floor(temp_c * 9 / 5 + 32)))
             if obs_list:
                 high = max(t for _, t in obs_list)
                 obs_list.sort(key=lambda x: x[0], reverse=True)

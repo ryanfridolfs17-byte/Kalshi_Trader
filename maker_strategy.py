@@ -236,7 +236,7 @@ class MakerStrategy:
                     "order_status": order.get("status", "resting"),
                     "action": "buy",
                     "city_code": signal.get("city_code", ""),
-                    "is_confirmed": True,
+                    "is_confirmed": signal.get("is_confirmed", False),
                     "is_arb": signal.get("is_arb", False),
                     "edge": signal.get("edge", 0),
                     "our_prob": signal.get("our_prob", 0),
@@ -257,7 +257,8 @@ class MakerStrategy:
                         "cost_cents": price_used * contracts,
                         "order_id": order_id,
                         "order_status": order.get("status", "resting"),
-                        "is_confirmed": True, "is_arb": False,
+                        "is_confirmed": signal.get("is_confirmed", False),
+                        "is_arb": signal.get("is_arb", False),
                         "our_prob": signal.get("our_prob", 0),
                         "predicted_high": signal.get("predicted_high"),
                         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -556,8 +557,8 @@ class MakerStrategy:
         return {}
 
     def _save_fill_tracking(self):
-        """Save adverse selection tracking data. Prunes entries older than 25h."""
-        cutoff = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+        """Save adverse selection tracking data. Prunes entries older than 75h (72h window + buffer)."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=75)).isoformat()
         for key in list(self._fill_tracking.keys()):
             entries = self._fill_tracking[key]
             if isinstance(entries, list):
