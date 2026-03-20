@@ -189,6 +189,53 @@ class KalshiClient:
         m["open_interest"] = _fp_to_int(m.get("open_interest_fp"))
         return m
 
+    @staticmethod
+    def _normalize_position(p):
+        """Translate Kalshi position API fields to internal format.
+
+        New API (March 2026) uses:
+          position_fp: "-22.00" (string float, negative = NO side)
+          total_traded_dollars: "6.5100" (string dollars)
+          market_exposure_dollars: "6.5100" (string dollars)
+          fees_paid_dollars: "0.3500" (string dollars)
+          realized_pnl_dollars: "0.0000" (string dollars)
+
+        Internal code uses:
+          position: -22 (int, negative = NO side)
+          total_traded: 651 (int cents)
+          market_exposure: 651 (int cents)
+          fees_paid: 35 (int cents)
+          realized_pnl: 0 (int cents)
+        """
+        if not isinstance(p, dict):
+            return p
+        # Skip if already normalized
+        if "position" in p and p["position"] is not None and not isinstance(p["position"], str):
+            return p
+
+        def _fp_to_int(val):
+            if val is None:
+                return 0
+            try:
+                return int(float(val))
+            except (ValueError, TypeError):
+                return 0
+
+        def _dollars_to_cents(val):
+            if val is None:
+                return 0
+            try:
+                return int(round(float(val) * 100))
+            except (ValueError, TypeError):
+                return 0
+
+        p["position"] = _fp_to_int(p.get("position_fp", p.get("position", 0)))
+        p["total_traded"] = _dollars_to_cents(p.get("total_traded_dollars", 0))
+        p["market_exposure"] = _dollars_to_cents(p.get("market_exposure_dollars", 0))
+        p["fees_paid"] = _dollars_to_cents(p.get("fees_paid_dollars", 0))
+        p["realized_pnl"] = _dollars_to_cents(p.get("realized_pnl_dollars", 0))
+        return p
+
     # =========================================================
     # PUBLIC ENDPOINTS (no authentication needed)
     # =========================================================
@@ -281,12 +328,21 @@ class KalshiClient:
         return result
 
     def get_positions(self, limit=200, cursor=None):
-        """Get your current open positions (non-zero only)."""
+        """Get your current open positions (non-zero only).
+
+        Normalizes position_fp and dollar-string fields to int cents
+        so callers can use mp.get("position") directly.
+        """
         params = [f"limit={limit}", "count_filter=position"]
         if cursor:
             params.append(f"cursor={cursor}")
         query = "&".join(params)
-        return self._request("GET", f"/portfolio/positions?{query}", authenticated=True)
+        result = self._request("GET", f"/portfolio/positions?{query}", authenticated=True)
+        if result and "market_positions" in result:
+            result["market_positions"] = [
+                self._normalize_position(p) for p in result["market_positions"]
+            ]
+        return result
 
     def create_order(self, ticker, side, count, action="buy", type="market",
                      yes_price=None, no_price=None):

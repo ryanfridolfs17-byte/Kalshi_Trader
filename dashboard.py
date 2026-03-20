@@ -622,9 +622,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         live = {}
                         for mp in resp["market_positions"]:
                             ticker = mp.get("ticker", "")
-                            pos_count = mp.get("position_fp", mp.get("position", 0))
-                            if isinstance(pos_count, str):
-                                pos_count = int(float(pos_count))
+                            # get_positions() normalizes position_fp -> position (int)
+                            pos_count = mp.get("position", 0)
                             if pos_count == 0 or not ticker:
                                 continue
                             side = "yes" if pos_count > 0 else "no"
@@ -992,9 +991,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # Filter to positions with non-zero count
             open_positions = []
             for mp in market_positions:
-                pos = mp.get("position_fp", mp.get("position", 0))
-                if isinstance(pos, str):
-                    pos = int(float(pos))
+                # get_positions() normalizes position_fp -> position (int)
+                pos = mp.get("position", 0)
                 # position > 0 means YES side, position < 0 means NO side
                 if pos > 0:
                     open_positions.append({"ticker": mp["ticker"], "side": "yes", "count": pos})
