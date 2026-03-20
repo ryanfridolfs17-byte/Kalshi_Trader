@@ -433,6 +433,45 @@ class TradeIntelligence:
                             })
                             continue
 
+            # --- EXIT RULE 8: Forecast-aware profit-taking ---
+            # If we're up big and the forecast says we're on the wrong side, take profit.
+            # The market moved in our favor (e.g. bought YES at 6c, now 24c), but the
+            # forecast says this outcome is unlikely. Lock in gains before settlement.
+            if not pos.get("is_confirmed", False):
+                entry_price = pos.get("price_cents", 0)
+                if entry_price > 0:
+                    cur_mkt = self._get_current_market_price(ticker, side)
+                    if cur_mkt is not None and cur_mkt > entry_price:
+                        gain_pct = (cur_mkt - entry_price) / entry_price
+                        min_gain = getattr(config, 'PROFIT_TAKE_MIN_GAIN_PCT', 1.0)
+                        if gain_pct >= min_gain:
+                            cur_prob = self._compute_current_prob(
+                                city_code, target_date, temp_low, temp_high, side
+                            )
+                            if cur_prob is not None:
+                                prob_tier1 = getattr(config, 'PROFIT_TAKE_PROB_TIER1', 0.50)
+                                prob_tier2 = getattr(config, 'PROFIT_TAKE_PROB_TIER2', 0.65)
+                                sell = False
+                                if gain_pct >= 2.0 and cur_prob < prob_tier2:
+                                    sell = True
+                                elif gain_pct >= min_gain and cur_prob < prob_tier1:
+                                    sell = True
+                                if sell:
+                                    profit_cents = cur_mkt - entry_price
+                                    print(f"  [PROFIT-TAKE] {ticker}: up {gain_pct:.0%} "
+                                          f"({entry_price}c->{cur_mkt}c), "
+                                          f"forecast prob={cur_prob:.0%} "
+                                          f"— taking {profit_cents}c profit")
+                                    exits.append({
+                                        "ticker": ticker, "action": "sell",
+                                        "urgency": "high", "side": side,
+                                        "reason": (f"Profit-take: up {gain_pct:.0%} "
+                                                   f"({entry_price}c->{cur_mkt}c), "
+                                                   f"forecast prob={cur_prob:.0%} < "
+                                                   f"threshold — locking {profit_cents}c"),
+                                    })
+                                    continue
+
             # --- EXIT RULE 7: Trailing floor breach ---
             # Tiered trailing stop that ratchets up as profit grows.
             # Once a profit tier is reached, the floor never drops.
@@ -656,7 +695,10 @@ class TradeIntelligence:
                         break
                     positions_fetched = True
                     for pos in pos_result.get("market_positions", []):
-                        if pos.get("position", 0) != 0:
+                        pos_val = pos.get("position_fp", pos.get("position", 0))
+                        if isinstance(pos_val, str):
+                            pos_val = int(float(pos_val))
+                        if pos_val != 0:
                             open_tickers.add(pos.get("ticker", ""))
                     pos_cursor = pos_result.get("cursor")
                     if not pos_cursor:
