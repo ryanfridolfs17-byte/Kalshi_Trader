@@ -622,7 +622,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         live = {}
                         for mp in resp["market_positions"]:
                             ticker = mp.get("ticker", "")
-                            pos_count = mp.get("position", 0)
+                            pos_count = mp.get("position_fp", mp.get("position", 0))
                             if isinstance(pos_count, str):
                                 pos_count = int(float(pos_count))
                             if pos_count == 0 or not ticker:
@@ -992,12 +992,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # Filter to positions with non-zero count
             open_positions = []
             for mp in market_positions:
-                yes_count = mp.get("position", 0)
-                no_count = mp.get("total_traded", 0) - mp.get("position", 0)
-                # Kalshi returns "position" = net contracts (positive = YES, negative can mean NO)
-                # More reliable: check market_exposure or use the position field
+                pos = mp.get("position_fp", mp.get("position", 0))
+                if isinstance(pos, str):
+                    pos = int(float(pos))
                 # position > 0 means YES side, position < 0 means NO side
-                pos = mp.get("position", 0)
                 if pos > 0:
                     open_positions.append({"ticker": mp["ticker"], "side": "yes", "count": pos})
                 elif pos < 0:

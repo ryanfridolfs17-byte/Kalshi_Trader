@@ -194,6 +194,12 @@ PROFIT_EXIT_MIN_PROFIT_PCT = 0.50   # Position must be up >= 50% from entry to t
 PROFIT_EXIT_PEAK_DROP_PCT = 0.20    # Safety net: exit if price drops 20% from peak
 PROFIT_EXIT_MIN_PEAK_CENTS = 20     # Peak must reach 20c+ (ignore penny noise)
 
+# === PROFIT-TAKING EXIT ===
+# Rule 8: Sell when up big AND forecast says we're on the wrong side.
+PROFIT_TAKE_MIN_GAIN_PCT = 1.0    # 100% gain minimum to consider profit-taking
+PROFIT_TAKE_PROB_TIER1 = 0.50     # Up 100%+: sell if forecast prob < 50% (wrong side)
+PROFIT_TAKE_PROB_TIER2 = 0.65     # Up 200%+: sell if forecast prob < 65% (marginal side)
+
 # === TAKER MODE ===
 TAKER_MODE_MIN_EDGE = 0.15
 
