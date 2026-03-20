@@ -695,10 +695,8 @@ class TradeIntelligence:
                         break
                     positions_fetched = True
                     for pos in pos_result.get("market_positions", []):
-                        pos_val = pos.get("position_fp", pos.get("position", 0))
-                        if isinstance(pos_val, str):
-                            pos_val = int(float(pos_val))
-                        if pos_val != 0:
+                        # get_positions() normalizes position_fp -> position (int)
+                        if pos.get("position", 0) != 0:
                             open_tickers.add(pos.get("ticker", ""))
                     pos_cursor = pos_result.get("cursor")
                     if not pos_cursor:

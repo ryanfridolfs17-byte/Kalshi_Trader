@@ -42,12 +42,8 @@ def _reconcile_positions(client, risk):
         kalshi_tickers = {}
         for mp in kalshi_positions:
             ticker = mp.get("ticker", "")
-            # market_positions has position_fp (net contracts string) — skip zeros
-            # Kalshi API (March 2026) renamed "position" to "position_fp" (string).
-            # Try both fields for forward/backward compatibility.
-            pos_count = mp.get("position_fp", mp.get("position", 0))
-            if isinstance(pos_count, str):
-                pos_count = int(float(pos_count))
+            # get_positions() normalizes position_fp -> position (int)
+            pos_count = mp.get("position", 0)
             if pos_count != 0 and ticker:
                 kalshi_tickers[ticker] = mp
 
@@ -63,16 +59,12 @@ def _reconcile_positions(client, risk):
         missing = set(kalshi_tickers.keys()) - local_tickers
         for ticker in missing:
             mp = kalshi_tickers[ticker]
-            pos_count = mp.get("position_fp", mp.get("position", 0))
-            if isinstance(pos_count, str):
-                pos_count = int(float(pos_count))
+            pos_count = mp.get("position", 0)
             # Determine side and contracts
             side = "yes" if pos_count > 0 else "no"
             contracts = abs(pos_count)
-            # Compute avg price from total_traded / contracts (new API has no market_avg_price)
-            total_traded = mp.get("total_traded_dollars", mp.get("market_avg_price", 0))
-            if isinstance(total_traded, str):
-                total_traded = int(round(float(total_traded) * 100))  # dollars -> cents
+            # total_traded normalized to int cents by _normalize_position()
+            total_traded = mp.get("total_traded", 0)
             avg_price = int(total_traded / contracts) if contracts > 0 else 0
             cost = total_traded if total_traded else avg_price * contracts
             # Extract city code from ticker (e.g., KXHIGHTATL-26MAR19-T71 -> ATL)
