@@ -626,7 +626,7 @@ class Strategy:
             if separation < confirm_sep:
                 return False, (
                     f"CONFIRM separation {separation:.1f}F < "
-                    f"{confirm_sep:.1f}F (1.5x penalty)"
+                    f"{confirm_sep:.1f}F ({config.CONFIRM_NO_SEPARATION_PENALTY}x penalty)"
                 )
 
         return True, ""
