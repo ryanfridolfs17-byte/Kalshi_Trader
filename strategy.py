@@ -834,8 +834,15 @@ class Strategy:
         bias_count = bias_payload.get("count", 0) if isinstance(bias_payload, dict) else 0
 
         # Only apply bias correction if we have enough data points
+        # AND cap at ±3F — backtest shows no city has >2.2F true bias.
+        # Larger corrections from small samples are noise, not signal.
+        max_bias_correction = getattr(config, 'MAX_BIAS_CORRECTION_F', 3.0)
         if bias_count >= min_pts:
-            city_bias_correction = -float(city_bias or 0.0)
+            raw_correction = -float(city_bias or 0.0)
+            city_bias_correction = max(-max_bias_correction, min(max_bias_correction, raw_correction))
+            if abs(raw_correction) > max_bias_correction:
+                print("  [BIAS-CAP] %s correction capped: %.1fF -> %.1fF (count=%d)" % (
+                    city_code, raw_correction, city_bias_correction, bias_count))
         else:
             city_bias_correction = 0.0
 

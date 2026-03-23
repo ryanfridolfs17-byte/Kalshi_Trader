@@ -373,9 +373,18 @@ class WeatherEngine:
         corrected_family_highs = {}  # Track bias-corrected highs for model_means
 
         def _weight_for(model_key):
-            """Look up accuracy weight for a model, default 1.0."""
+            """Look up accuracy weight for a model.
+
+            Default to AVERAGE of provided weights (not 1.0) so missing models
+            don't dominate. E.g., if GFS=0.4, ECMWF=0.3, GEM=0.3 but ICON is
+            missing, ICON gets ~0.33 (average), not 1.0.
+            """
             if model_weights:
-                return model_weights.get(model_key, 1.0)
+                if model_key in model_weights:
+                    return model_weights[model_key]
+                # Default: average of provided weights
+                vals = [v for v in model_weights.values() if isinstance(v, (int, float))]
+                return sum(vals) / len(vals) if vals else 1.0
             return 1.0
 
         for family_name, highs in model_family_highs.items():
