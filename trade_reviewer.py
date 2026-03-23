@@ -139,6 +139,79 @@ class TradeReviewer:
         """Returns learned per-model accuracy weights."""
         return dict(self.state.get("model_accuracy", {}))
 
+    def seed_backtest_weights(self, backtest_file=None):
+        """Seed per-city per-model weights from backtest_results.json.
+
+        Only seeds cities that don't already have sufficient live learned data.
+        Live learning (when enough data accumulates) will override these.
+        """
+        if backtest_file is None:
+            backtest_file = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "backtest_results.json"
+            )
+        if not os.path.exists(backtest_file):
+            print("  [REVIEW] Backtest file not found: %s" % backtest_file)
+            return
+
+        with open(backtest_file, "r") as f:
+            backtest = json.load(f)
+
+        # Compute per-city per-model MAE from daily records
+        city_model_errors = {}  # city -> model -> [errors]
+        for rec in backtest.get("daily_records", []):
+            for city, cdata in rec.get("cities", {}).items():
+                if city not in city_model_errors:
+                    city_model_errors[city] = {}
+                for model, mdata in cdata.get("models", {}).items():
+                    err = mdata.get("error")
+                    if err is not None:
+                        if model not in city_model_errors[city]:
+                            city_model_errors[city][model] = []
+                        city_model_errors[city][model].append(abs(err))
+
+        # Compute normalized 1/MAE weights per city
+        if "model_accuracy" not in self.state:
+            self.state["model_accuracy"] = {}
+
+        seeded = 0
+        for city, models in city_model_errors.items():
+            # Skip if city already has live learned weights with sufficient data
+            existing = self.state["model_accuracy"].get(city, {})
+            has_live = any(
+                isinstance(v, dict) and len(v.get("errors", [])) >= 5
+                for v in existing.values()
+            )
+            if has_live:
+                continue
+
+            # Compute MAE and inverse-MAE weights
+            maes = {}
+            for model, errors in models.items():
+                if errors:
+                    maes[model] = sum(errors) / len(errors)
+
+            if not maes:
+                continue
+
+            raw_weights = {m: 1.0 / (mae + 0.5) for m, mae in maes.items()}
+            total = sum(raw_weights.values())
+            norm_weights = {m: round(w / total, 3) for m, w in raw_weights.items()}
+
+            self.state["model_accuracy"][city] = {}
+            for model in maes:
+                self.state["model_accuracy"][city][model] = {
+                    "errors": [],
+                    "mae": round(maes[model], 2),
+                    "weight": norm_weights[model],
+                    "crps_errors": [],
+                    "crps": None,
+                    "source": "backtest",
+                }
+            seeded += 1
+
+        self._save_state()
+        print("  [REVIEW] Seeded backtest weights for %d cities" % seeded)
+
     def get_losing_patterns(self):
         """Returns per-city combos with ≥5 trades and <20% win rate.
 

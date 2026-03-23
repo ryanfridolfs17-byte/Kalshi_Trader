@@ -135,6 +135,24 @@ CITY_EDGE_MULTIPLIERS = {
 LEARNING_AUTO_APPLY = True           # Kill switch: False disables all auto-applied learning
 LEARNING_MIN_DATA_POINTS = 3         # Min data points before applying bias/weights (avoid noise)
 
+# === BACKTEST-DERIVED MODEL WEIGHTS (365 days × 20 cities, March 2026) ===
+# GFS: 1.8F MAE, 0.0 bias. ECMWF: 3.0F MAE. GEM: 2.8F MAE. ICON: no backtest data.
+# Used when no per-city learned weights available. Learned weights override when sufficient data.
+DEFAULT_MODEL_WEIGHTS = {
+    "gfs_ensemble": 0.375,   # 1.8x weight of others (best model for all 20 cities)
+    "ecmwf_ifs": 0.208,
+    "icon_eps": 0.208,       # No backtest data; assume ECMWF-equivalent
+    "gem_ensemble": 0.208,
+}
+
+# === SEASONAL EDGE MULTIPLIERS (backtest: March 2.7F MAE vs Oct 2.0F) ===
+# Spring is structurally harder to forecast (frontal systems).
+SEASONAL_EDGE_MULTIPLIERS = {
+    3: 1.2,   # March: hardest month
+    4: 1.1,   # April
+    5: 1.1,   # May
+}
+
 # === CITY BIAS SAFETY GATE ===
 CITY_BIAS_BLOCK_THRESHOLD_F = 5.0   # Block city if |learned bias| > 5F
 CITY_BIAS_BLOCK_MIN_COUNT = 5       # Require >= 5 data points before blocking
