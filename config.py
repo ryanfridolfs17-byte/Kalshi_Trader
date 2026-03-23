@@ -107,7 +107,7 @@ ARB_MIN_SPREAD_CENTS = 7
 ENABLE_ARBITRAGE_STRATEGY = False
 KALSHI_FEE_PCT = 0.07
 FEE_ADJUSTED_MIN_EDGE = 0.03
-CASE1_FEE_ADJUSTED_MIN_EDGE = 0.01  # Confirmed outcomes: obs exceeded, accept thin fee-adj edge
+CASE1_FEE_ADJUSTED_MIN_EDGE = 0.005  # Was 0.01. Confirmed outcomes: near-guaranteed, accept thinner edge.
 LONGSHOT_FLOOR_CENTS = 3
 NEAR_CERTAINTY_CAP_CENTS = 80  # Was 93. Buying YES >80c = terrible risk/reward with 5-8F model MAE.
 NO_SIDE_MAX_PRICE_CENTS = 35       # Was 50 — NO at 50c is a coin flip minus fees. Data: -$140 on NO trades.
@@ -172,8 +172,8 @@ CONFIRM_NO_SEPARATION_PENALTY = 1.25
 # Free tier: 10K requests/day per IP. Railway shared IPs exhaust this.
 # Window: only fetch ensemble data during active trading hours.
 # Outside window: bot still runs (exits use METAR/NWS, not Open-Meteo).
-OPEN_METEO_FETCH_START_ET = 8    # 8 AM ET — covers 6 AM Central/Eastern
-OPEN_METEO_FETCH_END_ET = 18     # 6 PM ET — after this, exits only
+OPEN_METEO_FETCH_START_ET = 7    # Was 8. Catch early West Coast CASE 1 opportunities.
+OPEN_METEO_FETCH_END_ET = 19     # Was 18. Late East Coast convergence trades.
 ENSEMBLE_CACHE_TTL = 900          # 15 min (models update every 6h)
 DISTRIBUTION_CACHE_TTL = 900      # 15 min (matches ensemble)
 CLOUD_COVER_CACHE_TTL = 1800      # 30 min (daily data, changes slowly)
@@ -186,7 +186,7 @@ METAR_HOURS_LOOKBACK = 18          # Hours of METAR history to fetch (covers ful
 METAR_ENABLED = True               # Kill switch to fall back to NWS-only
 
 # Confirmed outcome settings
-CASE1_MIN_LOCAL_HOUR = 10
+CASE1_MIN_LOCAL_HOUR = 9  # Was 10. Gain 1h of CASE 1 detection for early southern city spikes.
 CASE3_GAP_THRESHOLDS = {
     16: 2, 15: 4, 14: 6, 13: 7, 12: 8, 11: 12, 10: 15,
 }
@@ -201,9 +201,10 @@ MAX_OPEN_ORDERS = 5
 ADVERSE_SELECTION_PAUSE_MINUTES = 60
 # === CONVERGENCE CONFIDENCE ===
 CONVERGENCE_SCORE_THRESHOLD = 0.7  # Was 0.5. No performance data; require tighter obs tracking.
-CONVERGENCE_MIN_LOCAL_HOUR = 14
-CONVERGENCE_SIZING_BOOST = 0.3  # Was 0.7 (1.7x max). Now 1.3x max. Untested feature — conservative.
-# NOTE: Convergence NO LONGER lowers edge threshold (was 6% -> 5%). See strategy.py.
+CONVERGENCE_MIN_LOCAL_HOUR = 12  # Was 14. Start at noon city-local time when METAR obs available.
+CONVERGENCE_SIZING_BOOST = 0.5  # Was 0.3 (1.3x max). Now 1.5x max. Reward convergence confidence.
+# Convergence RE-ENABLES edge threshold lowering (5% instead of 6%+) when score > threshold.
+AFTERNOON_CONFIRM_MIN_EDGE = 0.04  # 4% edge: afternoon + CONFIRM verdict only
 
 # === CLOUD COVER BIAS ===
 CLOUD_COVER_THRESHOLD_PCT = 70
@@ -213,7 +214,7 @@ PRECIP_TEMP_BIAS_F = -1.0
 WIND_SPEED_THRESHOLD_KMH = 32    # ~20 mph; above this, boundary layer mixing suppresses highs
 WIND_SPEED_TEMP_BIAS_F = -1.0    # Applied when wind exceeds threshold
 WEATHER_BIAS_CAP_F = -2.0        # Max total weather adjustment (cloud+precip+wind). Prevents -3.5F stacking.
-CASE1_NO_PRICE_CAP = 60          # Max NO price for CASE 1 confirmed outcomes (was 98c — 50:1 against)
+CASE1_NO_PRICE_CAP = 70          # Was 60. At 70c: pay 70c win 30c on confirmed = 40% return.
 
 # === PORTFOLIO REBALANCING ===
 REBALANCE_INTERVAL_CYCLES = 15

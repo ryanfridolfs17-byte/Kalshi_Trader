@@ -226,7 +226,7 @@ class Strategy:
 
         # Convergence score (same-day afternoon only)
         convergence_score = 0.0
-        if not is_next_day and local_hour >= 14 and todays_high is not None:
+        if not is_next_day and local_hour >= config.CONVERGENCE_MIN_LOCAL_HOUR and todays_high is not None:
             convergence_score = self._compute_convergence_score(
                 city_code, todays_high, distribution, local_hour)
 
@@ -236,9 +236,20 @@ class Strategy:
             local_hour=local_hour if not is_next_day else None,
             convergence_score=convergence_score,
             city_code=city_code, target_date=target_date)
+        # Deferred edge check: afternoon CONFIRM trades get a lower 4% threshold.
+        # We don't know the verdict yet (confirmation runs at Step 8), so if edge
+        # is between AFTERNOON_CONFIRM_MIN_EDGE and min_edge, defer the rejection.
+        _edge_deferred = False
+        afternoon_confirm_min = getattr(config, 'AFTERNOON_CONFIRM_MIN_EDGE', None)
         if edge < min_edge:
-            return _side_skip("edge_below_threshold",
-                              min_edge_required=round(min_edge, 4))
+            if (afternoon_confirm_min is not None
+                    and not is_next_day
+                    and local_hour is not None and local_hour >= 14
+                    and edge >= afternoon_confirm_min):
+                _edge_deferred = True  # Will re-check after confirmation
+            else:
+                return _side_skip("edge_below_threshold",
+                                  min_edge_required=round(min_edge, 4))
         if fee_adjusted_edge < config.FEE_ADJUSTED_MIN_EDGE:
             return _side_skip("fee_adj_edge_below_threshold")
 
@@ -270,6 +281,16 @@ class Strategy:
         if verdict == "REJECT":
             return _side_skip("confirmation_reject",
                               confirmation_verdict="REJECT")
+
+        # Post-confirmation edge gate: if we deferred the edge check for afternoon
+        # CONFIRM, verify the verdict is actually CONFIRM (not STRONG/REJECT)
+        if _edge_deferred:
+            if verdict != "CONFIRM":
+                return _side_skip("edge_below_threshold_no_confirm",
+                                  min_edge_required=round(min_edge, 4),
+                                  confirmation_verdict=verdict)
+            print(f"    [SNIPER] {ticker}: afternoon CONFIRM edge={edge:.3f} "
+                  f"(normal_min={min_edge:.3f}, confirm_min={afternoon_confirm_min})")
 
         # Step 9: NO-side guards
         if side == "no":
@@ -683,9 +704,12 @@ class Strategy:
         if is_confirmed:
             return config.CONFIRMED_MIN_EDGE
 
-        # Convergence confidence: sizing boost only, NOT threshold lowering.
-        # Zero performance data on convergence trades (implemented March 10,
-        # went live into March 17-21 loss period). Keep normal edge floor.
+        # Convergence confidence: lower threshold to CONFIRMED_MIN_EDGE (5%)
+        # when obs tracking tightly + models agree. Bypasses city/seasonal multipliers.
+        if (convergence_score > config.CONVERGENCE_SCORE_THRESHOLD
+                and local_hour is not None
+                and local_hour >= config.CONVERGENCE_MIN_LOCAL_HOUR):
+            return config.CONFIRMED_MIN_EDGE
 
         if is_next_day:
             base = config.MIN_EDGE * config.NEXT_DAY_EDGE_MULTIPLIER
@@ -879,12 +903,12 @@ class Strategy:
         Returns 0.0-1.0. Higher = obs tracking forecast closely + models agree.
         Used for late-day confidence trades when everything converges.
         """
-        if obs_high is None or not distribution or local_hour < 14:
+        if obs_high is None or not distribution or local_hour < config.CONVERGENCE_MIN_LOCAL_HOUR:
             return 0.0
         forecast_mean = distribution.get("forecasted_high_mean", 0)
         model_spread = distribution.get("model_spread", 5.0)
         tracking_error = abs(obs_high - forecast_mean)
-        hour_factor = min(1.0, max(0.0, (local_hour - 13) / 4.0))
+        hour_factor = min(1.0, max(0.0, (local_hour - 11) / 6.0))  # noon=0.17, 2PM=0.50, 5PM=1.0
         # Tighter formula: tracking_error/3 (was /5) requires <1.2F error at 2PM
         score = (max(0.0, 1.0 - (tracking_error / 3.0))
                  * max(0.0, 1.0 - (model_spread / 8.0))
