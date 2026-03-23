@@ -218,6 +218,17 @@ def main(shutdown_event=None):
             strategy.balance_cents = balance
             print("  [BOT] Balance: $%.2f" % (balance / 100.0))
 
+            # Morning retry: catch overnight NWS updates for West Coast
+            if hour_et == 6:
+                last_retry = getattr(reviewer, '_last_morning_retry', '')
+                today_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+                if last_retry != today_str:
+                    try:
+                        reviewer._morning_retry()
+                        reviewer._last_morning_retry = today_str
+                    except Exception as e:
+                        print("  [BOT] Morning retry error: %s" % e)
+
             # --- STEP 1: Reconcile settlements with risk state FIRST ---
             # Must run before P&L sync to prevent duplicate P&L recording
             # when a trade settles between settlement check and P&L write.
