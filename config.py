@@ -133,7 +133,8 @@ CITY_EDGE_MULTIPLIERS = {
 
 # === LEARNING AUTO-APPLICATION ===
 LEARNING_AUTO_APPLY = True           # Kill switch: False disables all auto-applied learning
-LEARNING_MIN_DATA_POINTS = 3         # Min data points before applying bias/weights (avoid noise)
+LEARNING_MIN_DATA_POINTS = 5         # Min data points before applying learned bias (was 3 — too noisy)
+MAX_BIAS_CORRECTION_F = 3.0          # Cap learned bias at ±3F (backtest: no city has >2.2F true bias)
 
 # === BACKTEST-DERIVED MODEL WEIGHTS (365 days × 20 cities, March 2026) ===
 # GFS: 1.8F MAE, 0.0 bias. ECMWF: 3.0F MAE. GEM: 2.8F MAE. ICON: no backtest data.
