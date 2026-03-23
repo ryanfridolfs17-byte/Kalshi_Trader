@@ -90,6 +90,16 @@ class TradeReviewer:
         self._analyze_information_decay()
         self._generate_daily_report(trade_log, today)
 
+        # --- Learning pipeline: cache actuals + compress history ---
+        try:
+            yesterday = (et_now - timedelta(days=1)).strftime("%Y-%m-%d")
+            self._cache_actual_temps([yesterday, today])
+            self._compress_daily_record(yesterday)
+            # Retry any recent dates with missing actuals
+            self._retry_missing_actuals()
+        except Exception as e:
+            print("  [REVIEW] Learning pipeline error: %s" % e)
+
         self.state["last_review_date"] = today
         self._save_state()
         print("  [REVIEW] Daily review complete")
@@ -1222,6 +1232,276 @@ class TradeReviewer:
         except Exception as e:
             print("  [REVIEWER] NWS fetch error for %s/%s: %s" % (city_code, target_date, e))
             return None
+
+    def _cache_actual_temps(self, dates):
+        """Pre-fetch and permanently cache NWS actual temps for all cities on given dates.
+
+        NWS API only keeps ~7 days of observations, so we must cache while fresh.
+        Called nightly + morning retry to ensure all actuals are captured.
+        """
+        if "actual_temps" not in self.state:
+            self.state["actual_temps"] = {}
+
+        fetched = 0
+        for date_str in dates:
+            for city_code in CITIES:
+                cache_key = "%s_%s" % (city_code, date_str)
+                if cache_key in self.state["actual_temps"]:
+                    continue  # Already cached
+                actual = self._get_actual_temp(city_code, date_str)
+                if actual is not None:
+                    fetched += 1
+
+        if fetched > 0:
+            print("  [REVIEW] Cached %d new actual temps" % fetched)
+            self._save_state()
+
+    def _compress_daily_record(self, date_str):
+        """Compress a day's scan snapshots into compact learning_history.json.
+
+        Called after actuals are cached. Produces one permanent record per day
+        with per-city forecast errors, per-model errors, and per-prediction outcomes.
+        """
+        history_file = getattr(config, 'LEARNING_HISTORY_FILE',
+                               os.path.join(config.STATE_DIR, "learning_history.json"))
+
+        # Load existing history
+        history = {"daily_records": [], "cumulative": {}}
+        if os.path.exists(history_file):
+            try:
+                with open(history_file, 'r') as f:
+                    history = json.load(f)
+            except Exception:
+                pass
+
+        # Don't re-compress if already done
+        existing_dates = {r["date"] for r in history.get("daily_records", [])}
+        if date_str in existing_dates:
+            return
+
+        day_snaps = self.state.get("scan_snapshots", {}).get(date_str, {})
+        if not day_snaps:
+            return
+
+        actuals_cache = self.state.get("actual_temps", {})
+
+        # Build city-level aggregates
+        cities = {}
+        predictions = []
+        summary = {"total_predictions": 0, "scored": 0,
+                   "correct_skips": 0, "missed_opportunities": 0,
+                   "correct_trades": 0, "bad_trades": 0}
+
+        for snap in day_snaps.values():
+            city = snap.get("city_code", "")
+            tdate = snap.get("target_date", "")
+            ticker = snap.get("ticker", "")
+            if not city or not tdate:
+                continue
+
+            actual = actuals_cache.get("%s_%s" % (city, tdate))
+            predicted = snap.get("predicted_high")
+            model_means = snap.get("model_means", {})
+
+            # City-level aggregate (deduped by city+date)
+            city_key = city
+            if city_key not in cities and predicted is not None:
+                city_entry = {
+                    "predicted_high": round(predicted, 1),
+                    "actual_high": actual,
+                    "error": round(predicted - actual, 1) if actual is not None and predicted is not None else None,
+                    "n_predictions": 0,
+                    "n_correct": 0,
+                    "models": {}
+                }
+                for model_name, model_mean in model_means.items():
+                    if model_mean is not None:
+                        city_entry["models"][model_name] = {
+                            "mean": round(model_mean, 1),
+                            "error": round(model_mean - actual, 1) if actual is not None else None,
+                        }
+                cities[city_key] = city_entry
+
+            if city_key in cities:
+                cities[city_key]["n_predictions"] += 1
+
+            summary["total_predictions"] += 1
+
+            # Per-prediction outcome
+            would_yes_win = self._would_yes_win(ticker, actual) if actual is not None else None
+            side = snap.get("side", "")
+            signal = snap.get("signal", "skip")
+
+            # Determine outcome for this side
+            outcome = None
+            if would_yes_win is not None:
+                summary["scored"] += 1
+                if side == "yes":
+                    outcome = 1 if would_yes_win else 0
+                elif side == "no":
+                    outcome = 1 if not would_yes_win else 0
+
+                # Classify
+                if signal == "buy":
+                    if outcome == 1:
+                        summary["correct_trades"] += 1
+                    else:
+                        summary["bad_trades"] += 1
+                else:
+                    if outcome == 1:
+                        summary["missed_opportunities"] += 1
+                    else:
+                        summary["correct_skips"] += 1
+
+                if outcome == 1 and city_key in cities:
+                    cities[city_key]["n_correct"] += 1
+
+            # Parse bucket from ticker for compact record
+            bucket = self._parse_bucket_from_ticker(ticker)
+
+            predictions.append({
+                "city": city,
+                "bucket": bucket,
+                "side": side,
+                "our_prob": round(snap.get("our_prob", 0), 3),
+                "market_prob": round(snap.get("market_prob", 0), 3),
+                "edge": round(snap.get("edge", 0), 3),
+                "signal": signal,
+                "verdict": snap.get("confirmation_verdict", ""),
+                "outcome": outcome,
+                "guard": snap.get("skip_reason") if signal == "skip" else None,
+            })
+
+        record = {
+            "date": date_str,
+            "cities": cities,
+            "predictions": predictions,
+            "summary": summary,
+        }
+
+        history["daily_records"].append(record)
+
+        # Update cumulative stats
+        self._update_cumulative_stats(history)
+
+        # Save
+        config.atomic_json_save(history_file, history)
+        print("  [REVIEW] Compressed %s: %d predictions (%d scored)" % (
+            date_str, summary["total_predictions"], summary["scored"]))
+
+    def _parse_bucket_from_ticker(self, ticker):
+        """Extract temperature bucket string from ticker name.
+
+        Ticker format: KXHIGHNY-26MAR16-T64 (temp >= 64F)
+        or KXHIGHNY-26MAR16-B55-59 (temp between 55-59F)
+        Returns bucket string like '55-59' or '>=64' or ticker if unparsable.
+        """
+        if not ticker:
+            return ""
+        parts = ticker.upper().split("-")
+        for part in parts:
+            if part.startswith("T") and part[1:].isdigit():
+                return ">=%s" % part[1:]
+            if part.startswith("B") and part[1:].replace("-", "").isdigit():
+                return part[1:]  # e.g. "55-59"
+        # Fallback: return last meaningful part
+        return parts[-1] if parts else ""
+
+    def _update_cumulative_stats(self, history):
+        """Recompute cumulative stats from all daily records."""
+        records = history.get("daily_records", [])
+        if not records:
+            return
+
+        total_predictions = 0
+        total_scored = 0
+        city_errors = {}  # city -> [errors]
+        model_errors = {}  # model -> [errors]
+        prob_outcomes = []  # (our_prob, outcome) for Brier
+
+        for rec in records:
+            summary = rec.get("summary", {})
+            total_predictions += summary.get("total_predictions", 0)
+            total_scored += summary.get("scored", 0)
+
+            # City errors
+            for city, cdata in rec.get("cities", {}).items():
+                error = cdata.get("error")
+                if error is not None:
+                    if city not in city_errors:
+                        city_errors[city] = []
+                    city_errors[city].append(error)
+
+                # Model errors
+                for model, mdata in cdata.get("models", {}).items():
+                    merr = mdata.get("error")
+                    if merr is not None:
+                        if model not in model_errors:
+                            model_errors[model] = []
+                        model_errors[model].append(merr)
+
+            # Prediction outcomes for Brier
+            for pred in rec.get("predictions", []):
+                if pred.get("outcome") is not None and pred.get("our_prob") is not None:
+                    prob_outcomes.append((pred["our_prob"], pred["outcome"]))
+
+        # Compute aggregates
+        by_city = {}
+        for city, errors in city_errors.items():
+            by_city[city] = {
+                "mae": round(sum(abs(e) for e in errors) / len(errors), 2),
+                "bias": round(sum(errors) / len(errors), 2),
+                "n": len(errors),
+            }
+
+        by_model = {}
+        for model, errors in model_errors.items():
+            by_model[model] = {
+                "mae": round(sum(abs(e) for e in errors) / len(errors), 2),
+                "n": len(errors),
+            }
+
+        # Brier score
+        brier = None
+        if prob_outcomes:
+            brier = round(sum((p - o) ** 2 for p, o in prob_outcomes) / len(prob_outcomes), 4)
+
+        history["cumulative"] = {
+            "total_days": len(records),
+            "total_predictions": total_predictions,
+            "total_scored": total_scored,
+            "brier_score": brier,
+            "by_city_error": by_city,
+            "by_model_error": by_model,
+        }
+
+    def _retry_missing_actuals(self):
+        """Retry fetching actuals for recent dates that had unknowns."""
+        recon = self.state.get("scan_reconciliation", [])
+        for rec in recon[-5:]:  # Check last 5 reconciliation records
+            date_str = rec.get("date", "")
+            unknowns = rec.get("unknown", 0)
+            if unknowns > 0 and date_str:
+                print("  [REVIEW] Retrying actuals for %s (%d unknowns)" % (date_str, unknowns))
+                self._cache_actual_temps([date_str])
+                # Re-run reconciliation for this date
+                self._reconcile_scans(date_str)
+                # Re-compress if we got new actuals
+                self._compress_daily_record(date_str)
+
+    def _morning_retry(self):
+        """Called at 6 AM ET to catch overnight NWS updates.
+
+        West Coast highs happen late (4-5 PM PT = midnight UTC),
+        so NWS observations may not be available at 11 PM ET review.
+        """
+        et_now = datetime.now(ZoneInfo("America/New_York"))
+        yesterday = (et_now - timedelta(days=1)).strftime("%Y-%m-%d")
+        two_days_ago = (et_now - timedelta(days=2)).strftime("%Y-%m-%d")
+
+        print("  [REVIEW] Morning retry: fetching actuals for %s, %s" % (yesterday, two_days_ago))
+        self._cache_actual_temps([yesterday, two_days_ago])
+        self._retry_missing_actuals()
 
     def _check_bias_drift(self):
         """Check for cities with large learned biases that may need attention."""

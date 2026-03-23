@@ -231,6 +231,9 @@ SETTLEMENT_HOUR_ET = 10
 STATE_DIR = os.environ.get("STATE_DIR", ".")
 os.makedirs(STATE_DIR, exist_ok=True)
 
+LEARNING_HISTORY_FILE = os.path.join(STATE_DIR, "learning_history.json")
+SCAN_SNAPSHOT_RETENTION_DAYS = 30
+
 TRADE_LOG_FILE = os.path.join(STATE_DIR, "trade_history.json")
 RISK_STATE_FILE = os.path.join(STATE_DIR, "risk_state.json")
 PNL_HISTORY_FILE = os.path.join(STATE_DIR, "pnl_history.json")
