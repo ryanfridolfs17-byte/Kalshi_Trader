@@ -129,7 +129,10 @@ class Strategy:
                               city_code=city_code, target_date=target_date)
 
         # Step 3: Fetch ensemble distribution
-        model_weights, city_bias_correction = self._get_learning_adjustments(city_code)
+        model_weights, city_bias_correction, bias_blocked = self._get_learning_adjustments(city_code)
+        if bias_blocked:
+            return self._skip("city_bias_blocked", ticker,
+                              city_code=city_code, target_date=target_date)
         distribution = self.weather.get_temperature_distribution(
             city_code,
             target_date,
@@ -265,14 +268,8 @@ class Strategy:
         conf_mult = confirmation["size_multiplier"]
 
         if verdict == "REJECT":
-            # High-edge override: if ensemble strongly disagrees with market AND
-            # it's not early morning, allow with minimal sizing
-            if (edge >= 0.25 and not is_next_day
-                    and local_hour is not None and local_hour >= 9):
-                conf_mult = 0.4  # Heavy penalty but not zero
-            else:
-                return _side_skip("confirmation_reject",
-                                  confirmation_verdict="REJECT")
+            return _side_skip("confirmation_reject",
+                              confirmation_verdict="REJECT")
 
         # Step 9: NO-side guards
         if side == "no":
@@ -478,7 +475,7 @@ class Strategy:
 
             if case3_triggered:
                 # Ensemble veto: check models don't predict reaching bucket
-                model_weights, city_bias_correction = self._get_learning_adjustments(city_code)
+                model_weights, city_bias_correction, _ = self._get_learning_adjustments(city_code)
                 dist = self.weather.get_temperature_distribution(
                     city_code,
                     target_date,
@@ -797,9 +794,13 @@ class Strategy:
         return contracts
 
     def _get_learning_adjustments(self, city_code):
-        """Return reviewer-driven model weights and city bias correction."""
+        """Return reviewer-driven model weights, city bias correction, and block flag.
+
+        Returns (model_weights or None, city_bias_correction, blocked).
+        blocked=True when |learned bias| exceeds threshold with sufficient data.
+        """
         if not self.reviewer:
-            return None, 0.0
+            return None, 0.0, False
 
         model_data = self.reviewer.get_model_weights().get(city_code, {})
         model_key_map = {
@@ -820,9 +821,17 @@ class Strategy:
 
         bias_payload = self.reviewer.get_city_biases().get(city_code, {})
         city_bias = bias_payload.get("bias", 0.0) if isinstance(bias_payload, dict) else 0.0
+        bias_count = bias_payload.get("count", 0) if isinstance(bias_payload, dict) else 0
         city_bias_correction = -float(city_bias or 0.0)
 
-        return weights or None, city_bias_correction
+        # Safety gate: block city if learned bias is extreme (model is broken)
+        blocked = (abs(city_bias) > config.CITY_BIAS_BLOCK_THRESHOLD_F
+                   and bias_count >= config.CITY_BIAS_BLOCK_MIN_COUNT)
+        if blocked:
+            print("  [BIAS-BLOCK] %s bias=%.1fF count=%d — blocking trades" % (
+                city_code, city_bias, bias_count))
+
+        return weights or None, city_bias_correction, blocked
 
     # ===========================================================
     # UTILITY

@@ -89,6 +89,22 @@ def _reconcile_positions(client, risk):
             }
             risk._refresh_exposure()
             risk._save_state()
+
+        # Update contract counts on existing positions to match Kalshi
+        for ticker in local_tickers & set(kalshi_tickers.keys()):
+            mp = kalshi_tickers[ticker]
+            kalshi_count = abs(mp.get("position", 0))
+            local_pos = risk.state["positions"].get(ticker)
+            if local_pos and kalshi_count > 0:
+                local_count = int(local_pos.get("contracts", 0) or 0)
+                if local_count != kalshi_count:
+                    print("  [RECONCILE] Updating %s contracts: %d -> %d" % (
+                        ticker, local_count, kalshi_count))
+                    local_pos["contracts"] = kalshi_count
+                    avg_price = int(local_pos.get("price_cents", 0) or 0)
+                    local_pos["cost_cents"] = avg_price * kalshi_count
+                    risk._refresh_exposure()
+                    risk._save_state()
     except Exception as e:
         print("  [RECONCILE] Position sync failed: %s" % e)
 
@@ -438,7 +454,7 @@ def main(shutdown_event=None):
                 verdict = signal.get("confirmation_verdict", "")
                 use_taker = (
                     (is_confirmed and edge > getattr(config, 'TAKER_MODE_MIN_EDGE', 0.15))
-                    or (verdict == "STRONG" and fee_adj_edge > 0.12)
+                    or (verdict == "STRONG" and fee_adj_edge > getattr(config, 'STRONG_TAKER_MIN_FEE_ADJ_EDGE', 0.20))
                 )
                 if use_taker:
                     reason = "confirmed" if is_confirmed else "STRONG+high_edge"
@@ -461,6 +477,14 @@ def main(shutdown_event=None):
             # --- STEP 9: Daily learning review ---
             try:
                 reviewer.check_and_run()
+                # Log learning sync summary after nightly review
+                if hasattr(reviewer, 'state') and reviewer.state.get("last_review_date"):
+                    biases = reviewer.get_city_biases()
+                    blocked_cities = [c for c, b in biases.items()
+                                      if isinstance(b, dict) and abs(b.get("bias", 0)) > config.CITY_BIAS_BLOCK_THRESHOLD_F
+                                      and b.get("count", 0) >= config.CITY_BIAS_BLOCK_MIN_COUNT]
+                    if blocked_cities:
+                        print("  [SYNC] Bias-blocked cities: %s" % ", ".join(blocked_cities))
             except Exception as e:
                 print("  [BOT] Reviewer error: %s" % e)
 

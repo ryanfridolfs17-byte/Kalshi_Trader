@@ -109,7 +109,7 @@ KALSHI_FEE_PCT = 0.07
 FEE_ADJUSTED_MIN_EDGE = 0.03
 CASE1_FEE_ADJUSTED_MIN_EDGE = 0.01  # Confirmed outcomes: obs exceeded, accept thin fee-adj edge
 LONGSHOT_FLOOR_CENTS = 3
-NEAR_CERTAINTY_CAP_CENTS = 93
+NEAR_CERTAINTY_CAP_CENTS = 80  # Was 93. Buying YES >80c = terrible risk/reward with 5-8F model MAE.
 NO_SIDE_MAX_PRICE_CENTS = 35       # Was 50 — NO at 50c is a coin flip minus fees. Data: -$140 on NO trades.
 NO_SIDE_SIZING_MULTIPLIER = 0.30   # Was 0.40 — further reduce NO sizing
 NEXT_DAY_EDGE_MULTIPLIER = 1.5
@@ -121,13 +121,19 @@ MIN_PAYOUT_DOLLARS = 0.10
 # Data-driven: cities with negative P&L get higher edge thresholds.
 # 1.0 = no change, 1.5 = 50% higher min edge for that city.
 CITY_EDGE_MULTIPLIERS = {
-    "DAL": 1.5,   # Worst city: -$20.81
+    "PHI": 2.0,   # Worst bias: -7.86F ensemble miscalibration
+    "DAL": 1.5,   # -$20.81
     "AUS": 1.5,   # -$19.49
+    "HOU": 1.5,   # -5.5F bias
     "PHX": 1.3,   # -$16.13
     "DEN": 1.3,   # -$15.08
     "DC":  1.3,   # -$14.39
     "CHI": 1.2,   # -$8.61
 }
+
+# === CITY BIAS SAFETY GATE ===
+CITY_BIAS_BLOCK_THRESHOLD_F = 5.0   # Block city if |learned bias| > 5F
+CITY_BIAS_BLOCK_MIN_COUNT = 5       # Require >= 5 data points before blocking
 
 # === NWS & FORECAST GUARDS ===
 ROUNDING_BUFFER_HARD_F = 1
@@ -202,6 +208,7 @@ PROFIT_TAKE_PROB_TIER2 = 0.65     # Up 200%+: sell if forecast prob < 65% (margi
 
 # === TAKER MODE ===
 TAKER_MODE_MIN_EDGE = 0.15
+STRONG_TAKER_MIN_FEE_ADJ_EDGE = 0.20  # Was 0.12 hardcoded. STRONG verdict 7% win rate — not reliable for taker.
 
 # === BUCKET INCONSISTENCY DETECTION ===
 BUCKET_SUM_DEVIATION_CENTS = 8   # Min deviation from 100c to flag
