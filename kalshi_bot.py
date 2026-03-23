@@ -438,6 +438,7 @@ def main(shutdown_event=None):
                 # Calculate maker limit price
                 limit_price = maker.calculate_limit_price(signal)
                 if not limit_price or limit_price <= 0:
+                    print("  [MAKER] %s: invalid limit price %s — skipping" % (ticker, limit_price))
                     continue
 
                 # Re-check sizing at actual limit price (may be higher than market ask)
