@@ -1575,6 +1575,7 @@ class TradeReviewer:
         print("  [REVIEW] Morning retry: fetching actuals for %s, %s" % (yesterday, two_days_ago))
         self._cache_actual_temps([yesterday, two_days_ago])
         self._retry_missing_actuals()
+        self._save_state()
 
     def _check_bias_drift(self):
         """Check for cities with large learned biases that may need attention."""

@@ -424,6 +424,7 @@ class WeatherEngine:
         cloud_adj = 0.0
         precip_adj = 0.0
         wind_adj = 0.0
+        total_weather_adj = 0.0
         if cloud_data:
             if cloud_data["cloud_cover_pct"] > config.CLOUD_COVER_THRESHOLD_PCT:
                 cloud_adj = config.CLOUD_COVER_TEMP_BIAS_F
@@ -457,7 +458,8 @@ class WeatherEngine:
         # Add per-model family means for disagreement detection
         # Uses bias-corrected highs WITH cloud/precip/wind adjustment so model_spread
         # reflects actual predictions (not inflated by missing weather bias)
-        total_weather_adj_val = (cloud_adj + precip_adj + wind_adj) if cloud_data else 0.0
+        # Use CAPPED weather adjustment (consistent with all_highs distribution)
+        total_weather_adj_val = total_weather_adj
         model_means = {}
         for model_name, highs in corrected_family_highs.items():
             if highs:

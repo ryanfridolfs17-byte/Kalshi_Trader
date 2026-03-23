@@ -129,13 +129,16 @@ class SignalConfirmer:
             verdict, mult = "CONFIRM", 1.0
             nws_note = "+ NWS agrees" if nws_agrees else "(NWS abstains)"
             summary = f"{agree}/5 agree {nws_note} -> CONFIRM"
-        elif agree >= 1 and disagree == 0 and len(votes) >= 2:
-            verdict, mult = "CONFIRM", 0.8
-            summary = f"{agree}/5 agree, 0 disagree -> CONFIRM (cautious)"
         elif agree >= 1 and disagree == 0:
-            # Only 1 source returned data — too fragile for confirmation
-            verdict, mult = "REJECT", 0.0
-            summary = f"Only {len(votes)} source(s) voted -> REJECT (insufficient data)"
+            # Require 2+ sources actually voted (not ABSTAIN) for cautious confirm
+            non_abstain = sum(1 for v in votes.values() if v != "ABSTAIN")
+            if non_abstain >= 2:
+                verdict, mult = "CONFIRM", 0.8
+                summary = f"{agree}/5 agree, 0 disagree ({non_abstain} voted) -> CONFIRM (cautious)"
+            else:
+                # Only 1 source returned data — too fragile
+                verdict, mult = "REJECT", 0.0
+                summary = f"Only {non_abstain} source(s) voted -> REJECT (insufficient data)"
         else:
             verdict, mult = "REJECT", 0.0
             summary = f"Only {agree}/5 agree, {disagree} disagree -> REJECT"
