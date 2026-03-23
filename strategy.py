@@ -395,7 +395,7 @@ class Strategy:
         if todays_high > temp_high + config.ROUNDING_BUFFER_HARD_F:
             no_price = market.get("no_ask", 0) or (100 - ref_price)
             case1_cap = getattr(config, 'CASE1_NO_PRICE_CAP', 60)
-            if no_price <= 0 or no_price >= case1_cap:
+            if no_price <= 0 or no_price > case1_cap:
                 print(f"  [CASE1-SKIP] {city_code} NO price {no_price}c out of range (0,{case1_cap})")
                 return None
             # CASE1 cap at 60c (was 98c). Even confirmed outcomes need sane risk/reward.
@@ -707,7 +707,10 @@ class Strategy:
 
         # City-specific multiplier for historically losing cities
         city_mult = getattr(config, 'CITY_EDGE_MULTIPLIERS', {}).get(city_code, 1.0)
-        return base * city_mult * seasonal_mult
+        # Cap combined multiplier to avoid impossible thresholds
+        # (PHI 2.0x * March 1.2x * morning 1.2x = 2.88x → 17.3% threshold)
+        combined_mult = min(city_mult * seasonal_mult, 2.5)
+        return base * combined_mult
 
     # ===========================================================
     # FEE-ADJUSTED EDGE
