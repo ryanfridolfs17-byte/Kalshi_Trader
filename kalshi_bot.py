@@ -218,17 +218,9 @@ def main(shutdown_event=None):
             strategy.balance_cents = balance
             print("  [BOT] Balance: $%.2f" % (balance / 100.0))
 
-            # --- STEP 1: Sync P&L from settled markets ---
-            pnl_summary = intel.sync_pnl_from_kalshi()
-            # Invalidate risk manager's PNL cache so drawdown check reads fresh data
-            risk._pnl_cache = None
-            risk._pnl_cache_time = 0
-            if pnl_summary and pnl_summary.get("trades", 0) > 0:
-                pnl_trades = pnl_summary.get("trades", 0)
-                pnl_total = pnl_summary.get("total_profit_cents", 0)
-                print("  [BOT] P&L sync: %d trades, %dc total" % (pnl_trades, pnl_total))
-
-            # --- STEP 1b: Reconcile settlements with risk state ---
+            # --- STEP 1: Reconcile settlements with risk state FIRST ---
+            # Must run before P&L sync to prevent duplicate P&L recording
+            # when a trade settles between settlement check and P&L write.
             try:
                 trade_log = _load_trade_log()
                 settled = intel.check_settlements(trade_log, risk)
@@ -237,6 +229,16 @@ def main(shutdown_event=None):
                     config.atomic_json_save(config.TRADE_LOG_FILE, trade_log)
             except Exception as e:
                 print("  [BOT] Settlement reconciliation error: %s" % e)
+
+            # --- STEP 1b: Sync P&L from Kalshi (single writer) ---
+            pnl_summary = intel.sync_pnl_from_kalshi()
+            # Invalidate risk manager's PNL cache so drawdown check reads fresh data
+            risk._pnl_cache = None
+            risk._pnl_cache_time = 0
+            if pnl_summary and pnl_summary.get("trades", 0) > 0:
+                pnl_trades = pnl_summary.get("trades", 0)
+                pnl_total = pnl_summary.get("total_profit_cents", 0)
+                print("  [BOT] P&L sync: %d trades, %dc total" % (pnl_trades, pnl_total))
 
             # --- STEP 1c: Reconcile positions with Kalshi portfolio ---
             try:
@@ -453,7 +455,8 @@ def main(shutdown_event=None):
                 fee_adj_edge = signal.get("fee_adjusted_edge", 0)
                 verdict = signal.get("confirmation_verdict", "")
                 use_taker = (
-                    (is_confirmed and edge > getattr(config, 'TAKER_MODE_MIN_EDGE', 0.15))
+                    (is_confirmed and edge > getattr(config, 'TAKER_MODE_MIN_EDGE', 0.15)
+                     and fee_adj_edge > 0.10)  # Fee-adjusted gate: don't overpay on marginal confirmed
                     or (verdict == "STRONG" and fee_adj_edge > getattr(config, 'STRONG_TAKER_MIN_FEE_ADJ_EDGE', 0.20))
                 )
                 if use_taker:

@@ -380,6 +380,10 @@ class TradeIntelligence:
                         cur_prob = self._compute_current_prob(
                             city_code, target_date, temp_low, temp_high, side
                         )
+                        # Fallback: if forecast unavailable (outside fetch window),
+                        # use market price as implied probability proxy
+                        if cur_prob is None and cur_mkt is not None:
+                            cur_prob = cur_mkt / 100.0
                         if cur_prob is not None:
                             # entry_prob is YES-side (convention), cur_prob is side-adjusted
                             # For NO: convert entry_prob to NO-side for apples-to-apples

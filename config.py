@@ -177,9 +177,10 @@ STALE_ORDER_MINUTES = 30
 MAX_OPEN_ORDERS = 5
 ADVERSE_SELECTION_PAUSE_MINUTES = 60
 # === CONVERGENCE CONFIDENCE ===
-CONVERGENCE_SCORE_THRESHOLD = 0.5
+CONVERGENCE_SCORE_THRESHOLD = 0.7  # Was 0.5. No performance data; require tighter obs tracking.
 CONVERGENCE_MIN_LOCAL_HOUR = 14
-CONVERGENCE_SIZING_BOOST = 0.7  # up to 1.7x sizing (boosted from 0.5)
+CONVERGENCE_SIZING_BOOST = 0.3  # Was 0.7 (1.7x max). Now 1.3x max. Untested feature — conservative.
+# NOTE: Convergence NO LONGER lowers edge threshold (was 6% -> 5%). See strategy.py.
 
 # === CLOUD COVER BIAS ===
 CLOUD_COVER_THRESHOLD_PCT = 70
@@ -188,6 +189,8 @@ PRECIP_THRESHOLD_MM = 0.5
 PRECIP_TEMP_BIAS_F = -1.0
 WIND_SPEED_THRESHOLD_KMH = 32    # ~20 mph; above this, boundary layer mixing suppresses highs
 WIND_SPEED_TEMP_BIAS_F = -1.0    # Applied when wind exceeds threshold
+WEATHER_BIAS_CAP_F = -2.0        # Max total weather adjustment (cloud+precip+wind). Prevents -3.5F stacking.
+CASE1_NO_PRICE_CAP = 60          # Max NO price for CASE 1 confirmed outcomes (was 98c — 50:1 against)
 
 # === PORTFOLIO REBALANCING ===
 REBALANCE_INTERVAL_CYCLES = 15

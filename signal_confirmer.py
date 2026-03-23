@@ -114,14 +114,11 @@ class SignalConfirmer:
         nws_agrees = (nws_vote == "AGREE")
 
         # --- Verdict logic ---
+        # NWS is the settlement authority. If NWS disagrees, ALWAYS reject.
+        # See git d706490: same pattern as REJECT bypass (0/6 win rate).
         if nws_vote == "DISAGREE":
-            if agree >= 2:
-                # Models agree despite NWS — trade cautiously, not reject
-                verdict, mult = "CONFIRM", 0.5
-                summary = f"NWS DISAGREE but {agree} models agree -> CONFIRM (0.5x cautious)"
-            else:
-                verdict, mult = "REJECT", 0.0
-                summary = f"NWS DISAGREE + only {agree} model agree(s) -> REJECT"
+            verdict, mult = "REJECT", 0.0
+            summary = f"NWS DISAGREE ({agree} models agree, irrelevant) -> REJECT"
         elif disagree > agree:
             verdict, mult = "REJECT", 0.0
             summary = f"Majority disagree ({disagree}>{agree}) -> REJECT"
@@ -132,9 +129,13 @@ class SignalConfirmer:
             verdict, mult = "CONFIRM", 1.0
             nws_note = "+ NWS agrees" if nws_agrees else "(NWS abstains)"
             summary = f"{agree}/5 agree {nws_note} -> CONFIRM"
-        elif agree >= 1 and disagree == 0:
+        elif agree >= 1 and disagree == 0 and len(votes) >= 2:
             verdict, mult = "CONFIRM", 0.8
             summary = f"{agree}/5 agree, 0 disagree -> CONFIRM (cautious)"
+        elif agree >= 1 and disagree == 0:
+            # Only 1 source returned data — too fragile for confirmation
+            verdict, mult = "REJECT", 0.0
+            summary = f"Only {len(votes)} source(s) voted -> REJECT (insufficient data)"
         else:
             verdict, mult = "REJECT", 0.0
             summary = f"Only {agree}/5 agree, {disagree} disagree -> REJECT"
