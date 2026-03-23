@@ -530,15 +530,24 @@ class MakerStrategy:
         return result
 
     def get_spread_adjustment(self, side):
-        """Returns spread adjustment: 0 normal, 1 widen, None pause."""
+        """Returns spread adjustment: 0 normal, 1 widen, None pause.
+
+        Only counts MAKER orders for adverse selection — taker/market orders
+        always fill immediately and would create false positive adverse selection.
+        Requires 10+ maker orders in 72h window for meaningful signal.
+        """
         now = datetime.now(timezone.utc)
         cutoff = (now - timedelta(hours=72)).isoformat()
+        # Only count maker (limit) orders, not taker orders
         fills = [t for t in self._fill_tracking.get("%s_fills" % side, []) if t > cutoff]
         orders = [t for t in self._fill_tracking.get("%s_orders" % side, []) if t > cutoff]
-        order_count = len(orders)
-        if order_count < 3:  # Need 3+ orders in 72h window for meaningful fill rate
+        taker_count = len([t for t in self._fill_tracking.get("%s_taker" % side, []) if t > cutoff])
+        # Subtract taker orders/fills — they always fill, not adverse selection
+        maker_orders = max(0, len(orders) - taker_count)
+        maker_fills = max(0, len(fills) - taker_count)
+        if maker_orders < 10:  # Need 10+ maker orders for meaningful fill rate
             return 0
-        fill_rate = len(fills) / order_count
+        fill_rate = maker_fills / maker_orders
         if fill_rate > 0.85:
             return None  # pause
         elif fill_rate > 0.70:
