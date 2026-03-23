@@ -131,6 +131,10 @@ CITY_EDGE_MULTIPLIERS = {
     "CHI": 1.2,   # -$8.61
 }
 
+# === LEARNING AUTO-APPLICATION ===
+LEARNING_AUTO_APPLY = True           # Kill switch: False disables all auto-applied learning
+LEARNING_MIN_DATA_POINTS = 3         # Min data points before applying bias/weights (avoid noise)
+
 # === CITY BIAS SAFETY GATE ===
 CITY_BIAS_BLOCK_THRESHOLD_F = 5.0   # Block city if |learned bias| > 5F
 CITY_BIAS_BLOCK_MIN_COUNT = 5       # Require >= 5 data points before blocking
