@@ -357,12 +357,14 @@ class WeatherEngine:
         is_winter = target_month in (12, 1, 2, 3, 11) if target_month else False
         # Shoulder months (March, November) get 50% bias — transition weather
         is_shoulder = target_month in (3, 11) if target_month else False
-        # Hardcoded warm city bias defaults (replaces config dependency)
+        # Winter bias defaults — backtest-validated from 365 days × 20 cities (March 2026)
+        # Previous values were 2-4x too aggressive (DEN was +4F, actual winter bias +0.0F)
         _WARM_CITY_BIAS = {
-            "DEN": 4.0, "HOU": 3.0, "NOLA": 3.0, "MIA": 3.0,
-            "ATL": 3.0, "AUS": 3.0, "DAL": 3.0, "SATX": 3.0, "OKC": 3.0,
-            "PHX": 2.0, "LV": 2.0,
-            "SEA": 2.0, "SFO": 1.5,
+            "NYC": 2.2, "BOS": 1.4, "PHI": 1.9, "DC": 0.4,
+            "ATL": 1.7, "MIA": 1.1, "NOLA": 1.1, "HOU": 0.2,
+            "CHI": 0.2, "MIN": 0.6, "OKC": 0.0, "DAL": 0.8,
+            "AUS": 0.0, "SATX": 0.2, "DEN": 0.0, "PHX": 1.5,
+            "LV": 0.6, "LAX": 0.5, "SEA": 1.3, "SFO": 0.1,
         }
 
         all_highs = []
@@ -379,6 +381,10 @@ class WeatherEngine:
         for family_name, highs in model_family_highs.items():
             quant_key = _MODEL_QUANT_KEYS.get(family_name, family_name.lower())
             w = _weight_for(quant_key)
+
+            # LAX ECMWF hard cap: 6.6F MAE in backtest (3x worse than GFS 1.1F)
+            if city_code == "LAX" and quant_key == "ecmwf_ifs":
+                w = min(w, 0.10)
 
             # Determine bias correction for this model family
             correction = 0.0

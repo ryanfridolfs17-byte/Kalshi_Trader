@@ -235,7 +235,7 @@ class Strategy:
             is_next_day, is_confirmed=False,
             local_hour=local_hour if not is_next_day else None,
             convergence_score=convergence_score,
-            city_code=city_code)
+            city_code=city_code, target_date=target_date)
         if edge < min_edge:
             return _side_skip("edge_below_threshold",
                               min_edge_required=round(min_edge, 4))
@@ -669,7 +669,7 @@ class Strategy:
     # ===========================================================
 
     def _get_edge_threshold(self, is_next_day, is_confirmed, local_hour=None,
-                            convergence_score=0.0, city_code=None):
+                            convergence_score=0.0, city_code=None, target_date=None):
         """Minimum raw edge threshold.
 
         Confirmed: 5% (CONFIRMED_MIN_EDGE)
@@ -696,9 +696,18 @@ class Strategy:
         else:
             base = config.MIN_EDGE
 
+        # Seasonal multiplier (backtest: March 2.7F MAE vs Oct 2.0F)
+        month = None
+        if target_date:
+            try:
+                month = datetime.strptime(str(target_date), "%Y-%m-%d").month
+            except Exception:
+                pass
+        seasonal_mult = getattr(config, 'SEASONAL_EDGE_MULTIPLIERS', {}).get(month, 1.0)
+
         # City-specific multiplier for historically losing cities
         city_mult = getattr(config, 'CITY_EDGE_MULTIPLIERS', {}).get(city_code, 1.0)
-        return base * city_mult
+        return base * city_mult * seasonal_mult
 
     # ===========================================================
     # FEE-ADJUSTED EDGE
@@ -846,7 +855,9 @@ class Strategy:
                 city_code, pat["wins"], pat["losses"], pat["win_rate"] * 100))
             return weights or None, city_bias_correction, True
 
-        return weights or None, city_bias_correction, False
+        # Use learned weights if available, otherwise backtest-derived defaults
+        final_weights = weights if weights else getattr(config, 'DEFAULT_MODEL_WEIGHTS', None)
+        return final_weights, city_bias_correction, False
 
     # ===========================================================
     # UTILITY
