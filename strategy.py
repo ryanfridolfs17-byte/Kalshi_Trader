@@ -791,10 +791,17 @@ class Strategy:
         """Return reviewer-driven model weights, city bias correction, and block flag.
 
         Returns (model_weights or None, city_bias_correction, blocked).
-        blocked=True when |learned bias| exceeds threshold with sufficient data.
+        blocked=True when |learned bias| exceeds threshold, or when pattern
+        analysis shows a statistically losing city (<20% win rate, 5+ trades).
         """
         if not self.reviewer:
             return None, 0.0, False
+
+        # Learning kill switch
+        if not getattr(config, 'LEARNING_AUTO_APPLY', True):
+            return None, 0.0, False
+
+        min_pts = getattr(config, 'LEARNING_MIN_DATA_POINTS', 3)
 
         model_data = self.reviewer.get_model_weights().get(city_code, {})
         model_key_map = {
@@ -816,16 +823,30 @@ class Strategy:
         bias_payload = self.reviewer.get_city_biases().get(city_code, {})
         city_bias = bias_payload.get("bias", 0.0) if isinstance(bias_payload, dict) else 0.0
         bias_count = bias_payload.get("count", 0) if isinstance(bias_payload, dict) else 0
-        city_bias_correction = -float(city_bias or 0.0)
 
-        # Safety gate: block city if learned bias is extreme (model is broken)
+        # Only apply bias correction if we have enough data points
+        if bias_count >= min_pts:
+            city_bias_correction = -float(city_bias or 0.0)
+        else:
+            city_bias_correction = 0.0
+
+        # Safety gate 1: block city if learned bias is extreme (model is broken)
         blocked = (abs(city_bias) > config.CITY_BIAS_BLOCK_THRESHOLD_F
                    and bias_count >= config.CITY_BIAS_BLOCK_MIN_COUNT)
         if blocked:
             print("  [BIAS-BLOCK] %s bias=%.1fF count=%d — blocking trades" % (
                 city_code, city_bias, bias_count))
+            return weights or None, city_bias_correction, True
 
-        return weights or None, city_bias_correction, blocked
+        # Safety gate 2: block cities with <20% win rate (5+ trades)
+        losing = self.reviewer.get_losing_patterns()
+        if f"city:{city_code}" in losing:
+            pat = losing[f"city:{city_code}"]
+            print("  [PATTERN-BLOCK] %s city %dW/%dL (%.0f%%) — blocking" % (
+                city_code, pat["wins"], pat["losses"], pat["win_rate"] * 100))
+            return weights or None, city_bias_correction, True
+
+        return weights or None, city_bias_correction, False
 
     # ===========================================================
     # UTILITY

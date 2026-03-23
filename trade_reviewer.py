@@ -129,10 +129,38 @@ class TradeReviewer:
         """Returns learned per-model accuracy weights."""
         return dict(self.state.get("model_accuracy", {}))
 
+    def get_losing_patterns(self):
+        """Returns per-city combos with ≥5 trades and <20% win rate.
+
+        Used by strategy to auto-block trades that are statistically losing.
+        Only blocks per-city patterns (NOT per-side — blocking an entire side
+        would shut down the bot during losing streaks).
+
+        Requires 5+ settled trades for a specific city before blocking.
+        """
+        patterns = self.state.get("patterns", {})
+        result = {}
+
+        # Per-city blocking only (not per-side — both sides can lose during drawdowns)
+        by_city = patterns.get("by_city", {})
+        for city, stats in by_city.items():
+            total = stats.get("wins", 0) + stats.get("losses", 0)
+            if total >= 5:
+                win_rate = stats.get("wins", 0) / total
+                if win_rate < 0.20:
+                    result[f"city:{city}"] = {
+                        "win_rate": round(win_rate, 3),
+                        "total": total,
+                        "wins": stats.get("wins", 0),
+                        "losses": stats.get("losses", 0),
+                    }
+
+        return result
+
     def capture_scan_snapshot(self, all_signals):
         """Called once per cycle with ALL evaluated signals (buy + skip).
 
-        Stores deduplicated snapshots per ticker per day. Keeps 7 days.
+        Stores deduplicated snapshots per ticker per day. Keeps 30 days.
         Only stores signals that have forecast data (city_code + predicted_high).
         """
         if not all_signals:
@@ -174,9 +202,9 @@ class TradeReviewer:
 
         self.state["scan_snapshots"][today] = day_snaps
 
-        # Prune to 7 days
+        # Prune to 30 days (was 7 — need more data for learning)
         all_dates = sorted(self.state["scan_snapshots"].keys())
-        while len(all_dates) > 7:
+        while len(all_dates) > 30:
             del self.state["scan_snapshots"][all_dates.pop(0)]
 
         # Save periodically (not every cycle -- every 10th call)
@@ -372,8 +400,11 @@ class TradeReviewer:
                             sum(entry["crps_errors"]) / len(entry["crps_errors"]), 3)
 
             # Normalize weights for this city -- prefer CRPS over MAE
+            # Require 3+ data points per model before computing weights (avoid noise)
+            min_pts = getattr(config, 'LEARNING_MIN_DATA_POINTS', 3)
             scorable = {m: d for m, d in accuracy[city].items()
-                        if d.get("crps") is not None or d.get("mae") is not None}
+                        if (d.get("crps") is not None or d.get("mae") is not None)
+                        and len(d.get("errors", [])) >= min_pts}
             if scorable:
                 raw_weights = {}
                 for m, d in scorable.items():
