@@ -322,6 +322,16 @@ class RiskManager:
         if not order_id:
             return
 
+        # Defense-in-depth: block if adding would exceed per-ticker contract limit
+        ticker = order_info.get("ticker", "")
+        new_contracts = int(order_info.get("contracts", 0) or 0)
+        if ticker and new_contracts > 0:
+            current = self._ticker_contracts(ticker)
+            if current + new_contracts > config.MAX_CONTRACTS_PER_TICKER:
+                print("  [RISK] add_pending_order BLOCKED: %s has %d + %d new > %d max" % (
+                    ticker, current, new_contracts, config.MAX_CONTRACTS_PER_TICKER))
+                return
+
         requested = int(order_info.get("contracts", 0) or 0)
         price_cents = int(order_info.get("price_cents", 0) or 0)
         self.state["pending_orders"][order_id] = {
