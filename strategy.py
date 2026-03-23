@@ -288,13 +288,19 @@ class Strategy:
             return _side_skip("rounding_buffer",
                               confirmation_verdict=verdict)
 
-        # Step 10: Kelly sizing (convergence boost applied pre-caps via multiplier)
-        # Don't boost convergence on REJECT-overridden trades (contradictory signals)
+        # Step 10: Kelly sizing — ALL multipliers inside 2.0x cap
         conv_mult = 1.0
         if (verdict != "REJECT"
                 and convergence_score > config.CONVERGENCE_SCORE_THRESHOLD):
             conv_mult = 1.0 + config.CONVERGENCE_SIZING_BOOST * convergence_score
-        total_mult = min(2.0, conf_mult * rounding_mult * conv_mult)
+        # Model convergence boost (moved here so it's inside the cap, not post-Kelly)
+        model_conv_mult = 1.0
+        total_members = distribution.get("total_members", 0)
+        num_models = len(distribution.get("model_means", {}))
+        if (model_spread < config.MODEL_CONVERGENCE_BOOST_F
+                and num_models >= 2 and total_members >= 80):
+            model_conv_mult = 1.2
+        total_mult = min(2.0, conf_mult * rounding_mult * conv_mult * model_conv_mult)
         contracts = self._kelly_size(
             fee_adjusted_edge, win_prob, price_cents, self.balance_cents,
             total_mult, model_spread=model_spread, raw_edge=edge
@@ -319,17 +325,6 @@ class Strategy:
             return _side_skip("min_payout",
                               confirmation_verdict=verdict,
                               suggested_contracts=contracts)
-
-        # Model convergence boost (sizing only, not edge)
-        # Require >= 2 models to avoid false boost when only 1 model fetched (spread=0)
-        total_members = distribution.get("total_members", 0)
-        num_models = len(distribution.get("model_means", {}))
-        if (model_spread < config.MODEL_CONVERGENCE_BOOST_F
-                and num_models >= 2 and total_members >= 80):
-            contracts = max(1, int(contracts * 1.2))
-            contracts = min(contracts, config.MAX_CONTRACTS_PER_TICKER)  # Re-cap after boost
-            if price_cents > 0:
-                contracts = min(contracts, config.MAX_PER_TICKER_CENTS // price_cents)  # Cost cap
 
         total_members_str = distribution.get("total_members", "?")
 
@@ -399,10 +394,12 @@ class Strategy:
         # this bucket. Buy NO on this bucket (temp was above, not in it).
         if todays_high > temp_high + config.ROUNDING_BUFFER_HARD_F:
             no_price = market.get("no_ask", 0) or (100 - ref_price)
-            if no_price <= 0 or no_price >= 98:
-                print(f"  [CASE1-SKIP] {city_code} NO price {no_price}c out of range (0,98)")
+            case1_cap = getattr(config, 'CASE1_NO_PRICE_CAP', 60)
+            if no_price <= 0 or no_price >= case1_cap:
+                print(f"  [CASE1-SKIP] {city_code} NO price {no_price}c out of range (0,{case1_cap})")
                 return None
-            # CASE1 bypasses NO_SIDE_MAX_PRICE_CENTS (near-guaranteed outcome)
+            # CASE1 cap at 60c (was 98c). Even confirmed outcomes need sane risk/reward.
+            # At 98c: pay 98c to win 2c (50:1 against). At 60c: pay 60c to win 40c (1.5:1).
 
             edge = 0.99 - (no_price / 100.0)
             fee_adj_edge = self._calculate_fee_adjusted_edge(0.99, no_price / 100.0)
@@ -509,7 +506,7 @@ class Strategy:
                 # Base: 0.85 at minimum gap. Scales up to 0.95 for large gaps late in day.
                 gap_factor = min(1.0, temp_gap / 15.0)  # 15F gap = max confidence
                 hour_factor = min(1.0, max(0.0, (local_hour - 13) / 5.0))
-                case3_prob = 0.85 + 0.10 * (0.6 * gap_factor + 0.4 * hour_factor)
+                case3_prob = min(0.90, 0.85 + 0.10 * (0.6 * gap_factor + 0.4 * hour_factor))
 
                 edge = case3_prob - (no_price / 100.0)
                 fee_adj_edge = self._calculate_fee_adjusted_edge(case3_prob, no_price / 100.0)
@@ -686,12 +683,9 @@ class Strategy:
         if is_confirmed:
             return config.CONFIRMED_MIN_EDGE
 
-        # Convergence confidence: high score = sources agree, lower threshold
-        if (convergence_score > config.CONVERGENCE_SCORE_THRESHOLD
-                and not is_next_day
-                and local_hour is not None
-                and local_hour >= 14):
-            return config.CONFIRMED_MIN_EDGE
+        # Convergence confidence: sizing boost only, NOT threshold lowering.
+        # Zero performance data on convergence trades (implemented March 10,
+        # went live into March 17-21 loss period). Keep normal edge floor.
 
         if is_next_day:
             base = config.MIN_EDGE * config.NEXT_DAY_EDGE_MULTIPLIER

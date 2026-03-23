@@ -354,7 +354,9 @@ class WeatherEngine:
             except Exception:
                 target_month = None
 
-        is_winter = target_month in (12, 1, 2, 3) if target_month else False
+        is_winter = target_month in (12, 1, 2, 3, 11) if target_month else False
+        # Shoulder months (March, November) get 50% bias — transition weather
+        is_shoulder = target_month in (3, 11) if target_month else False
         # Hardcoded warm city bias defaults (replaces config dependency)
         _WARM_CITY_BIAS = {
             "DEN": 4.0, "HOU": 3.0, "NOLA": 3.0, "MIA": 3.0,
@@ -388,8 +390,10 @@ class WeatherEngine:
             elif is_winter and city_code in _WARM_CITY_BIAS:
                 # Fall back to per-city default (no learned data yet)
                 correction = _WARM_CITY_BIAS.get(city_code, 0.0)
+                if is_shoulder:
+                    correction *= 0.5  # March/Nov: 50% bias (transition weather)
                 if correction > 0:
-                    print(f"  [WEATHER] {family_name}: default winter bias +{correction:.1f}°F for {city_code}")
+                    print(f"  [WEATHER] {family_name}: default winter bias +{correction:.1f}°F for {city_code}{'(shoulder 50%)' if is_shoulder else ''}")
 
             # Apply correction and build all_highs/all_weights
             total_correction = correction + float(city_bias_f or 0.0)
@@ -418,7 +422,8 @@ class WeatherEngine:
             if wind_kmh > wind_threshold:
                 wind_adj = getattr(config, 'WIND_SPEED_TEMP_BIAS_F', -1.0)
                 print(f"  [WEATHER] {city_code}: wind {wind_kmh:.0f}km/h > {wind_threshold}km/h -> bias {wind_adj:+.1f}F")
-            total_weather_adj = cloud_adj + precip_adj + wind_adj
+            bias_cap = getattr(config, 'WEATHER_BIAS_CAP_F', -2.0)
+            total_weather_adj = max(bias_cap, cloud_adj + precip_adj + wind_adj)  # Prevent stacking beyond cap
             if total_weather_adj != 0:
                 all_highs = [t + total_weather_adj for t in all_highs]
 

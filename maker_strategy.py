@@ -462,7 +462,7 @@ class MakerStrategy:
         """Dynamic stale threshold: tighter near settlement."""
         et_hour = datetime.now(ZoneInfo("America/New_York")).hour
         if et_hour >= 15:
-            return 5
+            return 10  # Was 5. Too aggressive — cancels orders before afternoon volatility fills them.
         elif et_hour >= 12:
             return 15
         return config.STALE_ORDER_MINUTES
@@ -536,7 +536,7 @@ class MakerStrategy:
         fills = [t for t in self._fill_tracking.get("%s_fills" % side, []) if t > cutoff]
         orders = [t for t in self._fill_tracking.get("%s_orders" % side, []) if t > cutoff]
         order_count = len(orders)
-        if order_count < 5:  # Need 5+ orders in 72h window for meaningful fill rate
+        if order_count < 3:  # Need 3+ orders in 72h window for meaningful fill rate
             return 0
         fill_rate = len(fills) / order_count
         if fill_rate > 0.85:
