@@ -106,6 +106,8 @@ market_scanner.py -> strategy.py (edge + confirmer + sizing) -> risk_manager.py 
 - **REJECT bypass deleted (March 22)** -- 0/6 win rate proved confirmer is correct at extreme edges. Ensemble overconfidence at >25% edge is a systematic failure. REJECT verdict = always reject.
 - **City bias safety gate** -- if `|learned bias| > 5F` with 5+ data points, block trading for that city via `_get_learning_adjustments()` returning `blocked=True`. Model is fundamentally miscalibrated.
 - **Per-ticker contract accumulation guard** -- `add_pending_order()` now checks `_ticker_contracts()` against `MAX_CONTRACTS_PER_TICKER` before storing. Defense-in-depth against cross-cycle accumulation. `_reconcile_positions()` also syncs contract counts with Kalshi.
+- **Sniper mode (March 23)** -- Philosophy shift: stop trading everything with edge, focus on proven setups only. CASE 1 loosened (hour 10→9, NO cap 60→70, fee-adj edge 1%→0.5%). Convergence starts at noon city-local (was 2 PM), sizing boost 0.3→0.5, edge threshold lowering re-enabled (5% for convergence). Afternoon CONFIRM trades at 4% edge threshold (deferred check). Open-Meteo window 7AM-7PM ET (was 8-6).
+- **Adverse selection fix (March 23)** -- Both sides paused for 70+ hours due to 100% fill rate on 5 orders. Minimum raised to 10 maker orders. Taker orders excluded from fill rate calculation.
 
 ## NWS Station Mappings (20 Cities)
 
