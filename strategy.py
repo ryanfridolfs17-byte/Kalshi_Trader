@@ -224,6 +224,12 @@ class Strategy:
         if not is_next_day and local_hour < 6:
             return _side_skip("before_6am_local")
 
+        # Block same-day directional trades before noon local.
+        # Data: morning 19W/24L (-$17), afternoon 18W/0L (+$10.71).
+        # CASE 1 confirmed outcomes bypass (checked earlier at _check_confirmed_outcome).
+        if not is_next_day and local_hour is not None and local_hour < 12:
+            return _side_skip("before_noon_directional")
+
         # Convergence score (same-day afternoon only)
         convergence_score = 0.0
         if not is_next_day and local_hour >= config.CONVERGENCE_MIN_LOCAL_HOUR and todays_high is not None:
@@ -281,6 +287,12 @@ class Strategy:
         if verdict == "REJECT":
             return _side_skip("confirmation_reject",
                               confirmation_verdict="REJECT")
+
+        # Block STRONG verdict: 2W/13L (-$3.42). Ensemble overconfidence + NWS
+        # agreement doesn't overcome the favourite-longshot bias.
+        if verdict == "STRONG":
+            return _side_skip("strong_verdict_blocked",
+                              confirmation_verdict="STRONG")
 
         # Post-confirmation edge gate: if we deferred the edge check for afternoon
         # CONFIRM, verify the verdict is actually CONFIRM (not STRONG/REJECT)
@@ -789,14 +801,19 @@ class Strategy:
         if kelly <= 0:
             return 0
 
-        # Continuous Kelly divisor: raw edge 5% -> 6.0, raw edge 20%+ -> 3.0 (linear)
-        # Uses raw (pre-fee) edge for tier selection — fee already in Kelly fraction
-        # Edge capped at 40% for divisor — data shows 60%+ edge trades went 0-4 (overconfident)
+        # Continuous Kelly divisor: raw edge 5% -> 6.0, raw edge 15%+ -> 4.0
+        # Edge capped at 15% — data: 0-10% edge = 96% win rate, 20%+ = 21%.
+        # High edge = ensemble overconfidence, NOT real edge. Treat as 15% max.
         divisor_edge = raw_edge if raw_edge is not None else edge
-        divisor_edge = min(divisor_edge, 0.40)  # Cap: treat anything above 40% as 40%
+        divisor_edge = min(divisor_edge, 0.15)  # Was 0.40. Favourite-longshot: high edge = overconfident.
         divisor = max(3.0, min(6.0, 6.0 - (divisor_edge - 0.05) * 20.0))
 
         fraction = kelly / divisor * confirmation_multiplier
+
+        # High-edge penalty: >20% raw edge gets 50% size reduction.
+        # Data: 20%+ edge trades are 5W/19L (-$13.82). Anti-correlated with reality.
+        if raw_edge is not None and raw_edge > 0.20:
+            fraction *= 0.5
 
         # Dispersion multiplier: high model disagreement = lower sizing
         if model_spread is not None and model_spread > 0:
