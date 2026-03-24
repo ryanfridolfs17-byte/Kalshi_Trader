@@ -108,10 +108,10 @@ ENABLE_ARBITRAGE_STRATEGY = False
 KALSHI_FEE_PCT = 0.07
 FEE_ADJUSTED_MIN_EDGE = 0.03
 CASE1_FEE_ADJUSTED_MIN_EDGE = 0.005  # Was 0.01. Confirmed outcomes: near-guaranteed, accept thinner edge.
-LONGSHOT_FLOOR_CENTS = 3
+LONGSHOT_FLOOR_CENTS = 30  # Was 3. YES <30c: 4W/19L (-$14.71). Favourite-longshot bias confirmed by Whelan 2025.
 NEAR_CERTAINTY_CAP_CENTS = 80  # Was 93. Buying YES >80c = terrible risk/reward with 5-8F model MAE.
-NO_SIDE_MAX_PRICE_CENTS = 35       # Was 50 — NO at 50c is a coin flip minus fees. Data: -$140 on NO trades.
-NO_SIDE_SIZING_MULTIPLIER = 0.30   # Was 0.40 — further reduce NO sizing
+NO_SIDE_MAX_PRICE_CENTS = 75       # Was 35. NO at 75c+: 29W/0L (+$20.52) — our most profitable segment, was blocked!
+NO_SIDE_SIZING_MULTIPLIER = 0.60   # Was 0.30. 29-0 track record at high NO prices — increase sizing.
 NEXT_DAY_EDGE_MULTIPLIER = 1.5
 EARLY_MORNING_EDGE_MULTIPLIER = 2.0  # 6-9 AM local: 14% min edge (stale 00Z forecasts)
 NEXT_DAY_SIZING_MULTIPLIER = 0.50
