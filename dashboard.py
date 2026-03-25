@@ -399,6 +399,8 @@ def _build_health_response(authenticated=False):
         "observation_reason": bot_status.get("observation_reason", ""),
         "timestamp": now.isoformat(),
     }
+    if bot_status.get("runtime_fingerprint"):
+        response["runtime_fingerprint"] = bot_status.get("runtime_fingerprint")
 
     # Include last error info if present (written by main loop catch-all handler)
     if bot_status.get("last_error"):
@@ -420,7 +422,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """Check whether the request carries a valid Bearer token. Does NOT send a 401 on failure."""
         token = config.DASHBOARD_TOKEN
         if not token:
-            return True  # No auth configured (local dev)
+            if os.environ.get("RAILWAY_ENVIRONMENT") or config.ENVIRONMENT == "production":
+                return False
+            return True  # Local dev only
         auth_header = self.headers.get("Authorization", "")
         if auth_header == "Bearer %s" % token:
             return True

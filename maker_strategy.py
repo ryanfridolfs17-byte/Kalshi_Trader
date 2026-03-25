@@ -22,6 +22,98 @@ class MakerStrategy:
         self.open_orders = self._load_open_orders()
         self._fill_tracking = self._load_fill_tracking()
 
+    @staticmethod
+    def _normalize_fill(fill):
+        """Normalize Kalshi fill payload to int cents/counts."""
+        if not isinstance(fill, dict):
+            return fill
+
+        result = dict(fill)
+
+        def _to_int(val):
+            if val is None:
+                return 0
+            if isinstance(val, (int, float)):
+                return int(val)
+            if isinstance(val, str):
+                try:
+                    return int(float(val))
+                except (TypeError, ValueError):
+                    return 0
+            return 0
+
+        def _dollars_to_cents(val):
+            if val is None:
+                return 0
+            try:
+                return int(round(float(val) * 100))
+            except (TypeError, ValueError):
+                return 0
+
+        result["count"] = _to_int(result.get("count_fp", result.get("count", 0)))
+        if "yes_price_dollars" in result or "no_price_dollars" in result:
+            result["yes_price"] = _dollars_to_cents(result.get("yes_price_dollars"))
+            result["no_price"] = _dollars_to_cents(result.get("no_price_dollars"))
+        else:
+            result["yes_price"] = _to_int(result.get("yes_price"))
+            result["no_price"] = _to_int(result.get("no_price"))
+        return result
+
+    def _get_recent_fills_by_order(self, max_pages=3, page_limit=200):
+        """Fetch recent fills and group them by order_id."""
+        grouped = {}
+        if not self.client:
+            return grouped
+
+        cursor = None
+        for _ in range(max_pages):
+            result = self.client.get_fills(limit=page_limit, cursor=cursor)
+            if not result:
+                break
+            fills = result.get("fills", [])
+            if not fills:
+                break
+            for raw_fill in fills:
+                fill = self._normalize_fill(raw_fill)
+                order_id = fill.get("order_id", "")
+                if not order_id:
+                    continue
+                grouped.setdefault(order_id, []).append(fill)
+            cursor = result.get("cursor")
+            if not cursor:
+                break
+
+        for order_id in grouped:
+            grouped[order_id].sort(key=lambda f: f.get("created_time", ""))
+        return grouped
+
+    @staticmethod
+    def _extract_incremental_fill(fills, already_accounted, side):
+        """Return (new_contracts, avg_price_cents) for unseen fills."""
+        seen = 0
+        new_contracts = 0
+        weighted_price = 0
+        price_field = "yes_price" if side == "yes" else "no_price"
+
+        for fill in fills:
+            count = int(fill.get("count", 0) or 0)
+            if count <= 0:
+                continue
+            fill_start = seen
+            fill_end = seen + count
+            seen = fill_end
+            if fill_end <= already_accounted:
+                continue
+            unseen = count if already_accounted <= fill_start else (fill_end - already_accounted)
+            price_cents = int(fill.get(price_field, 0) or 0)
+            if unseen > 0 and price_cents > 0:
+                new_contracts += unseen
+                weighted_price += unseen * price_cents
+
+        if new_contracts <= 0:
+            return 0, 0
+        return new_contracts, int(round(float(weighted_price) / float(new_contracts)))
+
     def calculate_limit_price(self, signal):
         """
         Calculate limit order price for a signal.
@@ -141,6 +233,7 @@ class MakerStrategy:
                     "ticker": ticker,
                     "side": side,
                     "price_cents": limit_price,
+                    "limit_price_cents": limit_price,
                     "requested_contracts": contracts,
                     "remaining_contracts": contracts,
                     "filled_contracts": 0,
@@ -232,6 +325,7 @@ class MakerStrategy:
                     "ticker": ticker,
                     "side": side,
                     "price_cents": price_used,
+                    "limit_price_cents": price_used,
                     "requested_contracts": contracts,
                     "remaining_contracts": contracts,
                     "filled_contracts": 0,
@@ -348,6 +442,7 @@ class MakerStrategy:
         filled = []
         to_remove = []
         changed = False
+        fills_by_order = self._get_recent_fills_by_order()
 
         for order_id, info in list(self.open_orders.items()):
             try:
@@ -362,39 +457,51 @@ class MakerStrategy:
                     remaining = 0 if status in ("executed", "filled") else prev_remaining
                 remaining = int(remaining)
 
-                if remaining < prev_remaining:
-                    new_contracts = prev_remaining - remaining
+                accounted_contracts = int(info.get("filled_contracts", 0) or 0)
+                fills_for_order = fills_by_order.get(order_id, [])
+                fill_contracts, fill_price_from_fills = self._extract_incremental_fill(
+                    fills_for_order, accounted_contracts, info.get("side", "yes")
+                )
+
+                if fill_contracts > 0 or remaining < prev_remaining:
+                    new_contracts = fill_contracts if fill_contracts > 0 else (prev_remaining - remaining)
                     fill_info = dict(info)
                     fill_info["contracts"] = new_contracts
+                    fill_info["limit_price_cents"] = int(
+                        info.get("limit_price_cents", info.get("price_cents", 0)) or 0
+                    )
 
-                    # Use actual fill price from API when available (fixes taker cost tracking)
-                    # Try int cents fields first, then dollar-string fields (March 2026 API)
-                    actual_price = None
+                    # Prefer the fills feed because order objects can reflect the
+                    # original limit price instead of the true execution price.
+                    actual_price = fill_price_from_fills
                     side = info.get("side", "yes")
-                    price_field = "yes_price" if side == "yes" else "no_price"
-                    for key in (price_field, price_field + "_cents"):
-                        raw = order.get(key)
-                        if raw is not None:
-                            try:
-                                actual_price = int(raw)
-                            except (ValueError, TypeError):
-                                pass
-                        if actual_price and actual_price > 0:
-                            break
                     if not actual_price or actual_price <= 0:
-                        raw = order.get(price_field + "_dollars")
-                        if raw is not None:
-                            try:
-                                actual_price = int(round(float(raw) * 100))
-                            except (ValueError, TypeError):
-                                pass
+                        price_field = "yes_price" if side == "yes" else "no_price"
+                        for key in (price_field, price_field + "_cents"):
+                            raw = order.get(key)
+                            if raw is not None:
+                                try:
+                                    actual_price = int(raw)
+                                except (ValueError, TypeError):
+                                    pass
+                            if actual_price and actual_price > 0:
+                                break
+                        if not actual_price or actual_price <= 0:
+                            raw = order.get(price_field + "_dollars")
+                            if raw is not None:
+                                try:
+                                    actual_price = int(round(float(raw) * 100))
+                                except (ValueError, TypeError):
+                                    pass
                     fill_price = actual_price if actual_price and actual_price > 0 else info.get("price_cents", 0)
                     fill_info["price_cents"] = fill_price
                     fill_info["cost_cents"] = fill_price * new_contracts
+                    if fill_info["limit_price_cents"] > 0:
+                        fill_info["execution_edge_cents"] = fill_info["limit_price_cents"] - fill_price
 
                     fill_info["order_status"] = status or "partially_filled"
                     filled.append(fill_info)
-                    info["filled_contracts"] = int(info.get("filled_contracts", 0) or 0) + new_contracts
+                    info["filled_contracts"] = accounted_contracts + new_contracts
                     info["remaining_contracts"] = remaining
                     # Update tracked price with actual fill price
                     if actual_price and actual_price > 0:
@@ -462,6 +569,15 @@ class MakerStrategy:
         for order_id in list(self.open_orders.keys()):
             if self.cancel_order(order_id):
                 cancelled += 1
+        return cancelled
+
+    def cancel_open_entry_orders(self):
+        """Cancel only open buy orders, leaving exit orders intact."""
+        cancelled = 0
+        for order_id, info in list(self.open_orders.items()):
+            if info.get("action", "buy") == "buy":
+                if self.cancel_order(order_id):
+                    cancelled += 1
         return cancelled
 
     def _get_stale_threshold_minutes(self):

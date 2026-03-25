@@ -17,7 +17,7 @@ RAILWAY DEPLOY:
 import os
 
 # === API CREDENTIALS ===
-API_KEY_ID = os.environ.get("KALSHI_API_KEY_ID", "7bac3bd2-e6b5-4859-93ff-26ee15f2c249")
+API_KEY_ID = os.environ.get("KALSHI_API_KEY_ID", "")
 PRIVATE_KEY_PATH = "kalshi_private_key.pem"
 
 # Railway env vars mangle PEM newlines. Handle all formats.
@@ -264,6 +264,19 @@ LEARNING_STATE_FILE = os.path.join(STATE_DIR, "learning_state.json")
 FILL_TRACKING_FILE = os.path.join(STATE_DIR, "fill_tracking.json")
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
+BOT_VERSION = os.environ.get("BOT_VERSION", "4.1-fill-audit")
+
+# Explicit production kill switches for historically losing paths.
+ALLOW_YES_SIDE_TRADES = os.environ.get("ALLOW_YES_SIDE_TRADES", "false").lower() == "true"
+ALLOW_STRONG_VERDICTS = os.environ.get("ALLOW_STRONG_VERDICTS", "false").lower() == "true"
+AUTO_OBSERVATION_MODE = os.environ.get(
+    "AUTO_OBSERVATION_MODE",
+    "true" if ENVIRONMENT == "production" else "false"
+).lower() == "true"
+AUTO_OBSERVATION_REASON = os.environ.get(
+    "AUTO_OBSERVATION_REASON",
+    "Safety lock enabled pending manual review/deploy verification."
+)
 
 # === API URLS ===
 DEMO_API_URL = "https://demo-api.kalshi.co/trade-api/v2"
