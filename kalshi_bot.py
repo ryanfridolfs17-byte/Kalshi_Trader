@@ -24,6 +24,7 @@ from risk_manager_v2 import RiskManager
 from trade_intelligence import TradeIntelligence
 from maker_strategy import MakerStrategy
 from trade_reviewer import TradeReviewer
+from settlement_lock import SettlementLockPaper
 
 
 def _reconcile_positions(client, risk):
@@ -179,6 +180,7 @@ def main(shutdown_event=None):
     risk = RiskManager(kalshi_client=client)
     intel = TradeIntelligence(kalshi_client=client, weather_engine=strategy.weather)
     maker = MakerStrategy(kalshi_client=client, risk_manager=risk)
+    paper_locks = SettlementLockPaper(kalshi_client=client, weather_engine=strategy.weather)
 
     auto_obs_reason = ""
     if getattr(config, "AUTO_OBSERVATION_MODE", False):
@@ -267,6 +269,11 @@ def main(shutdown_event=None):
             except Exception as e:
                 print("  [BOT] Position reconciliation error: %s" % e)
 
+            try:
+                paper_locks.reconcile_settlements()
+            except Exception as e:
+                print("  [PAPER] Settlement reconciliation error: %s" % e)
+
             if risk.is_observation_mode():
                 cancelled = maker.cancel_open_entry_orders()
                 if cancelled:
@@ -341,12 +348,16 @@ def main(shutdown_event=None):
 
             # --- STEP 6: Evaluate all markets for edge ---
             buy_signals = []
+            paper_lock_signals = []
             all_evaluated = []
             _skip_counts = {}
             _null_count = 0
             for market in weather_markets:
                 city_code = market.get("_city_code", "")
                 todays_high = obs_highs.get(city_code)
+                paper_lock = paper_locks.evaluate_market(market, todays_high=todays_high)
+                if paper_lock:
+                    paper_lock_signals.append(paper_lock)
                 signal = strategy.evaluate_market(market, todays_high=todays_high)
                 if signal and signal.get("signal") == "buy":
                     buy_signals.append(signal)
@@ -365,6 +376,24 @@ def main(shutdown_event=None):
             _summary = ", ".join(f"{c}x {r}" for r, c in _top)
             print(f"  [DIAG] {len(weather_markets)} mkts: {len(buy_signals)} buys, "
                   f"{len(all_evaluated)} with forecasts, {_null_count} null. Skips: {_summary}")
+
+            try:
+                paper_locks.record_candidates(paper_lock_signals)
+                if paper_lock_signals:
+                    top_paper = paper_locks.top_active(limit=3)
+                    print("  [PAPER] %d hard-lock candidate(s): %s" % (
+                        len(paper_lock_signals),
+                        ", ".join(
+                            "%s %s@%dc" % (
+                                c.get("ticker", "?"),
+                                c.get("lock_side", "?").upper(),
+                                c.get("price_cents", 0),
+                            )
+                            for c in top_paper
+                        )
+                    ))
+            except Exception as e:
+                print("  [PAPER] Candidate capture error: %s" % e)
 
             # Snapshot all evaluated signals for scan reconciliation learning
             try:

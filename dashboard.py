@@ -31,6 +31,7 @@ STATE_FILES = {
     "scan_log": config.SCAN_LOG_FILE,
     "maker": config.MAKER_ORDERS_FILE,
     "learning": config.LEARNING_STATE_FILE,
+    "paper_locks": config.PAPER_LOCKS_FILE,
 }
 
 DASHBOARD_PORT = int(os.environ.get("PORT", 8050))
