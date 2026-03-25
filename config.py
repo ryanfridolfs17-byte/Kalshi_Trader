@@ -262,6 +262,7 @@ MAKER_ORDERS_FILE = os.path.join(STATE_DIR, "maker_orders.json")
 SCAN_LOG_FILE = os.path.join(STATE_DIR, "scan_log.json")
 LEARNING_STATE_FILE = os.path.join(STATE_DIR, "learning_state.json")
 FILL_TRACKING_FILE = os.path.join(STATE_DIR, "fill_tracking.json")
+PAPER_LOCKS_FILE = os.path.join(STATE_DIR, "paper_locks.json")
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 BOT_VERSION = os.environ.get("BOT_VERSION", "4.1-fill-audit")
@@ -279,6 +280,7 @@ AUTO_OBSERVATION_REASON = os.environ.get(
     "AUTO_OBSERVATION_REASON",
     "Safety lock enabled pending manual review/deploy verification."
 )
+SETTLEMENT_LOCK_MIN_PAYOUT_CENTS = int(os.environ.get("SETTLEMENT_LOCK_MIN_PAYOUT_CENTS", "8"))
 
 # === API URLS ===
 DEMO_API_URL = "https://demo-api.kalshi.co/trade-api/v2"
