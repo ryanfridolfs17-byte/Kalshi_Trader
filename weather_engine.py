@@ -899,9 +899,11 @@ class WeatherEngine:
                 temp_low = int(midpoint - 0.5)
                 temp_high = int(midpoint + 0.5)
             elif thresh_match:
-                threshold = int(float(thresh_match.group(1)))
-                temp_low = threshold
-                temp_high = 200
+                # UNSAFE: T-prefix doesn't encode direction ("above" vs "below").
+                # Without the title we can't know. Skip market rather than guess wrong.
+                # Entry always has titles (from scanner). This fallback only hits
+                # exit evaluation where we should use stored bucket data instead.
+                return None
             else:
                 return None
 

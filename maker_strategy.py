@@ -158,6 +158,9 @@ class MakerStrategy:
                     "model_means": signal.get("model_means", {}),
                     "model_spread": signal.get("model_spread"),
                     "target_date": signal.get("target_date", ""),
+                    "temp_low": signal.get("temp_low"),
+                    "temp_high": signal.get("temp_high"),
+                    "bet_description": signal.get("bet_description", ""),
                 }
                 self._save_open_orders()
 
@@ -246,6 +249,9 @@ class MakerStrategy:
                     "model_means": signal.get("model_means", {}),
                     "model_spread": signal.get("model_spread"),
                     "target_date": signal.get("target_date", ""),
+                    "temp_low": signal.get("temp_low"),
+                    "temp_high": signal.get("temp_high"),
+                    "bet_description": signal.get("bet_description", ""),
                 }
                 self._save_open_orders()
 

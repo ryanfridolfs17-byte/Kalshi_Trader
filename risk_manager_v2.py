@@ -542,6 +542,9 @@ class RiskManager:
             "entry_prob": fill_info.get("our_prob") or existing_entry_prob,
             "entry_forecast_mean": fill_info.get("predicted_high") or existing_entry_forecast,
             "peak_price_cents": max(existing_peak, avg_price),
+            "temp_low": fill_info.get("temp_low") or (existing.get("temp_low") if existing else None),
+            "temp_high": fill_info.get("temp_high") or (existing.get("temp_high") if existing else None),
+            "bet_description": fill_info.get("bet_description") or (existing.get("bet_description", "") if existing else ""),
         }
 
     def update_peak_price(self, ticker, current_bid_cents):

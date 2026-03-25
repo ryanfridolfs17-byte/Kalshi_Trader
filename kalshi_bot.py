@@ -567,8 +567,32 @@ def _check_rebalancing(client, strategy, risk, maker, cycle):
         if not city_code or not weather:
             continue
         try:
-            mkt_dict = {"ticker": tk, "title": "", "subtitle": "", "event_ticker": tk}
-            parsed = weather.parse_market_bucket(mkt_dict)
+            # Use stored bucket from position (avoids broken T-prefix fallback parser)
+            stored_low = pos.get("temp_low")
+            stored_high = pos.get("temp_high")
+            if stored_low is not None and stored_high is not None:
+                mkt_dict = {"ticker": tk, "title": "", "subtitle": "", "event_ticker": tk}
+                parsed = weather.parse_market_bucket(mkt_dict)
+                if parsed:
+                    parsed["temp_low"] = stored_low
+                    parsed["temp_high"] = stored_high
+                else:
+                    # Fallback: construct minimal parsed dict from stored data
+                    import re
+                    date_match = re.search(r'-(\d{2})([A-Z]{3})(\d{2})', tk.upper())
+                    target_date = None
+                    if date_match:
+                        yr = 2000 + int(date_match.group(1))
+                        months = {"JAN":1,"FEB":2,"MAR":3,"APR":4,"MAY":5,"JUN":6,
+                                  "JUL":7,"AUG":8,"SEP":9,"OCT":10,"NOV":11,"DEC":12}
+                        mn = months.get(date_match.group(2), 0)
+                        dy = int(date_match.group(3))
+                        if mn: target_date = f"{yr}-{mn:02d}-{dy:02d}"
+                    parsed = {"city_code": city_code, "temp_low": stored_low,
+                              "temp_high": stored_high, "target_date": target_date}
+            else:
+                mkt_dict = {"ticker": tk, "title": "", "subtitle": "", "event_ticker": tk}
+                parsed = weather.parse_market_bucket(mkt_dict)
             if not parsed:
                 continue
             target_date = parsed.get("target_date")
@@ -725,8 +749,14 @@ def _review_positions(client, strategy, positions_dict, risk):
         city_code = pos.get("city_code", "")
         if city_code and weather:
             try:
+                # Use stored bucket from position when available
+                stored_low = pos.get("temp_low")
+                stored_high = pos.get("temp_high")
                 mkt_dict = {"ticker": tk, "title": "", "subtitle": "", "event_ticker": tk}
                 parsed = weather.parse_market_bucket(mkt_dict)
+                if parsed and stored_low is not None and stored_high is not None:
+                    parsed["temp_low"] = stored_low
+                    parsed["temp_high"] = stored_high
                 target_date = parsed.get("target_date") if parsed else None
                 dist = weather.get_temperature_distribution(city_code, target_date=target_date)
                 if dist:
