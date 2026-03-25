@@ -224,6 +224,12 @@ class Strategy:
         if not is_next_day and local_hour < 6:
             return _side_skip("before_6am_local")
 
+        # Block ALL YES-side trades. Data: YES 1W/17L (-$23), NO 2W/1L (+$4).
+        # Favourite-longshot bias (Whelan 2025): cheap YES contracts lose more than
+        # price implies. Only profitable path is NO-side + CASE 1 confirmed.
+        if side == "yes":
+            return _side_skip("yes_side_blocked")
+
         # Block same-day directional trades before noon local.
         # Data: morning 19W/24L (-$17), afternoon 18W/0L (+$10.71).
         # CASE 1 confirmed outcomes bypass (checked earlier at _check_confirmed_outcome).
@@ -526,6 +532,13 @@ class Strategy:
                     case3_triggered = False  # No ensemble = blocked
 
             if case3_triggered:
+                # CASE 3 STRONG blocked: bypasses all safety guards (rounding buffer,
+                # model divergence, longshot floor, pre-noon block). Data: STRONG
+                # verdict 1W/11L (-$7.41). Only profitable STRONG was a non-CASE3 trade.
+                # Re-enable when we have data showing CASE 3 specifically wins.
+                print(f"  [CASE3-SKIP] {city_code} CASE 3 STRONG blocked (1W/11L track record)")
+                return None
+
                 no_price = market.get("no_ask", 0) or (100 - ref_price)
                 if no_price <= 0 or no_price >= 95:
                     print(f"  [CASE3-SKIP] {city_code} NO price {no_price}c out of range (0,95)")
