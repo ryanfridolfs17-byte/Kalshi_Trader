@@ -46,7 +46,7 @@ _MODEL_APIS = {
 }
 
 # Cache durations (seconds)
-_MODEL_CACHE_TTL = 1800   # 30 min for model forecasts
+_MODEL_CACHE_TTL = 7200   # 120 min for deterministic forecasts (models update every 6h)
 _NWS_CACHE_TTL = 3600     # 60 min for NWS point forecast
 
 # Gray zone: forecast within this many deg F of bucket edge -> ABSTAIN

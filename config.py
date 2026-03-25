@@ -174,9 +174,9 @@ CONFIRM_NO_SEPARATION_PENALTY = 1.25
 # Outside window: bot still runs (exits use METAR/NWS, not Open-Meteo).
 OPEN_METEO_FETCH_START_ET = 7    # Was 8. Catch early West Coast CASE 1 opportunities.
 OPEN_METEO_FETCH_END_ET = 19     # Was 18. Late East Coast convergence trades.
-ENSEMBLE_CACHE_TTL = 900          # 15 min (models update every 6h)
-DISTRIBUTION_CACHE_TTL = 900      # 15 min (matches ensemble)
-CLOUD_COVER_CACHE_TTL = 1800      # 30 min (daily data, changes slowly)
+ENSEMBLE_CACHE_TTL = 3600         # 60 min (models update every 6h — 15 min was 9x too aggressive)
+DISTRIBUTION_CACHE_TTL = 3600     # 60 min (matches ensemble)
+CLOUD_COVER_CACHE_TTL = 7200      # 120 min (daily data, changes once/day)
 
 # === METAR OBSERVATION SOURCE ===
 METAR_API_URL = "https://aviationweather.gov/api/data/metar"
