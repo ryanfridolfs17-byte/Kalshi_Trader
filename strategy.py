@@ -35,6 +35,16 @@ class Strategy:
         self.reviewer = reviewer
         self.balance_cents = config.BALANCE_FALLBACK_CENTS
 
+    @staticmethod
+    def _describe_bet(side, temp_low, temp_high):
+        """Human-readable description of what a bet means."""
+        if temp_low == -100:
+            return f"{side.upper()}: temp {'<=' if side == 'yes' else '>'} {temp_high}F"
+        elif temp_high == 200:
+            return f"{side.upper()}: temp {'>=' if side == 'yes' else '<'} {temp_low}F"
+        else:
+            return f"{side.upper()}: temp {'in' if side == 'yes' else 'NOT in'} [{temp_low},{temp_high}]F"
+
     # ===========================================================
     # MAIN ENTRY
     # ===========================================================
@@ -74,7 +84,8 @@ class Strategy:
             _s = signal["side"]
             _e = signal["edge"]
             _v = signal["confirmation_verdict"]
-            print(f"  [SIGNAL] {_t} {_s.upper()} edge={_e:.1%} verdict={_v}")
+            _bet = signal.get("bet_description", "")
+            print(f"  [SIGNAL] {_t} {_s.upper()} edge={_e:.1%} verdict={_v} | {_bet}")
             return signal
 
         # --- Try arbitrage ---
@@ -229,6 +240,28 @@ class Strategy:
         # price implies. Only profitable path is NO-side + CASE 1 confirmed.
         if side == "yes":
             return _side_skip("yes_side_blocked")
+
+        # Direction sanity check: forecast mean must not strongly contradict bet.
+        # Catches tail-probability edge where ensemble mean says the opposite.
+        _DIRECTION_SANITY_MARGIN_F = 3.0
+        if side == "yes":
+            # YES on "or below" market: mean should be near/below ceiling
+            if temp_low == -100 and forecast_mean > temp_high + _DIRECTION_SANITY_MARGIN_F:
+                return _side_skip("direction_sanity_check",
+                                  detail=f"mean {forecast_mean:.1f}F >> ceiling {temp_high}F")
+            # YES on "or above" market: mean should be near/above floor
+            if temp_high == 200 and forecast_mean < temp_low - _DIRECTION_SANITY_MARGIN_F:
+                return _side_skip("direction_sanity_check",
+                                  detail=f"mean {forecast_mean:.1f}F << floor {temp_low}F")
+        elif side == "no":
+            # NO on "or below" market (= betting temp ABOVE ceiling): mean should be near/above ceiling
+            if temp_low == -100 and forecast_mean < temp_high - _DIRECTION_SANITY_MARGIN_F:
+                return _side_skip("direction_sanity_check",
+                                  detail=f"NO on below-{temp_high}F but mean {forecast_mean:.1f}F")
+            # NO on "or above" market (= betting temp BELOW floor): mean should be near/below floor
+            if temp_high == 200 and forecast_mean > temp_low + _DIRECTION_SANITY_MARGIN_F:
+                return _side_skip("direction_sanity_check",
+                                  detail=f"NO on above-{temp_low}F but mean {forecast_mean:.1f}F")
 
         # Block same-day directional trades before noon local.
         # Data: morning 19W/24L (-$17), afternoon 18W/0L (+$10.71).
@@ -396,6 +429,9 @@ class Strategy:
             "std_dev": std_dev_val,
             "model_means": distribution.get("model_means", {}),
             "model_stds": distribution.get("model_stds", {}),
+            "bet_description": self._describe_bet(side, temp_low, temp_high),
+            "temp_low": temp_low,
+            "temp_high": temp_high,
         }
 
     # ===========================================================
@@ -488,6 +524,9 @@ class Strategy:
                 "predicted_high": todays_high,
                 "model_spread": None,
                 "std_dev": None,
+                "bet_description": self._describe_bet("no", temp_low, temp_high),
+                "temp_low": temp_low,
+                "temp_high": temp_high,
             }
 
         # ---- CASE 3: Gap too large for bucket -> STRONG ----
