@@ -901,6 +901,8 @@ def _write_bot_status(cycle, risk, intel, maker, signals_count, trades_count, ne
             "bot_version": getattr(config, "BOT_VERSION", "4.0"),
             "allow_yes_side_trades": bool(getattr(config, "ALLOW_YES_SIDE_TRADES", False)),
             "allow_strong_verdicts": bool(getattr(config, "ALLOW_STRONG_VERDICTS", False)),
+            "allow_next_day_directional_trades": bool(getattr(config, "ALLOW_NEXT_DAY_DIRECTIONAL_TRADES", False)),
+            "allow_threshold_directional_trades": bool(getattr(config, "ALLOW_THRESHOLD_DIRECTIONAL_TRADES", False)),
             "no_side_max_price_cents": getattr(config, "NO_SIDE_MAX_PRICE_CENTS", None),
             "longshot_floor_cents": getattr(config, "LONGSHOT_FLOOR_CENTS", None),
             "railway_git_commit_sha": os.environ.get("RAILWAY_GIT_COMMIT_SHA", ""),
