@@ -733,11 +733,12 @@ class TradeIntelligence:
             for ticker, fills in ticker_fill_lists.items():
                 fills.sort(key=lambda f: f.get("created_time", ""))
                 yes_held, no_held = 0, 0
-                total_cost, pair_revenue = 0, 0
+                total_cost, pair_revenue, total_fees = 0, 0, 0
                 for f in fills:
                     count = f.get("count", 0)
                     action = f.get("action", "")
                     fside = f.get("side", "")
+                    total_fees += int(f.get("fee_cost_cents", 0) or 0)
                     if action == "buy":
                         if fside == "yes":
                             yes_held += count
@@ -762,6 +763,7 @@ class TradeIntelligence:
                 ticker_flows[ticker] = {
                     "total_cost": total_cost, "pair_revenue": pair_revenue,
                     "yes_held": yes_held, "no_held": no_held,
+                    "total_fees": total_fees,
                 }
 
             # Debug: log first settlement's fields
@@ -772,6 +774,7 @@ class TradeIntelligence:
             # Settlement revenue lookup
             # Handle multiple possible field names for revenue
             settle_rev = {}
+            settle_fees = {}
             for s in all_settlements:
                 t = s.get("ticker", "")
                 if t:
@@ -787,6 +790,11 @@ class TradeIntelligence:
                             except (ValueError, TypeError):
                                 rev = 0
                     settle_rev[t] = int(rev or 0)
+                    fee_raw = s.get("fee_cost")
+                    try:
+                        settle_fees[t] = int(round(float(fee_raw) * 100)) if fee_raw is not None else 0
+                    except (ValueError, TypeError):
+                        settle_fees[t] = 0
             settle_rev_copy = dict(settle_rev)
 
             # Realized P&L for closed tickers
@@ -797,7 +805,7 @@ class TradeIntelligence:
             # revenue -- skip settlement revenue. Only use settlement revenue
             # for tickers with no sell fills (rare edge case).
             settled_tickers = set(settle_rev.keys())
-            total_invested, total_returned = 0, 0
+            total_invested, total_returned, total_fees_paid = 0, 0, 0
             wins, losses = 0, 0
             for ticker, flows in ticker_flows.items():
                 if ticker in open_tickers:
@@ -814,14 +822,16 @@ class TradeIntelligence:
                 else:
                     # No sell fills -- use settlement revenue directly
                     ticker_returned = settle_revenue
-                ticker_pnl = ticker_returned - total_cost
+                ticker_fees = int(flows.get("total_fees", 0) or 0) + int(settle_fees.get(ticker, 0) or 0)
+                ticker_pnl = ticker_returned - total_cost - ticker_fees
                 total_invested += total_cost
                 total_returned += ticker_returned
+                total_fees_paid += ticker_fees
                 if ticker_pnl > 0:
                     wins += 1
                 elif ticker_pnl < 0:
                     losses += 1
-            total_pnl = total_returned - total_invested
+            total_pnl = total_returned - total_invested - total_fees_paid
 
             # Today settlements (same double-count guard as above)
             today_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
@@ -841,7 +851,9 @@ class TradeIntelligence:
                         t_returned = p_rev
                     else:
                         t_returned = revenue
-                    t_pnl = t_returned - t_cost
+                    t_fees = int(ticker_flows.get(sticker, {}).get("total_fees", 0) or 0)
+                    t_fees += int(settle_fees.get(sticker, 0) or 0)
+                    t_pnl = t_returned - t_cost - t_fees
                     today_pnl += t_pnl
                     if t_pnl > 0:
                         today_wins += 1
@@ -892,6 +904,7 @@ class TradeIntelligence:
             self.pnl_data = {
                 "total_invested_cents": total_invested,
                 "total_returned_cents": total_returned,
+                "total_fees_cents": total_fees_paid,
                 "total_profit_cents": total_pnl,
                 "wins": wins, "losses": losses, "trades": [],
                 "today_wins": today_wins, "today_losses": today_losses,
@@ -1072,6 +1085,8 @@ class TradeIntelligence:
             # yes_price/no_price may be strings ("5") or ints (5)
             f["yes_price"] = _to_int(f.get("yes_price"))
             f["no_price"] = _to_int(f.get("no_price"))
+
+        f["fee_cost_cents"] = _dollars_to_cents(f.get("fee_cost"))
 
     # =====================================================
     # METAR OBSERVATION API (primary, batch all stations)

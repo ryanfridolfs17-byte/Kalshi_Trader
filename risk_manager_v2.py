@@ -38,6 +38,9 @@ class RiskManager:
             "total_exposure_cents": 0,
             "win_amounts": [],
             "loss_amounts": [],
+            "observation_mode": False,
+            "observation_reason": "",
+            "ticker_entry_dates": {},
         }
         for key, value in defaults.items():
             if key not in self.state:
@@ -91,6 +94,10 @@ class RiskManager:
 
         self._check_daily_reset()
         self._refresh_exposure()
+
+        if self.state.get("observation_mode"):
+            reason = self.state.get("observation_reason", "Observation mode active")
+            return False, reason
 
         if self.state.get("kill_switch_until"):
             until_str = self.state["kill_switch_until"]
@@ -171,6 +178,11 @@ class RiskManager:
         existing_sides = self._ticker_sides(ticker)
         if existing_sides and side not in existing_sides:
             return False, "Opposite-side exposure already exists for %s" % ticker
+
+        today_et = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        last_entry_date = self.state.get("ticker_entry_dates", {}).get(ticker)
+        if last_entry_date == today_et:
+            return False, "No re-entry allowed for %s on %s" % (ticker, today_et)
 
         raw_balance = self._get_balance_cents()
         # Apply liquidity reserve — keep 20% untouchable for fees/margin
@@ -350,6 +362,10 @@ class RiskManager:
             "is_confirmed": order_info.get("is_confirmed", False),
             "is_arb": order_info.get("is_arb", False),
         }
+        ticker = order_info.get("ticker", "")
+        if ticker:
+            today_et = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+            self.state.setdefault("ticker_entry_dates", {})[ticker] = today_et
         self._refresh_exposure()
         self._save_state()
 
@@ -400,7 +416,18 @@ class RiskManager:
             "kill_switch_until": self.state.get("kill_switch_until"),
             "trade_count_today": self.state["trade_count_today"],
             "pl_ratio": self.get_pl_ratio(),
+            "observation_mode": self.state.get("observation_mode", False),
+            "observation_reason": self.state.get("observation_reason", ""),
         }
+
+    def set_observation_mode(self, enabled=True, reason=""):
+        """Toggle fail-safe observation mode."""
+        self.state["observation_mode"] = bool(enabled)
+        self.state["observation_reason"] = reason if enabled else ""
+        self._save_state()
+
+    def is_observation_mode(self):
+        return bool(self.state.get("observation_mode", False))
 
     def get_pl_ratio(self):
         """Compute rolling P/L ratio (avg win / avg loss). Target > 2.0.
@@ -627,6 +654,10 @@ class RiskManager:
             self.state["daily_pnl_cents"] = 0
             self.state["trade_count_today"] = 0
             self.state["consecutive_losses"] = 0  # Fresh day, fresh counter
+            self.state["ticker_entry_dates"] = {
+                ticker: dt for ticker, dt in self.state.get("ticker_entry_dates", {}).items()
+                if dt == today
+            }
             self._save_state()
 
     def _load_state(self):

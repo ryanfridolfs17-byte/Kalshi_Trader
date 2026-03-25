@@ -180,6 +180,16 @@ def main(shutdown_event=None):
     intel = TradeIntelligence(kalshi_client=client, weather_engine=strategy.weather)
     maker = MakerStrategy(kalshi_client=client, risk_manager=risk)
 
+    auto_obs_reason = ""
+    if getattr(config, "AUTO_OBSERVATION_MODE", False):
+        auto_obs_reason = getattr(config, "AUTO_OBSERVATION_REASON", "Auto observation mode enabled")
+    if config.ENVIRONMENT == "production" and not config.DASHBOARD_TOKEN:
+        extra = "Production dashboard token missing."
+        auto_obs_reason = (auto_obs_reason + " " + extra).strip() if auto_obs_reason else extra
+    if auto_obs_reason:
+        risk.set_observation_mode(True, auto_obs_reason)
+        print("  [SAFETY] Observation mode enabled: %s" % auto_obs_reason)
+
     # Pass client to dashboard if running
     try:
         import dashboard
@@ -256,6 +266,11 @@ def main(shutdown_event=None):
                 _reconcile_positions(client, risk)
             except Exception as e:
                 print("  [BOT] Position reconciliation error: %s" % e)
+
+            if risk.is_observation_mode():
+                cancelled = maker.cancel_open_entry_orders()
+                if cancelled:
+                    print("  [SAFETY] Observation mode canceled %d open entry order(s)" % cancelled)
 
             # --- STEP 2: Check resting order fills ---
             filled = maker.check_fills()
@@ -393,6 +408,30 @@ def main(shutdown_event=None):
             # --- STEP 7: Sort by edge descending, execute best first ---
             buy_signals.sort(key=lambda s: s.get("edge", 0), reverse=True)
             print("  [BOT] Found %d actionable signals" % len(buy_signals))
+
+            if risk.is_observation_mode():
+                print("  [SAFETY] Observation mode active - scanning only, no new entries")
+                _write_bot_status(cycle, risk, intel, maker,
+                                len(buy_signals), 0, next_scan_seconds=scan_interval if 'scan_interval' in locals() else config.SCAN_INTERVAL)
+                _save_scan_log(weather_markets, buy_signals, 0,
+                              skip_counts=_skip_counts, null_count=_null_count,
+                              evaluated_count=len(all_evaluated),
+                              weather_error=strategy.weather.last_api_error)
+                try:
+                    reviewer.check_and_run()
+                except Exception as e:
+                    print("  [BOT] Reviewer error: %s" % e)
+                interval = config.SCAN_INTERVAL
+                if config.PEAK_SCAN_START_ET <= hour_et <= config.PEAK_SCAN_END_ET:
+                    interval = config.PEAK_SCAN_INTERVAL
+                _sleep = max(10, interval - (time.time() - cycle_start))
+                if shutdown_event and shutdown_event.is_set():
+                    break
+                if shutdown_event:
+                    shutdown_event.wait(_sleep)
+                else:
+                    time.sleep(_sleep)
+                continue
 
             trades_this_cycle = 0
             max_per_cycle = 3  # Prevent concentrated losses (data: 6 trades in 22min, all lost)
@@ -828,6 +867,8 @@ def _save_trade_log(fill_info):
             "city_code": fill_info.get("city_code", ""),
             "side": fill_info.get("side", ""),
             "price_cents": fill_info.get("price_cents", 0),
+            "limit_price_cents": fill_info.get("limit_price_cents", fill_info.get("price_cents", 0)),
+            "execution_edge_cents": fill_info.get("execution_edge_cents", 0),
             "contracts": fill_info.get("contracts", 1),
             "cost_cents": fill_info.get("cost_cents", 0),
             "edge": fill_info.get("edge", 0),
@@ -856,8 +897,17 @@ def _write_bot_status(cycle, risk, intel, maker, signals_count, trades_count, ne
         # Use risk manager's cached balance (60s cache, avoids redundant API call)
         balance = risk._get_balance_cents()
         account_pnl = balance - config.TOTAL_DEPOSITS_CENTS
+        runtime_fingerprint = {
+            "bot_version": getattr(config, "BOT_VERSION", "4.0"),
+            "allow_yes_side_trades": bool(getattr(config, "ALLOW_YES_SIDE_TRADES", False)),
+            "allow_strong_verdicts": bool(getattr(config, "ALLOW_STRONG_VERDICTS", False)),
+            "no_side_max_price_cents": getattr(config, "NO_SIDE_MAX_PRICE_CENTS", None),
+            "longshot_floor_cents": getattr(config, "LONGSHOT_FLOOR_CENTS", None),
+            "railway_git_commit_sha": os.environ.get("RAILWAY_GIT_COMMIT_SHA", ""),
+            "source_version": os.environ.get("SOURCE_VERSION", ""),
+        }
         status = {
-            "version": "4.0",
+            "version": runtime_fingerprint["bot_version"],
             "cycle": cycle,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "environment": config.ENVIRONMENT,
@@ -869,10 +919,13 @@ def _write_bot_status(cycle, risk, intel, maker, signals_count, trades_count, ne
             "total_exposure_cents": rs.get("total_exposure_cents", 0),
             "consecutive_losses": rs.get("consecutive_losses", 0),
             "kill_switch_until": rs.get("kill_switch_until"),
+            "observation_mode": rs.get("observation_mode", False),
+            "observation_reason": rs.get("observation_reason", ""),
             "open_orders": maker.get_open_order_count(),
             "signals_found": signals_count,
             "trades_placed": trades_count,
             "next_scan": (datetime.now(timezone.utc) + timedelta(seconds=next_scan_seconds)).isoformat(),
+            "runtime_fingerprint": runtime_fingerprint,
         }
         config.atomic_json_save(config.BOT_STATUS_FILE, status)
     except Exception:

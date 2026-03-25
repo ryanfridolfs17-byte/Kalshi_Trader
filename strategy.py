@@ -238,7 +238,7 @@ class Strategy:
         # Block ALL YES-side trades. Data: YES 1W/17L (-$23), NO 2W/1L (+$4).
         # Favourite-longshot bias (Whelan 2025): cheap YES contracts lose more than
         # price implies. Only profitable path is NO-side + CASE 1 confirmed.
-        if side == "yes":
+        if side == "yes" and not getattr(config, "ALLOW_YES_SIDE_TRADES", False):
             return _side_skip("yes_side_blocked")
 
         # Direction sanity check: forecast mean must not strongly contradict bet.
@@ -329,7 +329,7 @@ class Strategy:
 
         # Block STRONG verdict: 2W/13L (-$3.42). Ensemble overconfidence + NWS
         # agreement doesn't overcome the favourite-longshot bias.
-        if verdict == "STRONG":
+        if verdict == "STRONG" and not getattr(config, "ALLOW_STRONG_VERDICTS", False):
             return _side_skip("strong_verdict_blocked",
                               confirmation_verdict="STRONG")
 

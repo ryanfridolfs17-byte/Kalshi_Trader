@@ -35,7 +35,7 @@ class KalshiClient:
 
     def _load_private_key(self):
         """Load RSA private key from file."""
-        if config.API_KEY_ID == "YOUR_API_KEY_ID_HERE":
+        if not config.API_KEY_ID or config.API_KEY_ID == "YOUR_API_KEY_ID_HERE":
             print("  [API] WARNING: API key not configured - will use public endpoints only")
             return
 
@@ -76,7 +76,7 @@ class KalshiClient:
 
     def _sign_request(self, method, path):
         """Create RSA-PSS signature for an authenticated request."""
-        if not self.private_key:
+        if not self.private_key or not self.api_key_id:
             return {}
 
         from cryptography.hazmat.primitives import hashes
