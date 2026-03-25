@@ -222,6 +222,7 @@ class Strategy:
         local_date = local_now.strftime("%Y-%m-%d")
         local_hour = local_now.hour
         is_next_day = target_date > local_date
+        is_threshold_market = (temp_high == 200)
 
         # Helper: side-aware skip fields (available after side selection)
         def _side_skip(reason, **extra):
@@ -234,6 +235,12 @@ class Strategy:
         # Block same-day trades before 6 AM local -- overnight forecasts are stale
         if not is_next_day and local_hour < 6:
             return _side_skip("before_6am_local")
+
+        if is_next_day and not getattr(config, "ALLOW_NEXT_DAY_DIRECTIONAL_TRADES", False):
+            return _side_skip("next_day_directional_blocked")
+
+        if is_threshold_market and not getattr(config, "ALLOW_THRESHOLD_DIRECTIONAL_TRADES", False):
+            return _side_skip("threshold_directional_blocked")
 
         # Block ALL YES-side trades. Data: YES 1W/17L (-$23), NO 2W/1L (+$4).
         # Favourite-longshot bias (Whelan 2025): cheap YES contracts lose more than

@@ -269,6 +269,8 @@ BOT_VERSION = os.environ.get("BOT_VERSION", "4.1-fill-audit")
 # Explicit production kill switches for historically losing paths.
 ALLOW_YES_SIDE_TRADES = os.environ.get("ALLOW_YES_SIDE_TRADES", "false").lower() == "true"
 ALLOW_STRONG_VERDICTS = os.environ.get("ALLOW_STRONG_VERDICTS", "false").lower() == "true"
+ALLOW_NEXT_DAY_DIRECTIONAL_TRADES = os.environ.get("ALLOW_NEXT_DAY_DIRECTIONAL_TRADES", "false").lower() == "true"
+ALLOW_THRESHOLD_DIRECTIONAL_TRADES = os.environ.get("ALLOW_THRESHOLD_DIRECTIONAL_TRADES", "false").lower() == "true"
 AUTO_OBSERVATION_MODE = os.environ.get(
     "AUTO_OBSERVATION_MODE",
     "true" if ENVIRONMENT == "production" else "false"
