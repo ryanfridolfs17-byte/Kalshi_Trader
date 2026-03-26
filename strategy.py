@@ -122,6 +122,17 @@ class Strategy:
         target_date = parsed.get("target_date")
         if target_date is None:
             target_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        market_context = {
+            "market_title": market.get("title", ""),
+            "market_subtitle": market.get("subtitle", ""),
+            "event_ticker": market.get("event_ticker", ""),
+            "strike_type": market.get("strike_type", ""),
+            "floor_strike": market.get("floor_strike"),
+            "cap_strike": market.get("cap_strike"),
+            "temp_low": temp_low,
+            "temp_high": temp_high,
+            "todays_high_snapshot": todays_high,
+        }
 
         # Step 2: Check confirmed outcome (needs todays_high)
         if todays_high is not None:
@@ -130,6 +141,7 @@ class Strategy:
                 ref_price, todays_high
             )
             if confirmed:
+                confirmed.update(market_context)
                 return confirmed
 
         # Dead market check
@@ -193,6 +205,9 @@ class Strategy:
             our_prob=round(our_prob, 4),
             market_prob=round(yes_market_prob, 4),
             strategy="S1-Weather",
+            yes_price_cents=yes_price,
+            no_price_cents=no_price,
+            **market_context,
         )
 
         if yes_edge <= 0 and no_edge <= 0:
@@ -1084,6 +1099,17 @@ class Strategy:
             "predicted_high": None,
             "model_spread": None,
             "std_dev": None,
+            "temp_low": None,
+            "temp_high": None,
+            "yes_price_cents": 0,
+            "no_price_cents": 0,
+            "todays_high_snapshot": None,
+            "market_title": "",
+            "market_subtitle": "",
+            "event_ticker": "",
+            "strike_type": "",
+            "floor_strike": None,
+            "cap_strike": None,
             "skip_reason": reason,
         }
         base.update(kwargs)

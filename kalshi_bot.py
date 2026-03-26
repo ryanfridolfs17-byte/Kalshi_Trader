@@ -25,6 +25,7 @@ from trade_intelligence import TradeIntelligence
 from maker_strategy import MakerStrategy
 from trade_reviewer import TradeReviewer
 from settlement_lock import SettlementLockPaper
+from observation_paper import ObservationPaperTrader
 
 
 def _reconcile_positions(client, risk):
@@ -181,6 +182,7 @@ def main(shutdown_event=None):
     intel = TradeIntelligence(kalshi_client=client, weather_engine=strategy.weather)
     maker = MakerStrategy(kalshi_client=client, risk_manager=risk)
     paper_locks = SettlementLockPaper(kalshi_client=client, weather_engine=strategy.weather)
+    paper_trader = ObservationPaperTrader(kalshi_client=client)
 
     auto_obs_reason = ""
     if getattr(config, "AUTO_OBSERVATION_MODE", False):
@@ -273,6 +275,10 @@ def main(shutdown_event=None):
                 paper_locks.reconcile_settlements()
             except Exception as e:
                 print("  [PAPER] Settlement reconciliation error: %s" % e)
+            try:
+                paper_trader.reconcile_settlements()
+            except Exception as e:
+                print("  [PAPER] Observation settlement reconciliation error: %s" % e)
 
             if risk.is_observation_mode():
                 cancelled = maker.cancel_open_entry_orders()
@@ -439,7 +445,35 @@ def main(shutdown_event=None):
             print("  [BOT] Found %d actionable signals" % len(buy_signals))
 
             if risk.is_observation_mode():
-                print("  [SAFETY] Observation mode active - scanning only, no new entries")
+                paper_summary = paper_trader.record_observation_cycle(
+                    buy_signals,
+                    cycle=cycle,
+                    balance_cents=balance,
+                    limit_price_fn=maker.calculate_limit_price,
+                    max_per_cycle=max_per_cycle if 'max_per_cycle' in locals() else 3,
+                )
+                paper_entries = paper_summary.get("executed", [])
+                blocked = paper_summary.get("blocked_reasons", {})
+                if paper_entries:
+                    print("  [PAPER] Observation mode recorded %d paper trade(s): %s" % (
+                        len(paper_entries),
+                        ", ".join(
+                            "%s %s@%dc x%d" % (
+                                row.get("ticker", "?"),
+                                row.get("side", "?").upper(),
+                                row.get("entry_price_cents", 0),
+                                row.get("contracts", 0),
+                            )
+                            for row in paper_entries[:3]
+                        )
+                    ))
+                if blocked:
+                    top_blocked = ", ".join(
+                        "%s=%d" % (reason, count)
+                        for reason, count in sorted(blocked.items(), key=lambda item: -item[1])[:5]
+                    )
+                    print("  [PAPER] Blocked paper entries: %s" % top_blocked)
+                print("  [SAFETY] Observation mode active - paper trading only, no live entries")
                 _write_bot_status(cycle, risk, intel, maker,
                                 len(buy_signals), 0, next_scan_seconds=scan_interval if 'scan_interval' in locals() else config.SCAN_INTERVAL)
                 _save_scan_log(weather_markets, buy_signals, 0,

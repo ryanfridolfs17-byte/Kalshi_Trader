@@ -263,6 +263,7 @@ SCAN_LOG_FILE = os.path.join(STATE_DIR, "scan_log.json")
 LEARNING_STATE_FILE = os.path.join(STATE_DIR, "learning_state.json")
 FILL_TRACKING_FILE = os.path.join(STATE_DIR, "fill_tracking.json")
 PAPER_LOCKS_FILE = os.path.join(STATE_DIR, "paper_locks.json")
+PAPER_TRADES_FILE = os.path.join(STATE_DIR, "paper_trades.json")
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 BOT_VERSION = os.environ.get("BOT_VERSION", "4.1-fill-audit")
