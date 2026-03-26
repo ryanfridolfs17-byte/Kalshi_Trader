@@ -290,6 +290,69 @@ class KalshiClient:
             result = self._normalize_market(result)
         return result
 
+    def get_historical_cutoff(self):
+        """Get the boundary between live and historical market data."""
+        return self._request("GET", "/historical/cutoff")
+
+    def get_historical_markets(self, limit=100, cursor=None, event_ticker=None, series_ticker=None):
+        """Get settled markets from the historical market store."""
+        params = [f"limit={limit}"]
+        if cursor:
+            params.append(f"cursor={cursor}")
+        if event_ticker:
+            params.append(f"event_ticker={event_ticker}")
+        if series_ticker:
+            params.append(f"series_ticker={series_ticker}")
+        query = "&".join(params)
+        result = self._request("GET", f"/historical/markets?{query}")
+        if result and "markets" in result:
+            result["markets"] = [self._normalize_market(m) for m in result["markets"]]
+        return result
+
+    def get_historical_market(self, ticker):
+        """Get a historical market by ticker."""
+        result = self._request("GET", f"/historical/markets/{ticker}")
+        if result and "market" in result:
+            result["market"] = self._normalize_market(result["market"])
+        elif result and "ticker" in result:
+            result = self._normalize_market(result)
+        return result
+
+    def get_market_candlesticks(self, ticker, start_ts, end_ts, period_interval=60,
+                                include_latest_before_start=False):
+        """Get recent/live candlesticks for one ticker via the batch endpoint."""
+        return self.get_market_candlesticks_batch(
+            [ticker],
+            start_ts=start_ts,
+            end_ts=end_ts,
+            period_interval=period_interval,
+            include_latest_before_start=include_latest_before_start,
+        )
+
+    def get_market_candlesticks_batch(self, market_tickers, start_ts, end_ts, period_interval=60,
+                                      include_latest_before_start=False):
+        """Get recent/live candlesticks for one or more tickers."""
+        if not market_tickers:
+            return {"markets": []}
+        joined = ",".join(market_tickers)
+        include_flag = "true" if include_latest_before_start else "false"
+        path = (
+            "/markets/candlesticks?"
+            f"market_tickers={joined}&start_ts={int(start_ts)}&end_ts={int(end_ts)}"
+            f"&period_interval={int(period_interval)}"
+            f"&include_latest_before_start={include_flag}"
+        )
+        return self._request("GET", path)
+
+    def get_historical_market_candlesticks(self, ticker, start_ts, end_ts, period_interval=60):
+        """Get older candlesticks from the historical market store."""
+        path = (
+            f"/historical/markets/{ticker}/candlesticks?"
+            f"start_ts={int(start_ts)}&end_ts={int(end_ts)}"
+            f"&period_interval={int(period_interval)}"
+        )
+        return self._request("GET", path)
+
     def get_orderbook(self, ticker):
         """Get the order book (all buy/sell offers) for a market."""
         return self._request("GET", f"/markets/{ticker}/orderbook")

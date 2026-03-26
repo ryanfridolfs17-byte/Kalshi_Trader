@@ -60,7 +60,18 @@ class SettlementLockPaper:
         retro.setdefault("summary", {})
 
     def evaluate_market(self, market, todays_high=None):
-        """Return a paper-only hard-lock candidate dict or None."""
+        """Return a same-day paper-only hard-lock candidate dict or None."""
+        return self.evaluate_market_snapshot(
+            market,
+            todays_high=todays_high,
+            require_same_day=True,
+        )
+
+    def evaluate_market_snapshot(self, market, todays_high=None, require_same_day=True, observed_at=None):
+        """Evaluate a market snapshot for a settlement-lock candidate.
+
+        Set *require_same_day* to False for historical replay.
+        """
         if todays_high is None:
             return None
 
@@ -77,9 +88,10 @@ class SettlementLockPaper:
 
         city_info = CITIES.get(city_code, {})
         tz_name = city_info.get("timezone", "America/New_York")
-        local_now = datetime.now(ZoneInfo(tz_name))
-        if target_date != local_now.strftime("%Y-%m-%d"):
-            return None
+        if require_same_day:
+            local_now = observed_at.astimezone(ZoneInfo(tz_name)) if observed_at else datetime.now(ZoneInfo(tz_name))
+            if target_date != local_now.strftime("%Y-%m-%d"):
+                return None
 
         ticker = market.get("ticker", "")
         hard_buffer = int(getattr(config, "ROUNDING_BUFFER_HARD_F", 1) or 1)
@@ -131,7 +143,7 @@ class SettlementLockPaper:
             "observed_high_f": float(todays_high),
             "temp_low": temp_low,
             "temp_high": temp_high,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": (observed_at or datetime.now(timezone.utc)).isoformat(),
             "reason": reason,
         }
 
