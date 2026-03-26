@@ -32,6 +32,7 @@ STATE_FILES = {
     "maker": config.MAKER_ORDERS_FILE,
     "learning": config.LEARNING_STATE_FILE,
     "paper_locks": config.PAPER_LOCKS_FILE,
+    "paper_trades": config.PAPER_TRADES_FILE,
 }
 
 DASHBOARD_PORT = int(os.environ.get("PORT", 8050))
@@ -412,6 +413,93 @@ def _build_health_response(authenticated=False):
     return response
 
 
+def _build_observation_response():
+    """Public-safe observation summary for paper mode."""
+    now = datetime.now(timezone.utc)
+    bot_status = _read_json(STATE_FILES["bot_status"], default={})
+    risk_state = _normalize_risk_state(_read_json(STATE_FILES["risk"], default={}))
+    scan_log = _read_json(STATE_FILES["scan_log"], default={})
+    paper_trades = _read_json(STATE_FILES["paper_trades"], default={})
+    paper_locks = _read_json(STATE_FILES["paper_locks"], default={})
+    if not isinstance(scan_log, dict):
+        scan_log = {}
+    if not isinstance(paper_trades, dict):
+        paper_trades = {}
+    if not isinstance(paper_locks, dict):
+        paper_locks = {}
+
+    def _age_seconds(ts):
+        if not ts:
+            return None
+        try:
+            dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return round((now - dt).total_seconds())
+        except Exception:
+            return None
+
+    trade_summary = paper_trades.get("summary", {})
+    lock_summary = paper_locks.get("summary", {})
+    lock_active = list((paper_locks.get("active", {}) or {}).values())[:5]
+    paper_active = list((paper_trades.get("active", {}) or {}).values())[:5]
+    cycle_log = list((paper_trades.get("cycle_log", []) or []))[-5:]
+
+    return {
+        "status": "observation" if (bot_status.get("observation_mode") or risk_state.get("observation_mode")) else "inactive",
+        "timestamp": now.isoformat(),
+        "last_scan": bot_status.get("timestamp"),
+        "last_scan_age_seconds": _age_seconds(bot_status.get("timestamp")),
+        "observation_reason": bot_status.get("observation_reason") or risk_state.get("observation_reason", ""),
+        "scan": {
+            "markets_scanned": scan_log.get("markets_scanned", 0),
+            "signals_found": scan_log.get("signals_found", 0),
+            "trades_placed": scan_log.get("trades_placed", 0),
+            "top_signals": scan_log.get("top_signals", []),
+            "diag_skips": scan_log.get("diag_skips", {}),
+            "weather_api_error": scan_log.get("weather_api_error"),
+        },
+        "paper_trades": {
+            "summary": trade_summary,
+            "active": [
+                {
+                    "ticker": row.get("ticker", ""),
+                    "side": row.get("side", ""),
+                    "contracts": row.get("contracts", 0),
+                    "entry_price_cents": row.get("entry_price_cents", 0),
+                    "strategy": row.get("strategy", ""),
+                    "target_date": row.get("target_date", ""),
+                }
+                for row in paper_active
+            ],
+            "recent_cycles": cycle_log,
+            "recent_history": [
+                {
+                    "ticker": row.get("ticker", ""),
+                    "side": row.get("side", ""),
+                    "status": row.get("status", ""),
+                    "net_profit_cents": row.get("net_profit_cents", 0),
+                    "resolved_at": row.get("resolved_at", ""),
+                }
+                for row in list((paper_trades.get("history", []) or []))[-5:]
+            ],
+        },
+        "paper_locks": {
+            "summary": lock_summary,
+            "active": [
+                {
+                    "ticker": row.get("ticker", ""),
+                    "lock_side": row.get("lock_side", ""),
+                    "price_cents": row.get("price_cents", 0),
+                    "payout_cents": row.get("payout_cents", 0),
+                    "target_date": row.get("target_date", ""),
+                }
+                for row in lock_active
+            ],
+        },
+    }
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     """Handle HTTP requests for the dashboard."""
 
@@ -470,6 +558,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # Authenticated: full operational details.
             is_authed = self._is_authenticated()
             self._send_json(_build_health_response(authenticated=is_authed))
+
+        elif path == "/api/observation":
+            self._send_json(_build_observation_response())
 
         elif path == "/api/state":
             if not self._check_auth():
