@@ -364,8 +364,22 @@ def main(shutdown_event=None):
                 paper_lock = paper_locks.evaluate_market(market, todays_high=todays_high)
                 if paper_lock:
                     paper_lock_signals.append(paper_lock)
+                settlement_signal = None
+                if getattr(config, "ENABLE_SETTLEMENT_LOCK_STRATEGY", False) and paper_lock:
+                    settlement_signal = paper_locks.build_trade_signal(
+                        paper_lock,
+                        market,
+                        balance_cents=balance,
+                    )
+                    if settlement_signal and (
+                        risk.is_observation_mode()
+                        or getattr(config, "ALLOW_LIVE_SETTLEMENT_LOCK_TRADES", False)
+                    ):
+                        buy_signals.append(settlement_signal)
+                    elif settlement_signal and not risk.is_observation_mode():
+                        _skip_counts["settlement_lock_live_disabled"] = _skip_counts.get("settlement_lock_live_disabled", 0) + 1
                 signal = strategy.evaluate_market(market, todays_high=todays_high)
-                if signal and signal.get("signal") == "buy":
+                if settlement_signal is None and signal and signal.get("signal") == "buy":
                     buy_signals.append(signal)
                 # Capture all signals with forecast data for learning
                 if signal and signal.get("city_code") and signal.get("predicted_high") is not None:
@@ -449,7 +463,7 @@ def main(shutdown_event=None):
                     buy_signals,
                     cycle=cycle,
                     balance_cents=balance,
-                    limit_price_fn=maker.calculate_limit_price,
+                    limit_price_fn=lambda s: int(s.get("limit_price", 0) or 0) or maker.calculate_limit_price(s),
                     max_per_cycle=max_per_cycle if 'max_per_cycle' in locals() else 3,
                 )
                 paper_entries = paper_summary.get("executed", [])
@@ -538,7 +552,7 @@ def main(shutdown_event=None):
                 signal["suggested_contracts"] = contracts  # Update for trade log
 
                 # Calculate maker limit price
-                limit_price = maker.calculate_limit_price(signal)
+                limit_price = int(signal.get("limit_price", 0) or 0) or maker.calculate_limit_price(signal)
                 if not limit_price or limit_price <= 0:
                     print("  [MAKER] %s: invalid limit price %s — skipping" % (ticker, limit_price))
                     continue
@@ -966,6 +980,11 @@ def _write_bot_status(cycle, risk, intel, maker, signals_count, trades_count, ne
             "allow_strong_verdicts": bool(getattr(config, "ALLOW_STRONG_VERDICTS", False)),
             "allow_next_day_directional_trades": bool(getattr(config, "ALLOW_NEXT_DAY_DIRECTIONAL_TRADES", False)),
             "allow_threshold_directional_trades": bool(getattr(config, "ALLOW_THRESHOLD_DIRECTIONAL_TRADES", False)),
+            "enable_settlement_lock_strategy": bool(getattr(config, "ENABLE_SETTLEMENT_LOCK_STRATEGY", False)),
+            "allow_live_settlement_lock_trades": bool(getattr(config, "ALLOW_LIVE_SETTLEMENT_LOCK_TRADES", False)),
+            "allow_settlement_lock_yes": bool(getattr(config, "ALLOW_SETTLEMENT_LOCK_YES", False)),
+            "settlement_lock_min_local_hour": getattr(config, "SETTLEMENT_LOCK_MIN_LOCAL_HOUR", None),
+            "settlement_lock_max_price_cents": getattr(config, "SETTLEMENT_LOCK_MAX_PRICE_CENTS", None),
             "no_side_max_price_cents": getattr(config, "NO_SIDE_MAX_PRICE_CENTS", None),
             "longshot_floor_cents": getattr(config, "LONGSHOT_FLOOR_CENTS", None),
             "railway_git_commit_sha": os.environ.get("RAILWAY_GIT_COMMIT_SHA", ""),

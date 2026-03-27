@@ -451,6 +451,7 @@ def _build_observation_response():
         "last_scan": bot_status.get("timestamp"),
         "last_scan_age_seconds": _age_seconds(bot_status.get("timestamp")),
         "observation_reason": bot_status.get("observation_reason") or risk_state.get("observation_reason", ""),
+        "runtime_fingerprint": bot_status.get("runtime_fingerprint", {}),
         "scan": {
             "markets_scanned": scan_log.get("markets_scanned", 0),
             "signals_found": scan_log.get("signals_found", 0),

@@ -282,6 +282,12 @@ AUTO_OBSERVATION_REASON = os.environ.get(
     "Safety lock enabled pending manual review/deploy verification."
 )
 SETTLEMENT_LOCK_MIN_PAYOUT_CENTS = int(os.environ.get("SETTLEMENT_LOCK_MIN_PAYOUT_CENTS", "8"))
+ENABLE_SETTLEMENT_LOCK_STRATEGY = os.environ.get("ENABLE_SETTLEMENT_LOCK_STRATEGY", "true").lower() == "true"
+ALLOW_LIVE_SETTLEMENT_LOCK_TRADES = os.environ.get("ALLOW_LIVE_SETTLEMENT_LOCK_TRADES", "false").lower() == "true"
+ALLOW_SETTLEMENT_LOCK_YES = os.environ.get("ALLOW_SETTLEMENT_LOCK_YES", "false").lower() == "true"
+SETTLEMENT_LOCK_MIN_LOCAL_HOUR = int(os.environ.get("SETTLEMENT_LOCK_MIN_LOCAL_HOUR", "10"))
+SETTLEMENT_LOCK_MAX_PRICE_CENTS = int(os.environ.get("SETTLEMENT_LOCK_MAX_PRICE_CENTS", "80"))
+SETTLEMENT_LOCK_MAX_POSITION_PCT = float(os.environ.get("SETTLEMENT_LOCK_MAX_POSITION_PCT", "0.03"))
 
 # === API URLS ===
 DEMO_API_URL = "https://demo-api.kalshi.co/trade-api/v2"
