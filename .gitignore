@@ -4,6 +4,10 @@ __pycache__/
 .env
 .venv/
 venv/
+.claude/
+.codex_state_test/
+tmp*.tmp
+kalshi bot v2/
 
 # Bot state files (regenerated at runtime)
 bot_status.json
@@ -16,3 +20,9 @@ backtest_results.json
 model_accuracy.json
 bias_history.json
 diagnostic_output.json
+fill_tracking.json
+maker_orders.json
+paper_locks.json
+paper_trades.json
+scan_log.json
+settlement_lock_replay.json
