@@ -60,7 +60,93 @@ class SettlementLockPaper:
         retro.setdefault("summary", {})
 
     def evaluate_market(self, market, todays_high=None):
-        """Return a paper-only hard-lock candidate dict or None."""
+        """Return a same-day paper-only hard-lock candidate dict or None."""
+        return self.evaluate_market_snapshot(
+            market,
+            todays_high=todays_high,
+            require_same_day=True,
+        )
+
+    def build_trade_signal(self, candidate, market, balance_cents):
+        """Turn a hard-lock candidate into a native trade signal or None."""
+        if not candidate:
+            return None
+
+        side = candidate.get("lock_side", "")
+        if side == "yes" and not getattr(config, "ALLOW_SETTLEMENT_LOCK_YES", False):
+            return None
+
+        price_cents = int(candidate.get("price_cents", 0) or 0)
+        payout_cents = int(candidate.get("payout_cents", max(0, 100 - price_cents)) or 0)
+        if price_cents <= 0 or payout_cents <= 0:
+            return None
+        if price_cents > int(getattr(config, "SETTLEMENT_LOCK_MAX_PRICE_CENTS", 80) or 80):
+            return None
+
+        city_code = candidate.get("city_code", "")
+        target_date = candidate.get("target_date", "")
+        city_info = CITIES.get(city_code, {})
+        tz_name = city_info.get("timezone", "America/New_York")
+        local_now = datetime.now(ZoneInfo(tz_name))
+        if target_date != local_now.strftime("%Y-%m-%d"):
+            return None
+        if local_now.hour < int(getattr(config, "SETTLEMENT_LOCK_MIN_LOCAL_HOUR", 10) or 10):
+            return None
+
+        win_prob = self._estimate_win_probability(candidate)
+        side_market_prob = price_cents / 100.0
+        edge = max(0.0, win_prob - side_market_prob)
+        fee_adjusted_edge = self._calculate_fee_adjusted_edge(win_prob, side_market_prob)
+        if fee_adjusted_edge <= 0:
+            return None
+
+        suggested_contracts = self._size_trade(candidate, balance_cents, win_prob)
+        if suggested_contracts <= 0:
+            return None
+
+        temp_low = candidate.get("temp_low")
+        temp_high = candidate.get("temp_high")
+        our_prob = round(win_prob if side == "yes" else (1.0 - win_prob), 4)
+        yes_market_prob = round(side_market_prob if side == "yes" else (1.0 - side_market_prob), 4)
+
+        return {
+            "signal": "buy",
+            "ticker": candidate.get("ticker", ""),
+            "side": side,
+            "edge": round(edge, 4),
+            "fee_adjusted_edge": round(fee_adjusted_edge, 4),
+            "our_prob": our_prob,
+            "market_prob": yes_market_prob,
+            "price_cents": price_cents,
+            "limit_price": price_cents,
+            "suggested_contracts": suggested_contracts,
+            "reasoning": (
+                f"[S3] {city_code}: {candidate.get('reason', '')}. "
+                f"{side.upper()} @ {price_cents}c with observed high "
+                f"{candidate.get('observed_high_f', '?')}F."
+            ),
+            "strategy": "S3-SettlementLock",
+            "confirmation_verdict": "SETTLEMENT_LOCK",
+            "confirmation_multiplier": 1.0,
+            "city_code": city_code,
+            "target_date": target_date,
+            "close_time": market.get("close_time"),
+            "predicted_high": None,
+            "model_spread": None,
+            "std_dev": None,
+            "bet_description": self._describe_bet(side, temp_low, temp_high),
+            "temp_low": temp_low,
+            "temp_high": temp_high,
+            "settlement_lock": True,
+            "lock_type": candidate.get("lock_type", ""),
+            "observed_high_f": candidate.get("observed_high_f"),
+        }
+
+    def evaluate_market_snapshot(self, market, todays_high=None, require_same_day=True, observed_at=None):
+        """Evaluate a market snapshot for a settlement-lock candidate.
+
+        Set *require_same_day* to False for historical replay.
+        """
         if todays_high is None:
             return None
 
@@ -77,9 +163,10 @@ class SettlementLockPaper:
 
         city_info = CITIES.get(city_code, {})
         tz_name = city_info.get("timezone", "America/New_York")
-        local_now = datetime.now(ZoneInfo(tz_name))
-        if target_date != local_now.strftime("%Y-%m-%d"):
-            return None
+        if require_same_day:
+            local_now = observed_at.astimezone(ZoneInfo(tz_name)) if observed_at else datetime.now(ZoneInfo(tz_name))
+            if target_date != local_now.strftime("%Y-%m-%d"):
+                return None
 
         ticker = market.get("ticker", "")
         hard_buffer = int(getattr(config, "ROUNDING_BUFFER_HARD_F", 1) or 1)
@@ -131,7 +218,7 @@ class SettlementLockPaper:
             "observed_high_f": float(todays_high),
             "temp_low": temp_low,
             "temp_high": temp_high,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": (observed_at or datetime.now(timezone.utc)).isoformat(),
             "reason": reason,
         }
 
@@ -434,6 +521,56 @@ class SettlementLockPaper:
             "best_profit_cents": sum(h.get("best_profit_cents", 0) for h in history),
             "last_reconciled_at": self.state.get("last_reconciled_at", ""),
         }
+
+    @staticmethod
+    def _describe_bet(side, temp_low, temp_high):
+        if temp_low == -100:
+            return f"{side.upper()}: temp {'<=' if side == 'yes' else '>'} {temp_high}F"
+        if temp_high == 200:
+            return f"{side.upper()}: temp {'>=' if side == 'yes' else '<'} {temp_low}F"
+        return f"{side.upper()}: temp {'in' if side == 'yes' else 'NOT in'} [{temp_low},{temp_high}]F"
+
+    @staticmethod
+    def _calculate_fee_adjusted_edge(win_prob, market_prob):
+        raw_edge = max(0.0, win_prob - market_prob)
+        fee_frac = config.KALSHI_FEE_PCT * min(market_prob, 1.0 - market_prob)
+        return max(0.0, raw_edge - fee_frac)
+
+    def _estimate_win_probability(self, candidate):
+        hard_buffer = int(getattr(config, "ROUNDING_BUFFER_HARD_F", 1) or 1)
+        observed = float(candidate.get("observed_high_f", 0) or 0)
+        if candidate.get("lock_side") == "yes":
+            threshold = float(candidate.get("temp_low", 0) or 0) + hard_buffer
+        else:
+            threshold = float(candidate.get("temp_high", 0) or 0) + hard_buffer
+        breach_f = max(0.0, observed - threshold)
+        return min(0.995, 0.985 + 0.003 * breach_f)
+
+    def _size_trade(self, candidate, balance_cents, win_prob):
+        price_cents = int(candidate.get("price_cents", 0) or 0)
+        payout_cents = int(candidate.get("payout_cents", 0) or 0)
+        if price_cents <= 0:
+            return 0
+        usable_balance = int(balance_cents * (1.0 - config.LIQUIDITY_RESERVE_PCT))
+        max_position = int(usable_balance * float(getattr(config, "SETTLEMENT_LOCK_MAX_POSITION_PCT", 0.03) or 0.03))
+        if max_position <= 0:
+            return 0
+        max_by_balance = max(1, min(config.MAX_CONTRACTS_PER_TICKER, max_position // price_cents))
+
+        hard_buffer = int(getattr(config, "ROUNDING_BUFFER_HARD_F", 1) or 1)
+        observed = float(candidate.get("observed_high_f", 0) or 0)
+        if candidate.get("lock_side") == "yes":
+            threshold = float(candidate.get("temp_low", 0) or 0) + hard_buffer
+        else:
+            threshold = float(candidate.get("temp_high", 0) or 0) + hard_buffer
+        breach_f = max(0.0, observed - threshold)
+
+        desired = 1
+        if price_cents <= 60 and payout_cents >= 20 and breach_f >= 1.0 and win_prob >= 0.988:
+            desired = 2
+        if price_cents <= 45 and payout_cents >= 30 and breach_f >= 2.0 and win_prob >= 0.991:
+            desired = 3
+        return max(1, min(desired, max_by_balance))
 
     def _evaluate_retrospective_snapshot(
         self,
