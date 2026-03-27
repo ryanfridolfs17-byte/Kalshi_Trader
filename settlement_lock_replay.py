@@ -23,6 +23,7 @@ from settlement_lock import SettlementLockPaper
 from weather_engine import CITIES
 
 RESULTS_FILE = os.path.join(config.STATE_DIR, "settlement_lock_replay.json")
+REPLAY_TICK_SLIPPAGE_CENTS = 1
 
 
 def _iter_dates(start_date, end_date):
@@ -44,6 +45,24 @@ def _dollars_to_cents(value):
         return int(round(float(value) * 100))
     except (TypeError, ValueError):
         return 0
+
+
+def _apply_entry_friction(price_cents):
+    """Conservatively assume we pay one extra tick versus the quoted ask."""
+    price_cents = int(price_cents or 0)
+    if price_cents <= 0:
+        return 0
+    return min(99, price_cents + REPLAY_TICK_SLIPPAGE_CENTS)
+
+
+def _entry_fee_cents(price_cents, contracts=1):
+    fee_per_contract = config.KALSHI_FEE_PCT * min(price_cents, 100 - price_cents)
+    return int(round(fee_per_contract * contracts))
+
+
+def _net_profit_cents(side, result, price_cents, contracts=1):
+    gross = (100 - price_cents) * contracts if side == result else -price_cents * contracts
+    return gross - _entry_fee_cents(price_cents, contracts)
 
 
 def _normalize_live_candle(candle):
@@ -267,9 +286,18 @@ def replay_settlement_locks(start_date, end_date, city_codes=None, period_interv
                     candidate["observed_at_hour_local"] = observed_at.astimezone(ZoneInfo(city["timezone"])).strftime("%H:%M")
                     candidate["event_ticker"] = event_ticker
                     candidate["city_code"] = city_code
-                    entry_price = int(candidate.get("price_cents", 0) or 0)
-                    candidate["first_profit_cents"] = (
+                    quoted_price = int(candidate.get("price_cents", 0) or 0)
+                    entry_price = _apply_entry_friction(quoted_price)
+                    candidate["quoted_price_cents"] = quoted_price
+                    candidate["price_cents"] = entry_price
+                    candidate["entry_fee_cents"] = _entry_fee_cents(entry_price)
+                    candidate["first_profit_cents_gross"] = (
                         (100 - entry_price) if candidate.get("lock_side") == market_result else -entry_price
+                    )
+                    candidate["first_profit_cents"] = _net_profit_cents(
+                        candidate.get("lock_side"),
+                        market_result,
+                        entry_price,
                     )
                     if first_entry is None:
                         first_entry = dict(candidate)
@@ -278,9 +306,16 @@ def replay_settlement_locks(start_date, end_date, city_codes=None, period_interv
 
                 if first_entry:
                     row = dict(first_entry)
+                    row["best_quoted_price_cents"] = int(best_entry.get("quoted_price_cents", 0) or 0) if best_entry else int(first_entry.get("quoted_price_cents", 0) or 0)
                     row["best_price_cents"] = int(best_entry.get("price_cents", 0) or 0) if best_entry else int(first_entry.get("price_cents", 0) or 0)
-                    row["best_profit_cents"] = (
+                    row["best_entry_fee_cents"] = _entry_fee_cents(row["best_price_cents"])
+                    row["best_profit_cents_gross"] = (
                         (100 - row["best_price_cents"]) if row.get("lock_side") == market_result else -row["best_price_cents"]
+                    )
+                    row["best_profit_cents"] = _net_profit_cents(
+                        row.get("lock_side"),
+                        market_result,
+                        row["best_price_cents"],
                     )
                     city_trades.append(row)
 
@@ -295,6 +330,12 @@ def replay_settlement_locks(start_date, end_date, city_codes=None, period_interv
         "start_date": start_date,
         "end_date": end_date,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "methodology": (
+            "Replays settlement locks on quoted asks, then applies a 1-cent entry slippage "
+            "buffer and Kalshi entry fees. NO-side asks are inferred from the complementary "
+            "YES bid when needed, so these figures are still conservative estimates rather "
+            "than guaranteed tradeable fills."
+        ),
         "city_count": len(city_codes),
         "trade_count": len(all_trades),
         "cities_with_trades": dict(by_city.most_common()),
@@ -339,11 +380,11 @@ if __name__ == "__main__":
     print("======================")
     print("Range: %s -> %s" % (summary.get("start_date", ""), summary.get("end_date", "")))
     print("Trades: %d" % summary.get("trade_count", 0))
-    print("First-entry P&L: %+dc ($%+.2f)" % (
+    print("First-entry Estimated Net P&L: %+dc ($%+.2f)" % (
         summary.get("first_profit_cents", 0),
         summary.get("first_profit_cents", 0) / 100.0,
     ))
-    print("Best-seen P&L: %+dc ($%+.2f)" % (
+    print("Best-seen Estimated Net P&L: %+dc ($%+.2f)" % (
         summary.get("best_profit_cents", 0),
         summary.get("best_profit_cents", 0) / 100.0,
     ))

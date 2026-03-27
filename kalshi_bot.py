@@ -28,6 +28,59 @@ from settlement_lock import SettlementLockPaper
 from observation_paper import ObservationPaperTrader
 
 
+def _prepare_entry_signal(signal, maker):
+    """Annotate a signal with the actual execution style and risk price."""
+    prepared = dict(signal)
+    price_cents = int(prepared.get("price_cents", 0) or 0)
+    if price_cents <= 0:
+        return None
+
+    edge = prepared.get("edge", 0)
+    fee_adj_edge = prepared.get("fee_adjusted_edge", 0)
+    verdict = prepared.get("confirmation_verdict", "")
+    is_confirmed = verdict == "CONFIRMED_OUTCOME"
+    use_taker = (
+        (is_confirmed and edge > getattr(config, "TAKER_MODE_MIN_EDGE", 0.15)
+         and fee_adj_edge > 0.10)
+        or (verdict == "STRONG"
+            and fee_adj_edge > getattr(config, "STRONG_TAKER_MIN_FEE_ADJ_EDGE", 0.20))
+    )
+
+    prepared["execution_style"] = "taker" if use_taker else "maker"
+    prepared["risk_price_cents"] = price_cents
+    prepared["current_price_cents"] = price_cents
+
+    if use_taker:
+        prepared["limit_price"] = price_cents
+        return prepared
+
+    limit_price = int(prepared.get("limit_price", 0) or 0) or maker.calculate_limit_price(prepared)
+    if not limit_price or limit_price <= 0:
+        return None
+
+    prepared["limit_price"] = limit_price
+    prepared["risk_price_cents"] = limit_price
+    return prepared
+
+
+def _build_market_price_map(markets):
+    price_map = {}
+    for market in markets:
+        ticker = market.get("ticker", "")
+        if not ticker:
+            continue
+        yes_ask = int(market.get("yes_ask", 0) or market.get("last_price", 0) or 0)
+        no_ask = int(market.get("no_ask", 0) or 0)
+        if no_ask <= 0 and yes_ask > 0:
+            no_ask = max(0, 100 - yes_ask)
+        price_map[ticker] = {
+            "yes": yes_ask,
+            "no": no_ask,
+            "last": int(market.get("last_price", 0) or 0),
+        }
+    return price_map
+
+
 def _reconcile_positions(client, risk):
     """Sync risk_state positions with Kalshi's actual portfolio.
 
@@ -431,8 +484,34 @@ def main(shutdown_event=None):
             except Exception:
                 pass
 
+            max_per_cycle = 3  # Prevent concentrated losses (data: 6 trades in 22min, all lost)
+            market_price_map = _build_market_price_map(weather_markets)
+
             if not buy_signals:
                 print("  [BOT] No actionable signals this cycle")
+                if risk.is_observation_mode():
+                    paper_summary = paper_trader.record_observation_cycle(
+                        [],
+                        cycle=cycle,
+                        balance_cents=balance,
+                        market_prices=market_price_map,
+                        live_risk=risk,
+                        max_per_cycle=max_per_cycle,
+                    )
+                    filled_pending = paper_summary.get("filled_pending", [])
+                    if filled_pending:
+                        print("  [PAPER] Filled %d resting paper order(s): %s" % (
+                            len(filled_pending),
+                            ", ".join(
+                                "%s %s@%dc x%d" % (
+                                    row.get("ticker", "?"),
+                                    row.get("side", "?").upper(),
+                                    row.get("entry_price_cents", 0),
+                                    row.get("contracts", 0),
+                                )
+                                for row in filled_pending[:3]
+                            )
+                        ))
                 _write_bot_status(cycle, risk, intel, maker, 0, 0)
                 _save_scan_log(weather_markets, [], 0,
                                skip_counts=_skip_counts, null_count=_null_count,
@@ -456,6 +535,59 @@ def main(shutdown_event=None):
 
             # --- STEP 7: Sort by edge descending, execute best first ---
             buy_signals.sort(key=lambda s: s.get("edge", 0), reverse=True)
+            prepared_buy_signals = []
+            for signal in buy_signals:
+                prepared = _prepare_entry_signal(signal, maker)
+                if not prepared:
+                    print("  [MAKER] %s: invalid execution price - skipping" % signal.get("ticker", "?"))
+                    continue
+                prepared_buy_signals.append(prepared)
+            buy_signals = prepared_buy_signals
+            if not buy_signals:
+                print("  [BOT] Actionable signals were filtered by execution guards")
+                if risk.is_observation_mode():
+                    paper_summary = paper_trader.record_observation_cycle(
+                        [],
+                        cycle=cycle,
+                        balance_cents=balance,
+                        market_prices=market_price_map,
+                        live_risk=risk,
+                        max_per_cycle=max_per_cycle,
+                    )
+                    filled_pending = paper_summary.get("filled_pending", [])
+                    if filled_pending:
+                        print("  [PAPER] Filled %d resting paper order(s): %s" % (
+                            len(filled_pending),
+                            ", ".join(
+                                "%s %s@%dc x%d" % (
+                                    row.get("ticker", "?"),
+                                    row.get("side", "?").upper(),
+                                    row.get("entry_price_cents", 0),
+                                    row.get("contracts", 0),
+                                )
+                                for row in filled_pending[:3]
+                            )
+                        ))
+                _write_bot_status(cycle, risk, intel, maker, 0, 0)
+                _save_scan_log(weather_markets, [], 0,
+                               skip_counts=_skip_counts, null_count=_null_count,
+                               evaluated_count=len(all_evaluated),
+                               weather_error=strategy.weather.last_api_error)
+                interval = config.SCAN_INTERVAL
+                try:
+                    reviewer.check_and_run()
+                except Exception:
+                    pass
+                if config.PEAK_SCAN_START_ET <= hour_et <= config.PEAK_SCAN_END_ET:
+                    interval = config.PEAK_SCAN_INTERVAL
+                _sleep = max(10, interval - (time.time() - cycle_start))
+                if shutdown_event and shutdown_event.is_set():
+                    break
+                if shutdown_event:
+                    shutdown_event.wait(_sleep)
+                else:
+                    time.sleep(_sleep)
+                continue
             print("  [BOT] Found %d actionable signals" % len(buy_signals))
 
             if risk.is_observation_mode():
@@ -463,11 +595,27 @@ def main(shutdown_event=None):
                     buy_signals,
                     cycle=cycle,
                     balance_cents=balance,
-                    limit_price_fn=lambda s: int(s.get("limit_price", 0) or 0) or maker.calculate_limit_price(s),
-                    max_per_cycle=max_per_cycle if 'max_per_cycle' in locals() else 3,
+                    market_prices=market_price_map,
+                    live_risk=risk,
+                    max_per_cycle=max_per_cycle,
                 )
                 paper_entries = paper_summary.get("executed", [])
+                filled_pending = paper_summary.get("filled_pending", [])
+                queued = paper_summary.get("queued", [])
                 blocked = paper_summary.get("blocked_reasons", {})
+                if filled_pending:
+                    print("  [PAPER] Filled %d resting paper order(s): %s" % (
+                        len(filled_pending),
+                        ", ".join(
+                            "%s %s@%dc x%d" % (
+                                row.get("ticker", "?"),
+                                row.get("side", "?").upper(),
+                                row.get("entry_price_cents", 0),
+                                row.get("contracts", 0),
+                            )
+                            for row in filled_pending[:3]
+                        )
+                    ))
                 if paper_entries:
                     print("  [PAPER] Observation mode recorded %d paper trade(s): %s" % (
                         len(paper_entries),
@@ -480,6 +628,15 @@ def main(shutdown_event=None):
                             )
                             for row in paper_entries[:3]
                         )
+                    ))
+                if queued:
+                    print("  [PAPER] Resting paper orders: %s" % ", ".join(
+                        "%s %s<=%dc" % (
+                            row.get("ticker", "?"),
+                            row.get("side", "?").upper(),
+                            row.get("limit_price_cents", 0),
+                        )
+                        for row in queued[:3]
                     ))
                 if blocked:
                     top_blocked = ", ".join(
@@ -511,7 +668,6 @@ def main(shutdown_event=None):
                 continue
 
             trades_this_cycle = 0
-            max_per_cycle = 3  # Prevent concentrated losses (data: 6 trades in 22min, all lost)
             for signal in buy_signals:
                 if trades_this_cycle >= max_per_cycle:
                     print("  [BOT] Per-cycle limit reached (%d trades), deferring rest" % max_per_cycle)
@@ -525,14 +681,15 @@ def main(shutdown_event=None):
                 is_confirmed = signal.get("confirmation_verdict") == "CONFIRMED_OUTCOME"
                 is_arb = signal.get("strategy", "") == "S2-Arbitrage"
 
-                cost_cents = price_cents * contracts
+                risk_price_cents = int(signal.get("risk_price_cents", price_cents) or price_cents)
+                cost_cents = risk_price_cents * contracts
 
                 # Build risk check signal
                 risk_signal = {
                     "ticker": ticker,
                     "city_code": city_code,
                     "side": side,
-                    "price_cents": price_cents,
+                    "price_cents": risk_price_cents,
                     "contracts": contracts,
                     "cost_cents": cost_cents,
                     "edge": edge,
@@ -548,45 +705,29 @@ def main(shutdown_event=None):
 
                 # Re-read contracts (risk manager may have sized down)
                 contracts = risk_signal.get("contracts", contracts)
-                cost_cents = price_cents * contracts
+                cost_cents = risk_price_cents * contracts
                 signal["suggested_contracts"] = contracts  # Update for trade log
 
                 # Calculate maker limit price
-                limit_price = int(signal.get("limit_price", 0) or 0) or maker.calculate_limit_price(signal)
-                if not limit_price or limit_price <= 0:
-                    print("  [MAKER] %s: invalid limit price %s — skipping" % (ticker, limit_price))
+                execution_style = signal.get("execution_style", "maker")
+                limit_price = int(signal.get("limit_price", 0) or 0)
+                if execution_style == "maker" and limit_price <= 0:
+                    print("  [MAKER] %s: invalid limit price %s - skipping" % (ticker, limit_price))
                     continue
-
-                # Re-check sizing at actual limit price (may be higher than market ask)
-                if limit_price > price_cents and limit_price > 0:
-                    max_by_ticker = config.MAX_PER_TICKER_CENTS // limit_price
-                    max_by_ticker = min(max_by_ticker, config.MAX_CONTRACTS_PER_TICKER)
-                    if max_by_ticker < contracts:
-                        contracts = max(1, max_by_ticker)
-                        signal["suggested_contracts"] = contracts
-                    cost_cents = limit_price * contracts
 
                 # Place order
                 strat_name = signal.get("strategy", "?")
+                display_price = limit_price if execution_style == "maker" else risk_price_cents
                 print("  [TRADE] %s %s %s edge=%.1f%% @ %dc x%d" % (
                     strat_name, side.upper(), ticker, edge * 100,
-                    limit_price, contracts))
+                    display_price, contracts))
 
                 order_signal = dict(signal)
                 order_signal["contracts"] = contracts
                 order_signal["city_code"] = city_code
                 order_signal["is_confirmed"] = is_confirmed
                 order_signal["is_arb"] = is_arb
-                signal["limit_price"] = limit_price  # For trade log accuracy
-
-                # Taker mode: confirmed outcomes with strong edge, OR STRONG verdict with high fee-adj edge
-                fee_adj_edge = signal.get("fee_adjusted_edge", 0)
-                verdict = signal.get("confirmation_verdict", "")
-                use_taker = (
-                    (is_confirmed and edge > getattr(config, 'TAKER_MODE_MIN_EDGE', 0.15)
-                     and fee_adj_edge > 0.10)  # Fee-adjusted gate: don't overpay on marginal confirmed
-                    or (verdict == "STRONG" and fee_adj_edge > getattr(config, 'STRONG_TAKER_MIN_FEE_ADJ_EDGE', 0.20))
-                )
+                use_taker = execution_style == "taker"
                 if use_taker:
                     reason = "confirmed" if is_confirmed else "STRONG+high_edge"
                     print("  [TRADE] TAKER MODE (%s): %s edge=%.1f%%" % (reason, ticker, edge * 100))

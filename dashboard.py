@@ -443,6 +443,7 @@ def _build_observation_response():
     lock_summary = paper_locks.get("summary", {})
     lock_active = list((paper_locks.get("active", {}) or {}).values())[:5]
     paper_active = list((paper_trades.get("active", {}) or {}).values())[:5]
+    paper_pending = list((paper_trades.get("pending_orders", {}) or {}).values())[:5]
     cycle_log = list((paper_trades.get("cycle_log", []) or []))[-5:]
 
     return {
@@ -472,6 +473,18 @@ def _build_observation_response():
                     "target_date": row.get("target_date", ""),
                 }
                 for row in paper_active
+            ],
+            "pending": [
+                {
+                    "ticker": row.get("ticker", ""),
+                    "side": row.get("side", ""),
+                    "contracts": row.get("contracts", 0),
+                    "limit_price_cents": row.get("limit_price_cents", 0),
+                    "current_price_cents": row.get("current_price_cents", 0),
+                    "strategy": row.get("strategy", ""),
+                    "target_date": row.get("target_date", ""),
+                }
+                for row in paper_pending
             ],
             "recent_cycles": cycle_log,
             "recent_history": [
@@ -1252,7 +1265,7 @@ def start_dashboard_server(port=DASHBOARD_PORT):
     without the trading loop is worse than restarting the whole process.
     """
     if not config.DASHBOARD_TOKEN and os.environ.get("RAILWAY_ENVIRONMENT"):
-        print("  [DASHBOARD] WARNING: No DASHBOARD_TOKEN set in production — all endpoints are unprotected!")
+        print("  [DASHBOARD] WARNING: No DASHBOARD_TOKEN set in production - protected endpoints fail closed; only public-safe observation/health endpoints remain available.")
     server = HTTPServer(("0.0.0.0", port), DashboardHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
