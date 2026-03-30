@@ -106,6 +106,43 @@ def _enrich_logged_decisions(decisions, prepared_signals):
     return enriched
 
 
+def _merge_decision_updates(decisions, updates):
+    merged = []
+    update_map = {}
+    for row in updates or []:
+        ticker = row.get("ticker", "")
+        if ticker:
+            update_map[ticker] = row
+
+    for decision in decisions or []:
+        row = dict(decision)
+        update = update_map.pop(row.get("ticker", ""), None)
+        if update:
+            row.update(update)
+        merged.append(row)
+
+    for ticker in sorted(update_map.keys()):
+        merged.append(dict(update_map[ticker]))
+    return merged
+
+
+def _finalize_observation_decisions(decisions, paper_summary):
+    final = list(decisions or [])
+    final = _merge_decision_updates(final, paper_summary.get("queued", []))
+    final = _merge_decision_updates(final, paper_summary.get("executed", []))
+    final = _merge_decision_updates(final, paper_summary.get("blocked_signals", []))
+    return final
+
+
+def _capture_cycle_learning(reviewer, decisions, executed_signals=None):
+    try:
+        reviewer.capture_scan_snapshot(decisions)
+        for row in executed_signals or []:
+            reviewer.capture_forecast_snapshot(row)
+    except Exception:
+        pass
+
+
 def _log_cycle_audit(
     journal,
     cycle,
@@ -560,12 +597,6 @@ def main(shutdown_event=None):
             except Exception as e:
                 print("  [PAPER] Candidate capture error: %s" % e)
 
-            # Snapshot all evaluated signals for scan reconciliation learning
-            try:
-                reviewer.capture_scan_snapshot(all_evaluated)
-            except Exception:
-                pass
-
             # Bucket inconsistency detection (informational)
             try:
                 inconsistencies = strategy.detect_bucket_inconsistencies(weather_markets)
@@ -605,6 +636,9 @@ def main(shutdown_event=None):
                                 for row in filled_pending[:3]
                             )
                         ))
+                    _capture_cycle_learning(reviewer, all_decisions, filled_pending)
+                else:
+                    _capture_cycle_learning(reviewer, all_decisions, [])
                 _write_bot_status(cycle, risk, intel, maker, 0, 0)
                 _save_scan_log(weather_markets, [], 0,
                                skip_counts=_skip_counts, null_count=_null_count,
@@ -678,6 +712,14 @@ def main(shutdown_event=None):
                                 for row in filled_pending[:3]
                             )
                         ))
+                    final_logged_decisions = _finalize_observation_decisions(logged_decisions, paper_summary)
+                    _capture_cycle_learning(
+                        reviewer,
+                        final_logged_decisions,
+                        list(paper_summary.get("executed", [])) + filled_pending,
+                    )
+                else:
+                    _capture_cycle_learning(reviewer, logged_decisions, [])
                 _write_bot_status(cycle, risk, intel, maker, 0, 0)
                 _save_scan_log(weather_markets, [], 0,
                                skip_counts=_skip_counts, null_count=_null_count,
@@ -687,7 +729,7 @@ def main(shutdown_event=None):
                     journal=journal,
                     cycle=cycle,
                     markets=weather_markets,
-                    decisions=logged_decisions,
+                    decisions=final_logged_decisions if risk.is_observation_mode() else logged_decisions,
                     buy_signals=[],
                     trades_placed=0,
                     skip_counts=_skip_counts,
@@ -769,6 +811,12 @@ def main(shutdown_event=None):
                         for reason, count in sorted(blocked.items(), key=lambda item: -item[1])[:5]
                     )
                     print("  [PAPER] Blocked paper entries: %s" % top_blocked)
+                final_logged_decisions = _finalize_observation_decisions(logged_decisions, paper_summary)
+                _capture_cycle_learning(
+                    reviewer,
+                    final_logged_decisions,
+                    paper_entries + filled_pending,
+                )
                 print("  [SAFETY] Observation mode active - paper trading only, no live entries")
                 _write_bot_status(cycle, risk, intel, maker,
                                 len(buy_signals), 0, next_scan_seconds=scan_interval if 'scan_interval' in locals() else config.SCAN_INTERVAL)
@@ -780,7 +828,7 @@ def main(shutdown_event=None):
                     journal=journal,
                     cycle=cycle,
                     markets=weather_markets,
-                    decisions=logged_decisions,
+                    decisions=final_logged_decisions,
                     buy_signals=buy_signals,
                     trades_placed=0,
                     skip_counts=_skip_counts,
@@ -808,6 +856,7 @@ def main(shutdown_event=None):
                 continue
 
             trades_this_cycle = 0
+            submitted_signals = []
             for signal in buy_signals:
                 if trades_this_cycle >= max_per_cycle:
                     print("  [BOT] Per-cycle limit reached (%d trades), deferring rest" % max_per_cycle)
@@ -876,8 +925,14 @@ def main(shutdown_event=None):
                     order = maker.place_order(order_signal, limit_price=limit_price)
                 if order:
                     trades_this_cycle += 1
+                    submitted = dict(signal)
+                    submitted["execution_status"] = "live_submitted"
+                    submitted["contracts"] = contracts
+                    submitted_signals.append(submitted)
 
             # --- STEP 8: Write status ---
+            final_logged_decisions = _merge_decision_updates(logged_decisions, submitted_signals)
+            _capture_cycle_learning(reviewer, final_logged_decisions, [])
             scan_interval = config.PEAK_SCAN_INTERVAL if config.PEAK_SCAN_START_ET <= hour_et <= config.PEAK_SCAN_END_ET else config.SCAN_INTERVAL
             _write_bot_status(cycle, risk, intel, maker,
                             len(buy_signals), trades_this_cycle, next_scan_seconds=scan_interval)
@@ -889,7 +944,7 @@ def main(shutdown_event=None):
                 journal=journal,
                 cycle=cycle,
                 markets=weather_markets,
-                decisions=logged_decisions,
+                decisions=final_logged_decisions,
                 buy_signals=buy_signals,
                 trades_placed=trades_this_cycle,
                 skip_counts=_skip_counts,

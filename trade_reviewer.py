@@ -45,6 +45,7 @@ class TradeReviewer:
             "calibration": {},
             "profitability": {},
             "information_decay": {},
+            "last_incremental_review_at": "",
         }
         for k, v in defaults.items():
             if k not in self.state:
@@ -64,6 +65,8 @@ class TradeReviewer:
 
     def check_and_run(self):
         """Called every cycle. Runs review once per day after 11 PM ET."""
+        self._run_incremental_review()
+
         et_now = datetime.now(ZoneInfo("America/New_York"))
         today = et_now.strftime("%Y-%m-%d")
 
@@ -73,22 +76,25 @@ class TradeReviewer:
             return
 
         print("  [REVIEW] Running daily trade review...")
-        trade_log = self._load_trade_log()
-        if not trade_log:
-            print("  [REVIEW] No trade history to review")
+        trade_log = self._load_trade_log(include_paper=True)
+        if not trade_log and not self.state.get("scan_snapshots"):
+            print("  [REVIEW] No trade or scan history to review")
             self.state["last_review_date"] = today
             self._save_state()
             return
 
-        self._learn_forecast_bias(trade_log)
-        self._learn_model_accuracy(trade_log)
-        self._analyze_patterns(trade_log)
-        self._compute_profitability_metrics(trade_log)
-        self._reconcile_scans(today)
+        if trade_log:
+            self._learn_forecast_bias(trade_log)
+            self._learn_model_accuracy(trade_log)
+            self._analyze_patterns(trade_log)
+            self._compute_profitability_metrics(trade_log)
+        if today in self.state.get("scan_snapshots", {}):
+            self._reconcile_scans(today)
         self._analyze_guard_effectiveness()
         self._analyze_calibration()
         self._analyze_information_decay()
-        self._generate_daily_report(trade_log, today)
+        if trade_log:
+            self._generate_daily_report(trade_log, today)
 
         # --- Learning pipeline: cache actuals + compress history ---
         try:
@@ -104,6 +110,50 @@ class TradeReviewer:
         self._save_state()
         print("  [REVIEW] Daily review complete")
 
+    def _run_incremental_review(self, force=False):
+        """Refresh learning from paper/live outcomes and recent scans during the day."""
+        interval_minutes = max(
+            1,
+            int(getattr(config, "LEARNING_INCREMENTAL_INTERVAL_MINUTES", 15) or 15),
+        )
+        now_utc = datetime.now(timezone.utc)
+        last_run = self._parse_timestamp(self.state.get("last_incremental_review_at", ""))
+        if not force and last_run and now_utc - last_run < timedelta(minutes=interval_minutes):
+            return
+
+        trade_log = self._load_trade_log(include_paper=True)
+        scan_dates = sorted(self.state.get("scan_snapshots", {}).keys())
+        if not trade_log and not scan_dates:
+            self.state["last_incremental_review_at"] = now_utc.isoformat()
+            self._save_state()
+            return
+
+        et_today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        recent_completed_dates = [d for d in scan_dates[-5:] if d < et_today]
+
+        try:
+            if recent_completed_dates:
+                self._cache_actual_temps(recent_completed_dates[-3:])
+        except Exception as e:
+            print("  [REVIEW] Incremental actual-temp cache error: %s" % e)
+
+        try:
+            if trade_log:
+                self._learn_forecast_bias(trade_log)
+                self._learn_model_accuracy(trade_log)
+                self._analyze_patterns(trade_log)
+                self._compute_profitability_metrics(trade_log)
+            for date_str in recent_completed_dates:
+                self._reconcile_scans(date_str)
+                self._compress_daily_record(date_str)
+            self._analyze_guard_effectiveness()
+            self._analyze_calibration()
+            self._analyze_information_decay()
+            self.state["last_incremental_review_at"] = now_utc.isoformat()
+            self._save_state()
+        except Exception as e:
+            print("  [REVIEW] Incremental review error: %s" % e)
+
     def capture_forecast_snapshot(self, signal):
         """Called when a trade is placed. Saves forecast data for later learning."""
         if not signal or signal.get("signal") != "buy":
@@ -115,7 +165,10 @@ class TradeReviewer:
             "forecast_mean": signal.get("predicted_high"),
             "model_means": signal.get("model_means", {}),
             "model_stds": signal.get("model_stds", {}),
-            "market_price_cents": signal.get("price_cents", 0),
+            "market_price_cents": signal.get(
+                "price_cents",
+                signal.get("entry_price_cents", signal.get("limit_price_cents", 0)),
+            ),
             "our_prob": signal.get("our_prob", 0),
             "side": signal.get("side", ""),
             "edge": signal.get("edge", 0),
@@ -123,9 +176,15 @@ class TradeReviewer:
             "confirmation_verdict": signal.get("confirmation_verdict", ""),
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "target_date": signal.get("target_date", ""),
+            "execution_status": signal.get("execution_status", ""),
         }
 
-        self.state["forecast_snapshots"].append(snapshot)
+        snapshots = [
+            row for row in self.state.get("forecast_snapshots", [])
+            if row.get("ticker", "") != snapshot["ticker"]
+        ]
+        snapshots.append(snapshot)
+        self.state["forecast_snapshots"] = snapshots
         # Keep last 500 snapshots
         if len(self.state["forecast_snapshots"]) > 500:
             self.state["forecast_snapshots"] = self.state["forecast_snapshots"][-500:]
@@ -270,11 +329,15 @@ class TradeReviewer:
                 "city_code": sig.get("city_code", ""),
                 "target_date": sig.get("target_date", ""),
                 "signal": sig.get("signal", "skip"),
+                "execution_status": sig.get("execution_status", ""),
                 "side": sig.get("side", ""),
                 "edge": sig.get("edge", 0),
                 "our_prob": sig.get("our_prob", 0),
                 "market_prob": sig.get("market_prob", 0),
-                "price_cents": sig.get("price_cents", 0),
+                "price_cents": sig.get(
+                    "entry_price_cents",
+                    sig.get("price_cents", sig.get("limit_price_cents", 0)),
+                ),
                 "predicted_high": sig.get("predicted_high"),
                 "model_means": sig.get("model_means", {}),
                 "model_spread": sig.get("model_spread"),
@@ -301,10 +364,14 @@ class TradeReviewer:
         while len(all_dates) > 30:
             del self.state["scan_snapshots"][all_dates.pop(0)]
 
-        # Save periodically (not every cycle -- every 10th call)
+        # Save periodically; default is every cycle so restarts do not drop scans.
         cycle_count = getattr(self, "_scan_snap_counter", 0) + 1
         self._scan_snap_counter = cycle_count
-        if cycle_count % 10 == 0:
+        save_every = max(
+            1,
+            int(getattr(config, "SCAN_SNAPSHOT_SAVE_EVERY_CYCLES", 1) or 1),
+        )
+        if cycle_count % save_every == 0:
             self._save_state()
 
     def get_learning_summary(self):
@@ -702,6 +769,23 @@ class TradeReviewer:
     # SCAN RECONCILIATION
     # ===========================================================
 
+    @staticmethod
+    def _snapshot_counts_as_trade(snap):
+        execution_status = str(snap.get("execution_status", "") or "").strip().lower()
+        signal = snap.get("signal", "skip")
+        if signal != "buy":
+            return False
+        if not execution_status:
+            return True
+        if execution_status in (
+            "paper_filled",
+            "live_filled",
+            "live_submitted",
+            "executed",
+        ):
+            return True
+        return False
+
     def _reconcile_scans(self, today):
         """Reconcile today's scan snapshots against NWS actual temperatures.
 
@@ -769,10 +853,12 @@ class TradeReviewer:
                 continue
 
             sig_type = snap.get("signal", "skip")
+            execution_status = snap.get("execution_status", "")
             side = snap.get("side", "")
             price = snap.get("price_cents", 0)
+            treated_as_trade = self._snapshot_counts_as_trade(snap)
 
-            if sig_type == "buy":
+            if treated_as_trade:
                 # We traded this
                 if side == "yes":
                     traded_wins = would_yes_win
@@ -797,7 +883,7 @@ class TradeReviewer:
                     results["missed_opportunities"] += 1
                     payout = 100 - price
                     results["missed_profit_potential_cents"] += payout
-                    guard = snap.get("skip_reason", "unknown")
+                    guard = snap.get("skip_reason") or execution_status or "unknown"
                     results["missed_by_guard"][guard] = \
                         results["missed_by_guard"].get(guard, 0) + 1
                     # Keep top 10 missed opportunities
@@ -810,6 +896,7 @@ class TradeReviewer:
                             "price": price,
                             "payout": payout,
                             "guard": guard,
+                            "execution_status": execution_status,
                             "predicted": predicted,
                             "actual": actual,
                         })
@@ -835,11 +922,14 @@ class TradeReviewer:
                                        key=lambda x: -x[1]):
                 print("    %s: %d" % (guard, count))
 
-        # Store (keep last 30 days)
-        self.state["scan_reconciliation"].append(results)
-        if len(self.state["scan_reconciliation"]) > 30:
-            self.state["scan_reconciliation"] = \
-                self.state["scan_reconciliation"][-30:]
+        # Upsert and keep last 30 days.
+        existing = [
+            row for row in self.state.get("scan_reconciliation", [])
+            if row.get("date", "") != today
+        ]
+        existing.append(results)
+        existing.sort(key=lambda row: row.get("date", ""))
+        self.state["scan_reconciliation"] = existing[-30:]
 
     def _would_yes_win(self, ticker, actual_temp):
         """Given a ticker and actual temp, determine if YES wins.
@@ -895,9 +985,9 @@ class TradeReviewer:
             day_snaps = self.state.get("scan_snapshots", {}).get(
                 recon.get("date", ""), {})
             for snap in day_snaps.values():
-                if snap.get("signal") != "skip":
+                if self._snapshot_counts_as_trade(snap):
                     continue
-                guard = snap.get("skip_reason", "unknown")
+                guard = snap.get("skip_reason") or snap.get("execution_status") or "unknown"
                 if guard not in guard_stats:
                     guard_stats[guard] = {
                         "total_blocks": 0,
@@ -1178,8 +1268,7 @@ class TradeReviewer:
         for t in trade_log:
             if t.get("entry_type") != "buy_fill":
                 continue
-            ts = t.get("timestamp", "")
-            if today in ts and t.get("result") in ("win", "loss"):
+            if self._trade_date_et(t) == today and t.get("result") in ("win", "loss"):
                 todays_trades.append(t)
 
         if not todays_trades:
@@ -1358,11 +1447,6 @@ class TradeReviewer:
             except Exception:
                 pass
 
-        # Don't re-compress if already done
-        existing_dates = {r["date"] for r in history.get("daily_records", [])}
-        if date_str in existing_dates:
-            return
-
         day_snaps = self.state.get("scan_snapshots", {}).get(date_str, {})
         if not day_snaps:
             return
@@ -1415,6 +1499,7 @@ class TradeReviewer:
             would_yes_win = self._would_yes_win(ticker, actual) if actual is not None else None
             side = snap.get("side", "")
             signal = snap.get("signal", "skip")
+            executed = self._snapshot_counts_as_trade(snap)
 
             # Determine outcome for this side
             outcome = None
@@ -1426,7 +1511,7 @@ class TradeReviewer:
                     outcome = 1 if not would_yes_win else 0
 
                 # Classify
-                if signal == "buy":
+                if executed:
                     if outcome == 1:
                         summary["correct_trades"] += 1
                     else:
@@ -1451,9 +1536,10 @@ class TradeReviewer:
                 "market_prob": round(snap.get("market_prob", 0), 3),
                 "edge": round(snap.get("edge", 0), 3),
                 "signal": signal,
+                "execution_status": snap.get("execution_status", ""),
                 "verdict": snap.get("confirmation_verdict", ""),
                 "outcome": outcome,
-                "guard": snap.get("skip_reason") if signal == "skip" else None,
+                "guard": (snap.get("skip_reason") or snap.get("execution_status")) if not executed else None,
             })
 
         record = {
@@ -1463,7 +1549,13 @@ class TradeReviewer:
             "summary": summary,
         }
 
-        history["daily_records"].append(record)
+        records = [
+            row for row in history.get("daily_records", [])
+            if row.get("date", "") != date_str
+        ]
+        records.append(record)
+        records.sort(key=lambda row: row.get("date", ""))
+        history["daily_records"] = records[-60:]
 
         # Update cumulative stats
         self._update_cumulative_stats(history)
@@ -1607,15 +1699,94 @@ class TradeReviewer:
     # STATE PERSISTENCE
     # ===========================================================
 
-    def _load_trade_log(self):
-        """Load trade history."""
+    def _load_trade_log(self, include_paper=False):
+        """Load live trade history and optionally merge resolved paper trades."""
+        trade_log = []
         try:
             if os.path.exists(config.TRADE_LOG_FILE):
                 with open(config.TRADE_LOG_FILE, "r") as f:
-                    return json.load(f)
+                    loaded = json.load(f)
+                    if isinstance(loaded, list):
+                        trade_log = loaded
         except Exception:
             pass
-        return []
+        if include_paper:
+            trade_log.extend(self._load_paper_trade_log())
+        trade_log.sort(
+            key=lambda row: self._parse_timestamp(
+                row.get("timestamp", "") or row.get("resolved_at", "") or row.get("settled_at", "")
+            ) or datetime.min.replace(tzinfo=timezone.utc)
+        )
+        return trade_log
+
+    def _load_paper_trade_log(self):
+        """Normalize resolved paper trades into the live trade-log schema."""
+        try:
+            if not os.path.exists(config.PAPER_TRADES_FILE):
+                return []
+            with open(config.PAPER_TRADES_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if not isinstance(loaded, dict):
+                    return []
+        except Exception:
+            return []
+
+        normalized = []
+        for row in loaded.get("history", []) or []:
+            if row.get("status") not in ("win", "loss"):
+                continue
+            normalized.append({
+                "timestamp": row.get("opened_at", "") or row.get("placed_at", "") or row.get("resolved_at", ""),
+                "resolved_at": row.get("resolved_at", ""),
+                "settled_at": row.get("resolved_at", ""),
+                "ticker": row.get("ticker", ""),
+                "side": row.get("side", ""),
+                "price_cents": int(
+                    row.get("entry_price_cents", row.get("price_cents", row.get("limit_price_cents", 0))) or 0
+                ),
+                "contracts": int(row.get("contracts", 0) or 0),
+                "cost_cents": int(
+                    row.get("cost_cents", row.get("reserved_cost_cents", 0)) or 0
+                ),
+                "strategy": row.get("strategy", ""),
+                "edge": row.get("edge", 0),
+                "confirmation_verdict": row.get("confirmation_verdict", ""),
+                "predicted_high": row.get("predicted_high"),
+                "city_code": row.get("city_code", ""),
+                "target_date": row.get("target_date", ""),
+                "result": row.get("status", ""),
+                "profit_cents": int(row.get("net_profit_cents", 0) or 0),
+                "gross_profit_cents": int(row.get("gross_profit_cents", 0) or 0),
+                "estimated_entry_fee_cents": int(row.get("estimated_entry_fee_cents", 0) or 0),
+                "our_prob": row.get("our_prob", 0),
+                "market_prob": row.get("market_prob", 0),
+                "entry_type": "buy_fill",
+                "settled": True,
+                "paper_trade": True,
+                "execution_status": row.get("execution_status", "paper_filled"),
+                "source": "paper",
+            })
+        return normalized
+
+    @staticmethod
+    def _parse_timestamp(value):
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except Exception:
+            return None
+
+    def _trade_date_et(self, trade):
+        parsed = self._parse_timestamp(
+            trade.get("timestamp", "") or trade.get("resolved_at", "") or trade.get("settled_at", "")
+        )
+        if parsed is None:
+            return ""
+        return parsed.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
 
     def _load_state(self):
         try:

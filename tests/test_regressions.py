@@ -15,6 +15,7 @@ from observation_journal import ObservationJournal
 from observation_paper import ObservationPaperTrader
 from risk_manager_v2 import RiskManager
 from strategy import Strategy
+from trade_reviewer import TradeReviewer
 
 
 class DummyWeather:
@@ -359,6 +360,133 @@ class ObservationJournalRegressionTests(unittest.TestCase):
             self.assertEqual(history["daily_summary"][-1]["paper_entries"], 1)
             self.assertEqual(history["daily_summary"][-1]["paper_resolved"], 1)
             self.assertEqual(history["daily_summary"][-1]["skip_reasons"]["yes_side_blocked"], 3)
+            self.assertEqual(history["recent_decisions"][0]["execution_status"], "")
+
+
+class TradeReviewerRegressionTests(unittest.TestCase):
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.learning_state = os.path.join(self.temp_dir.name, "learning_state.json")
+        self.learning_history = os.path.join(self.temp_dir.name, "learning_history.json")
+        self.trade_log = os.path.join(self.temp_dir.name, "trade_history.json")
+        self.paper_log = os.path.join(self.temp_dir.name, "paper_trades.json")
+
+        self.patches = [
+            patch.object(config, "LEARNING_STATE_FILE", self.learning_state),
+            patch.object(config, "LEARNING_HISTORY_FILE", self.learning_history),
+            patch.object(config, "TRADE_LOG_FILE", self.trade_log),
+            patch.object(config, "PAPER_TRADES_FILE", self.paper_log),
+            patch.object(config, "SCAN_SNAPSHOT_SAVE_EVERY_CYCLES", 1),
+        ]
+        for item in self.patches:
+            item.start()
+            self.addCleanup(item.stop)
+
+    def test_load_trade_log_merges_resolved_paper_trades(self):
+        with open(self.trade_log, "w", encoding="utf-8") as handle:
+            handle.write("[]")
+        with open(self.paper_log, "w", encoding="utf-8") as handle:
+            handle.write(
+                """{
+  "history": [
+    {
+      "ticker": "KXHIGHNY-TEST",
+      "side": "no",
+      "contracts": 1,
+      "entry_price_cents": 32,
+      "cost_cents": 32,
+      "city_code": "NYC",
+      "target_date": "2026-03-30",
+      "strategy": "S1-Weather",
+      "confirmation_verdict": "CONFIRM",
+      "edge": 0.11,
+      "predicted_high": 44.5,
+      "status": "win",
+      "net_profit_cents": 66,
+      "gross_profit_cents": 68,
+      "estimated_entry_fee_cents": 2,
+      "opened_at": "2026-03-30T15:00:00+00:00",
+      "resolved_at": "2026-03-30T22:00:00+00:00"
+    },
+    {
+      "ticker": "KXHIGHBOS-TEST",
+      "status": "expired_unfilled"
+    }
+  ]
+}"""
+            )
+
+        reviewer = TradeReviewer()
+        merged = reviewer._load_trade_log(include_paper=True)
+
+        self.assertEqual(len(merged), 1)
+        self.assertTrue(merged[0]["paper_trade"])
+        self.assertEqual(merged[0]["entry_type"], "buy_fill")
+        self.assertEqual(merged[0]["profit_cents"], 66)
+
+    def test_capture_forecast_snapshot_replaces_duplicate_ticker(self):
+        reviewer = TradeReviewer()
+        reviewer.capture_forecast_snapshot({
+            "signal": "buy",
+            "ticker": "KXHIGHNY-TEST",
+            "city_code": "NYC",
+            "predicted_high": 55.0,
+            "model_means": {"gfs": 55.0},
+            "price_cents": 40,
+            "side": "no",
+            "target_date": "2026-03-30",
+        })
+        reviewer.capture_forecast_snapshot({
+            "signal": "buy",
+            "ticker": "KXHIGHNY-TEST",
+            "city_code": "NYC",
+            "predicted_high": 54.0,
+            "model_means": {"gfs": 54.0},
+            "entry_price_cents": 28,
+            "side": "no",
+            "target_date": "2026-03-30",
+            "execution_status": "paper_filled",
+        })
+
+        snapshots = reviewer.state["forecast_snapshots"]
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(snapshots[0]["market_price_cents"], 28)
+        self.assertEqual(snapshots[0]["execution_status"], "paper_filled")
+
+    def test_reconcile_scans_treats_unfilled_paper_buy_as_missed_not_trade(self):
+        reviewer = TradeReviewer()
+        reviewer.state["actual_temps"] = {"NYC_2026-03-30": 40}
+        reviewer.state["scan_snapshots"] = {
+            "2026-03-30": {
+                "KXHIGHNY-26MAR30-B50.5": {
+                    "ticker": "KXHIGHNY-26MAR30-B50.5",
+                    "city_code": "NYC",
+                    "target_date": "2026-03-30",
+                    "signal": "buy",
+                    "execution_status": "paper_queued",
+                    "side": "no",
+                    "edge": 0.11,
+                    "our_prob": 0.8,
+                    "market_prob": 0.3,
+                    "price_cents": 30,
+                    "predicted_high": 44.0,
+                    "model_means": {"gfs": 44.0},
+                    "skip_reason": None,
+                    "confirmation_verdict": "CONFIRM",
+                    "timestamp": "2026-03-30T18:00:00+00:00",
+                }
+            }
+        }
+
+        reviewer._reconcile_scans("2026-03-30")
+
+        recon = reviewer.state["scan_reconciliation"][-1]
+        self.assertEqual(recon["correct_trades"], 0)
+        self.assertEqual(recon["bad_trades"], 0)
+        self.assertEqual(recon["missed_opportunities"], 1)
+        self.assertEqual(recon["missed_by_guard"]["paper_queued"], 1)
 
 
 class RiskLifecycleRegressionTests(unittest.TestCase):

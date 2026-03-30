@@ -10,8 +10,11 @@ import json
 import os
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import config
+
+MARKET_TZ = ZoneInfo("America/New_York")
 
 
 def _utc_now_iso():
@@ -42,6 +45,14 @@ def _as_float(value):
         return float(value or 0)
     except Exception:
         return 0.0
+
+
+def _summary_day_start_utc(day_str):
+    try:
+        local_midnight = datetime.strptime(day_str, "%Y-%m-%d").replace(tzinfo=MARKET_TZ)
+        return local_midnight.astimezone(timezone.utc)
+    except Exception:
+        return None
 
 
 class ObservationJournal:
@@ -153,7 +164,7 @@ class ObservationJournal:
         daily_rows = []
         cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
         for row in self.load_daily_summary(days=self.retention_days):
-            day_dt = _parse_timestamp("%sT00:00:00+00:00" % row.get("date", ""))
+            day_dt = _summary_day_start_utc(row.get("date", ""))
             if day_dt and day_dt >= cutoff - timedelta(days=1):
                 daily_rows.append(row)
 
@@ -243,6 +254,7 @@ class ObservationJournal:
             "city_code": decision.get("city_code", ""),
             "target_date": decision.get("target_date", ""),
             "signal": decision.get("signal", "skip"),
+            "execution_status": decision.get("execution_status", ""),
             "side": decision.get("side", ""),
             "skip_reason": decision.get("skip_reason"),
             "strategy": decision.get("strategy", ""),
@@ -252,6 +264,7 @@ class ObservationJournal:
             "our_prob": round(_as_float(decision.get("our_prob", 0)), 4),
             "market_prob": round(_as_float(decision.get("market_prob", 0)), 4),
             "price_cents": _as_int(decision.get("price_cents", 0)),
+            "entry_price_cents": _as_int(decision.get("entry_price_cents", 0)),
             "limit_price_cents": _as_int(decision.get("limit_price", 0)),
             "risk_price_cents": _as_int(decision.get("risk_price_cents", 0)),
             "yes_price_cents": _as_int(decision.get("yes_price_cents", 0)),
@@ -310,7 +323,7 @@ class ObservationJournal:
         day_dt = _parse_timestamp(ts_value)
         if day_dt is None:
             day_dt = datetime.now(timezone.utc)
-        day_str = day_dt.astimezone(timezone.utc).strftime("%Y-%m-%d")
+        day_str = day_dt.astimezone(MARKET_TZ).strftime("%Y-%m-%d")
 
         summary = self._read_daily_summary()
         days = summary.setdefault("days", {})

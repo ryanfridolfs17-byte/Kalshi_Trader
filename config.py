@@ -253,6 +253,12 @@ os.makedirs(STATE_DIR, exist_ok=True)
 
 LEARNING_HISTORY_FILE = os.path.join(STATE_DIR, "learning_history.json")
 SCAN_SNAPSHOT_RETENTION_DAYS = 30
+SCAN_SNAPSHOT_SAVE_EVERY_CYCLES = int(
+    os.environ.get("SCAN_SNAPSHOT_SAVE_EVERY_CYCLES", "1")
+)
+LEARNING_INCREMENTAL_INTERVAL_MINUTES = int(
+    os.environ.get("LEARNING_INCREMENTAL_INTERVAL_MINUTES", "15")
+)
 
 TRADE_LOG_FILE = os.path.join(STATE_DIR, "trade_history.json")
 RISK_STATE_FILE = os.path.join(STATE_DIR, "risk_state.json")

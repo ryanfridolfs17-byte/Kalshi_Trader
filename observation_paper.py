@@ -72,15 +72,18 @@ class ObservationPaperTrader:
         placed_this_cycle = []
         executed = []
         queued = []
+        blocked_signals = []
 
         for signal in signals:
             if len(placed_this_cycle) >= max_per_cycle:
                 blocked_reasons["per_cycle_limit"] += 1
+                blocked_signals.append(self._build_blocked_signal(signal, "per_cycle_limit"))
                 continue
 
             limit_price = int(signal.get("limit_price", 0) or 0)
             if limit_price <= 0:
                 blocked_reasons["invalid_limit_price"] += 1
+                blocked_signals.append(self._build_blocked_signal(signal, "invalid_limit_price"))
                 continue
 
             approved, result = self._fit_trade(
@@ -92,6 +95,7 @@ class ObservationPaperTrader:
             )
             if not approved:
                 blocked_reasons[result] += 1
+                blocked_signals.append(self._build_blocked_signal(signal, result))
                 continue
 
             contracts = int(result or 0)
@@ -158,6 +162,7 @@ class ObservationPaperTrader:
             "filled_pending": filled_pending,
             "expired_pending": expired_pending,
             "blocked_reasons": dict(blocked_reasons),
+            "blocked_signals": blocked_signals,
         }
 
     def reconcile_settlements(self):
@@ -296,9 +301,11 @@ class ObservationPaperTrader:
         estimated_fee = self._estimate_entry_fee_cents(entry_price_cents, contracts)
         return {
             "ticker": ticker,
+            "signal": "buy",
             "side": signal.get("side", ""),
             "contracts": contracts,
             "entry_price_cents": entry_price_cents,
+            "price_cents": entry_price_cents,
             "cost_cents": entry_price_cents * contracts,
             "estimated_entry_fee_cents": estimated_fee,
             "city_code": signal.get("city_code", ""),
@@ -309,6 +316,10 @@ class ObservationPaperTrader:
             "fee_adjusted_edge": round(signal.get("fee_adjusted_edge", 0) or 0, 4),
             "our_prob": round(signal.get("our_prob", 0) or 0, 4),
             "market_prob": round(signal.get("market_prob", 0) or 0, 4),
+            "predicted_high": signal.get("predicted_high"),
+            "model_means": signal.get("model_means", {}),
+            "model_stds": signal.get("model_stds", {}),
+            "execution_status": "paper_filled",
             "reasoning": signal.get("reasoning", ""),
             "opened_at": opened_at,
             "cycle": cycle,
@@ -320,6 +331,7 @@ class ObservationPaperTrader:
         return {
             "order_id": "paper_%s_%d_%d" % (ticker, cycle, int(time.time() * 1000)),
             "ticker": ticker,
+            "signal": "buy",
             "side": signal.get("side", ""),
             "contracts": contracts,
             "limit_price_cents": limit_price,
@@ -333,10 +345,14 @@ class ObservationPaperTrader:
             "fee_adjusted_edge": round(signal.get("fee_adjusted_edge", 0) or 0, 4),
             "our_prob": round(signal.get("our_prob", 0) or 0, 4),
             "market_prob": round(signal.get("market_prob", 0) or 0, 4),
+            "predicted_high": signal.get("predicted_high"),
+            "model_means": signal.get("model_means", {}),
+            "model_stds": signal.get("model_stds", {}),
             "reasoning": signal.get("reasoning", ""),
             "placed_at": opened_at,
             "cycle": cycle,
             "execution_style": signal.get("execution_style", "maker"),
+            "execution_status": "paper_queued",
             "status": "resting",
         }
 
@@ -370,6 +386,7 @@ class ObservationPaperTrader:
                 continue
 
             fill_signal = {
+                "signal": "buy",
                 "ticker": order.get("ticker", ""),
                 "side": order.get("side", ""),
                 "city_code": order.get("city_code", ""),
@@ -380,6 +397,9 @@ class ObservationPaperTrader:
                 "fee_adjusted_edge": order.get("fee_adjusted_edge", 0),
                 "our_prob": order.get("our_prob", 0),
                 "market_prob": order.get("market_prob", 0),
+                "predicted_high": order.get("predicted_high"),
+                "model_means": order.get("model_means", {}),
+                "model_stds": order.get("model_stds", {}),
                 "reasoning": order.get("reasoning", ""),
             }
             position = self._build_position(
@@ -575,6 +595,14 @@ class ObservationPaperTrader:
             "last_reconciled_at": self.state.get("last_reconciled_at", ""),
             "last_trade_time": self.state.get("last_trade_time"),
         }
+
+    @staticmethod
+    def _build_blocked_signal(signal, reason):
+        row = dict(signal)
+        row["signal"] = "skip"
+        row["skip_reason"] = reason
+        row["execution_status"] = "paper_blocked"
+        return row
 
     def _check_daily_reset(self):
         today = self._today_et()
