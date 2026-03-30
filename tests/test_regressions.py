@@ -831,6 +831,128 @@ class ObservationBackfillRegressionTests(unittest.TestCase):
             self.assertTrue(any(row.get("event_type") == "paper_trade_resolved" for row in events))
             db.close()
 
+    def test_import_observation_export_rebuilds_local_store(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            payload = {
+                "generated_at": "2026-03-30T18:00:00+00:00",
+                "daily_summary": [
+                    {
+                        "date": "2026-03-30",
+                        "scan_cycles": 1,
+                        "markets_scanned": 10,
+                        "signals_found": 1,
+                        "trades_placed_live": 0,
+                        "diag_null": 0,
+                        "diag_evaluated": 10,
+                        "weather_errors": 0,
+                        "paper_entries": 0,
+                        "paper_filled_pending": 0,
+                        "paper_resting_orders": 0,
+                        "paper_expired_pending": 0,
+                        "paper_resolved": 1,
+                        "paper_wins": 1,
+                        "paper_losses": 0,
+                        "paper_net_profit_cents": 70,
+                        "settlement_lock_candidates": 0,
+                        "skip_reasons": {"no_edge": 9},
+                        "paper_blocked_reasons": {},
+                    }
+                ],
+                "recent_events": [
+                    {
+                        "timestamp": "2026-03-30T15:00:00+00:00",
+                        "event_type": "scan_cycle",
+                        "cycle": 9,
+                        "observation_mode": True,
+                        "markets_scanned": 10,
+                        "signals_found": 1,
+                        "trades_placed": 0,
+                        "diag_null": 0,
+                        "diag_evaluated": 10,
+                        "diag_skips": {"no_edge": 9},
+                        "weather_api_error": "",
+                        "paper_entries": 0,
+                        "paper_filled_pending": 0,
+                        "paper_resting_orders": 0,
+                        "paper_expired_pending": 0,
+                        "paper_blocked_reasons": {},
+                        "settlement_lock_candidates": 0,
+                        "top_signals": [{"ticker": "KXHIGHNY-TEST", "side": "no", "edge": 0.11, "strategy": "S1-Weather"}],
+                    },
+                    {
+                        "timestamp": "2026-03-30T22:00:00+00:00",
+                        "event_type": "paper_trade_resolved",
+                        "ticker": "KXHIGHNY-TEST",
+                        "side": "no",
+                        "contracts": 1,
+                        "strategy": "S1-Weather",
+                        "target_date": "2026-03-30",
+                        "cycle": 9,
+                        "status": "win",
+                        "limit_price_cents": 30,
+                        "current_price_cents": 0,
+                        "entry_price_cents": 30,
+                        "reserved_cost_cents": 30,
+                        "cost_cents": 30,
+                        "gross_profit_cents": 70,
+                        "net_profit_cents": 70,
+                        "market_result": "no",
+                        "confirmation_verdict": "CONFIRM",
+                    },
+                ],
+                "recent_decisions": [
+                    {
+                        "timestamp": "2026-03-30T15:00:00+00:00",
+                        "cycle": 9,
+                        "observation_mode": True,
+                        "ticker": "KXHIGHNY-TEST",
+                        "event_ticker": "KXHIGHNY-TEST",
+                        "city_code": "NYC",
+                        "target_date": "2026-03-30",
+                        "signal": "buy",
+                        "execution_status": "paper_blocked",
+                        "side": "no",
+                        "skip_reason": None,
+                        "strategy": "S1-Weather",
+                        "execution_style": "maker",
+                        "edge": 0.11,
+                        "fee_adjusted_edge": 0.08,
+                        "our_prob": 0.75,
+                        "market_prob": 0.3,
+                        "price_cents": 30,
+                        "entry_price_cents": 30,
+                        "limit_price_cents": 28,
+                        "risk_price_cents": 28,
+                        "yes_price_cents": 70,
+                        "no_price_cents": 30,
+                        "predicted_high": 48,
+                        "todays_high_snapshot": 45,
+                        "confirmation_verdict": "CONFIRM",
+                        "market_title": "NYC 47-48",
+                        "market_subtitle": "47 to 48",
+                        "strike_type": "between",
+                        "floor_strike": 47,
+                        "cap_strike": 48,
+                    }
+                ],
+            }
+
+            summary = backfill_observation_db.import_observation_export(
+                payload,
+                replace=True,
+                state_dir=temp_dir,
+            )
+
+            self.assertEqual(summary["scan_cycles_imported"], 1)
+            self.assertEqual(summary["scan_decisions_imported"], 1)
+            self.assertEqual(summary["paper_events_imported"], 1)
+
+            db = BotDatabase(db_path=os.path.join(temp_dir, "bot_data.sqlite3"))
+            self.assertEqual(len(db.fetch_recent_decisions(hours=24 * 365, max_rows=20)), 1)
+            events = db.fetch_recent_events(hours=24 * 365, max_rows=20)
+            self.assertTrue(any(row.get("event_type") == "paper_trade_resolved" for row in events))
+            db.close()
+
 
 class TradeReviewerRegressionTests(unittest.TestCase):
 

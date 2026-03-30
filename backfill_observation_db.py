@@ -15,6 +15,23 @@ import config
 from observation_journal import ObservationJournal
 
 
+def _observation_paths(state_dir=None):
+    if state_dir is None:
+        return {
+            "events": config.OBSERVATION_EVENTS_FILE,
+            "decisions": config.SCAN_DECISIONS_FILE,
+            "daily_summary": config.OBSERVATION_DAILY_SUMMARY_FILE,
+            "db": config.BOT_DB_FILE,
+        }
+    base = state_dir
+    return {
+        "events": os.path.join(base, "observation_events.jsonl"),
+        "decisions": os.path.join(base, "scan_decisions.jsonl"),
+        "daily_summary": os.path.join(base, "observation_daily_summary.json"),
+        "db": os.path.join(base, "bot_data.sqlite3"),
+    }
+
+
 def _read_json(path, default):
     try:
         if os.path.exists(path):
@@ -210,17 +227,124 @@ def _remove_if_exists(path):
         pass
 
 
-def run_backfill(replace=False, include_live_trades=True, include_retro_locks=True):
-    if replace:
-        for path in (
-            config.OBSERVATION_EVENTS_FILE,
-            config.SCAN_DECISIONS_FILE,
-            config.OBSERVATION_DAILY_SUMMARY_FILE,
-            config.BOT_DB_FILE,
-        ):
-            _remove_if_exists(path)
+def _reset_observation_store(state_dir=None):
+    paths = _observation_paths(state_dir=state_dir)
+    for path in paths.values():
+        _remove_if_exists(path)
 
-    journal = ObservationJournal()
+
+def import_observation_export(payload, replace=False, state_dir=None):
+    paths = _observation_paths(state_dir=state_dir)
+    if replace:
+        _reset_observation_store(state_dir=state_dir)
+
+    payload = payload or {}
+    journal = ObservationJournal(
+        events_file=paths["events"],
+        decisions_file=paths["decisions"],
+        daily_summary_file=paths["daily_summary"],
+        db_path=paths["db"],
+    )
+    summary = {
+        "scan_cycles_imported": 0,
+        "scan_decisions_imported": 0,
+        "paper_events_imported": 0,
+    }
+
+    try:
+        recent_events = list(payload.get("recent_events", []) or [])
+        recent_decisions = list(payload.get("recent_decisions", []) or [])
+        decision_groups = defaultdict(list)
+        for row in recent_decisions:
+            if not isinstance(row, dict):
+                continue
+            key = (
+                int(row.get("cycle", 0) or 0),
+                str(row.get("timestamp", "") or ""),
+            )
+            decision_groups[key].append(row)
+
+        scan_events = []
+        paper_events = []
+        for row in recent_events:
+            if not isinstance(row, dict):
+                continue
+            if row.get("event_type") == "scan_cycle":
+                scan_events.append(row)
+            else:
+                paper_events.append(row)
+
+        scan_events.sort(key=lambda row: row.get("timestamp", ""))
+        paper_events.sort(key=lambda row: row.get("timestamp", ""))
+
+        for row in scan_events:
+            key = (
+                int(row.get("cycle", 0) or 0),
+                str(row.get("timestamp", "") or ""),
+            )
+            decisions = decision_groups.get(key, [])
+            journal.log_scan_cycle(
+                cycle=row.get("cycle", 0),
+                markets_scanned=row.get("markets_scanned", 0),
+                decisions=decisions,
+                signals_found=row.get("signals_found", 0),
+                trades_placed=row.get("trades_placed", 0),
+                skip_counts=row.get("diag_skips", {}),
+                null_count=row.get("diag_null", 0),
+                evaluated_count=row.get("diag_evaluated", 0),
+                weather_error=row.get("weather_api_error", ""),
+                observation_mode=row.get("observation_mode", True),
+                top_signals=row.get("top_signals", []),
+                paper_result={
+                    "executed": [{}] * int(row.get("paper_entries", 0) or 0),
+                    "filled_pending": [{}] * int(row.get("paper_filled_pending", 0) or 0),
+                    "queued": [{}] * int(row.get("paper_resting_orders", 0) or 0),
+                    "expired_pending": [{}] * int(row.get("paper_expired_pending", 0) or 0),
+                    "blocked_reasons": row.get("paper_blocked_reasons", {}) or {},
+                },
+                settlement_lock_candidates=row.get("settlement_lock_candidates", 0),
+                timestamp=row.get("timestamp", ""),
+            )
+            summary["scan_cycles_imported"] += 1
+            summary["scan_decisions_imported"] += len(decisions)
+
+        for row in paper_events:
+            journal.log_paper_event(
+                row.get("event_type", ""),
+                row,
+                timestamp=row.get("timestamp", ""),
+            )
+            summary["paper_events_imported"] += 1
+
+        daily_rows = payload.get("daily_summary")
+        if isinstance(daily_rows, list):
+            normalized = {
+                "updated_at": payload.get("generated_at", ""),
+                "days": {
+                    str(row.get("date", "")): row
+                    for row in daily_rows
+                    if isinstance(row, dict) and row.get("date")
+                },
+            }
+            if normalized["days"]:
+                config.atomic_json_save(paths["daily_summary"], normalized)
+    finally:
+        journal.close()
+
+    return summary
+
+
+def run_backfill(replace=False, include_live_trades=True, include_retro_locks=True, state_dir=None):
+    paths = _observation_paths(state_dir=state_dir)
+    if replace:
+        _reset_observation_store(state_dir=state_dir)
+
+    journal = ObservationJournal(
+        events_file=paths["events"],
+        decisions_file=paths["decisions"],
+        daily_summary_file=paths["daily_summary"],
+        db_path=paths["db"],
+    )
     summary = {
         "scan_days_backfilled": 0,
         "scan_decisions_backfilled": 0,
