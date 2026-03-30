@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import dashboard
 import config
+import backfill_observation_db
 from bot_db import BotDatabase
 from execution_models import build_entry_order
 from kalshi_bot import _prepare_entry_signal
@@ -716,6 +717,119 @@ class ObservationDashboardRegressionTests(unittest.TestCase):
             self.assertIn("strategy_scorecards", response)
             self.assertTrue(any(card["strategy"] == "S1-Weather" for card in response["strategy_scorecards"]))
             journal.close()
+
+
+class ObservationBackfillRegressionTests(unittest.TestCase):
+
+    def test_event_ticker_backfill_helper_strips_bucket_suffix(self):
+        self.assertEqual(
+            backfill_observation_db._event_ticker_from_ticker("KXHIGHNY-26MAR16-B54.5"),
+            "KXHIGHNY-26MAR16",
+        )
+        self.assertEqual(
+            backfill_observation_db._event_ticker_from_ticker("KXHIGHNY-26MAR16-T55"),
+            "KXHIGHNY-26MAR16",
+        )
+
+    def test_backfill_creates_db_rows_from_legacy_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            learning_state = os.path.join(temp_dir, "learning_state.json")
+            trade_log = os.path.join(temp_dir, "trade_history.json")
+            paper_locks = os.path.join(temp_dir, "paper_locks.json")
+            events_path = os.path.join(temp_dir, "observation_events.jsonl")
+            decisions_path = os.path.join(temp_dir, "scan_decisions.jsonl")
+            summary_path = os.path.join(temp_dir, "observation_daily_summary.json")
+            db_path = os.path.join(temp_dir, "bot_data.sqlite3")
+
+            with open(learning_state, "w", encoding="utf-8") as handle:
+                import json
+                json.dump({
+                    "scan_snapshots": {
+                        "2026-03-20": {
+                            "KXHIGHNY-26MAR20-B54.5": {
+                                "timestamp": "2026-03-20T15:00:00+00:00",
+                                "ticker": "KXHIGHNY-26MAR20-B54.5",
+                                "city_code": "NYC",
+                                "target_date": "2026-03-20",
+                                "signal": "buy",
+                                "side": "no",
+                                "edge": 0.12,
+                                "our_prob": 0.8,
+                                "market_prob": 0.3,
+                                "price_cents": 30,
+                            }
+                        }
+                    }
+                }, handle)
+
+            with open(trade_log, "w", encoding="utf-8") as handle:
+                import json
+                json.dump([
+                    {
+                        "timestamp": "2026-03-20T15:05:00+00:00",
+                        "settled_at": "2026-03-20T22:00:00+00:00",
+                        "ticker": "KXHIGHNY-26MAR20-B54.5",
+                        "strategy": "S1-Weather",
+                        "entry_type": "buy_fill",
+                        "side": "no",
+                        "price_cents": 30,
+                        "contracts": 1,
+                        "cost_cents": 30,
+                        "result": "win",
+                        "profit_cents": 70,
+                        "target_date": "2026-03-20",
+                    }
+                ], handle)
+
+            with open(paper_locks, "w", encoding="utf-8") as handle:
+                import json
+                json.dump({
+                    "retrospective": {
+                        "history": [
+                            {
+                                "ticker": "KXHIGHNY-26MAR20-B54.5",
+                                "snapshot_day": "2026-03-20",
+                                "timestamp": "2026-03-20T16:00:00+00:00",
+                                "city_code": "NYC",
+                                "target_date": "2026-03-20",
+                                "title": "NYC 54-55",
+                                "subtitle": "54 to 55",
+                                "strike_type": "between",
+                                "floor_strike": 54,
+                                "cap_strike": 55,
+                                "actual_high_f": 60,
+                                "lock_side": "no",
+                                "lock_type": "upper_bound_breached",
+                                "signal": "buy",
+                                "skip_reason": "",
+                                "price_cents": 35,
+                                "can_score": True,
+                                "estimated_profit_cents": 65,
+                            }
+                        ]
+                    }
+                }, handle)
+
+            with patch.object(config, "LEARNING_STATE_FILE", learning_state), \
+                    patch.object(config, "TRADE_LOG_FILE", trade_log), \
+                    patch.object(config, "PAPER_LOCKS_FILE", paper_locks), \
+                    patch.object(config, "OBSERVATION_EVENTS_FILE", events_path), \
+                    patch.object(config, "SCAN_DECISIONS_FILE", decisions_path), \
+                    patch.object(config, "OBSERVATION_DAILY_SUMMARY_FILE", summary_path), \
+                    patch.object(config, "BOT_DB_FILE", db_path):
+                summary = backfill_observation_db.run_backfill(replace=True)
+
+            self.assertEqual(summary["scan_days_backfilled"], 1)
+            self.assertEqual(summary["scan_decisions_backfilled"], 1)
+            self.assertEqual(summary["legacy_live_fill_events"], 1)
+            self.assertEqual(summary["legacy_live_resolved_events"], 1)
+            self.assertEqual(summary["retrospective_lock_resolved_events"], 1)
+
+            db = BotDatabase(db_path=db_path)
+            self.assertEqual(len(db.fetch_recent_decisions(hours=24 * 365, max_rows=50)), 2)
+            events = db.fetch_recent_events(hours=24 * 365, max_rows=50)
+            self.assertTrue(any(row.get("event_type") == "paper_trade_resolved" for row in events))
+            db.close()
 
 
 class TradeReviewerRegressionTests(unittest.TestCase):
