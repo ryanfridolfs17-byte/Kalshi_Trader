@@ -25,6 +25,7 @@ from trade_intelligence import TradeIntelligence
 from maker_strategy import MakerStrategy
 from trade_reviewer import TradeReviewer
 from settlement_lock import SettlementLockPaper
+from observation_journal import ObservationJournal
 from observation_paper import ObservationPaperTrader
 
 
@@ -79,6 +80,75 @@ def _build_market_price_map(markets):
             "last": int(market.get("last_price", 0) or 0),
         }
     return price_map
+
+
+def _enrich_logged_decisions(decisions, prepared_signals):
+    prepared_map = {
+        row.get("ticker", ""): row
+        for row in prepared_signals
+        if row.get("ticker", "")
+    }
+    enriched = []
+    for decision in decisions:
+        row = dict(decision)
+        prepared = prepared_map.get(row.get("ticker", ""))
+        if prepared:
+            for key in (
+                "execution_style",
+                "limit_price",
+                "risk_price_cents",
+                "current_price_cents",
+                "suggested_contracts",
+            ):
+                if key in prepared:
+                    row[key] = prepared.get(key)
+        enriched.append(row)
+    return enriched
+
+
+def _log_cycle_audit(
+    journal,
+    cycle,
+    markets,
+    decisions,
+    buy_signals,
+    trades_placed,
+    skip_counts=None,
+    null_count=0,
+    evaluated_count=0,
+    weather_error=None,
+    observation_mode=False,
+    paper_summary=None,
+    paper_lock_signals=None,
+):
+    try:
+        journal.log_scan_cycle(
+            cycle=cycle,
+            markets_scanned=len(markets),
+            decisions=decisions,
+            signals_found=len(buy_signals),
+            trades_placed=trades_placed,
+            skip_counts=skip_counts or {},
+            null_count=null_count,
+            evaluated_count=evaluated_count,
+            weather_error=weather_error,
+            observation_mode=observation_mode,
+            top_signals=[
+                {
+                    "ticker": row.get("ticker", ""),
+                    "side": row.get("side", ""),
+                    "edge": round(row.get("edge", 0) or 0, 4),
+                    "strategy": row.get("strategy", ""),
+                    "execution_style": row.get("execution_style", ""),
+                    "limit_price_cents": int(row.get("limit_price", row.get("price_cents", 0)) or 0),
+                }
+                for row in (buy_signals or [])[:5]
+            ],
+            paper_result=paper_summary or {},
+            settlement_lock_candidates=len(paper_lock_signals or []),
+        )
+    except Exception:
+        pass
 
 
 def _reconcile_positions(client, risk):
@@ -236,6 +306,7 @@ def main(shutdown_event=None):
     maker = MakerStrategy(kalshi_client=client, risk_manager=risk)
     paper_locks = SettlementLockPaper(kalshi_client=client, weather_engine=strategy.weather)
     paper_trader = ObservationPaperTrader(kalshi_client=client)
+    journal = ObservationJournal()
 
     auto_obs_reason = ""
     if getattr(config, "AUTO_OBSERVATION_MODE", False):
@@ -385,6 +456,21 @@ def main(shutdown_event=None):
             if not weather_markets:
                 print("  [BOT] No weather markets found")
                 _write_bot_status(cycle, risk, intel, maker, 0, 0)
+                _log_cycle_audit(
+                    journal=journal,
+                    cycle=cycle,
+                    markets=[],
+                    decisions=[],
+                    buy_signals=[],
+                    trades_placed=0,
+                    skip_counts={},
+                    null_count=0,
+                    evaluated_count=0,
+                    weather_error=getattr(strategy.weather, "last_api_error", None),
+                    observation_mode=risk.is_observation_mode(),
+                    paper_summary={},
+                    paper_lock_signals=[],
+                )
                 if shutdown_event and shutdown_event.is_set():
                     break
                 if shutdown_event:
@@ -408,6 +494,7 @@ def main(shutdown_event=None):
             # --- STEP 6: Evaluate all markets for edge ---
             buy_signals = []
             paper_lock_signals = []
+            all_decisions = []
             all_evaluated = []
             _skip_counts = {}
             _null_count = 0
@@ -429,14 +516,19 @@ def main(shutdown_event=None):
                         or getattr(config, "ALLOW_LIVE_SETTLEMENT_LOCK_TRADES", False)
                     ):
                         buy_signals.append(settlement_signal)
+                        all_decisions.append(settlement_signal)
+                        if settlement_signal.get("city_code") and settlement_signal.get("predicted_high") is not None:
+                            all_evaluated.append(settlement_signal)
                     elif settlement_signal and not risk.is_observation_mode():
                         _skip_counts["settlement_lock_live_disabled"] = _skip_counts.get("settlement_lock_live_disabled", 0) + 1
                 signal = strategy.evaluate_market(market, todays_high=todays_high)
                 if settlement_signal is None and signal and signal.get("signal") == "buy":
                     buy_signals.append(signal)
-                # Capture all signals with forecast data for learning
-                if signal and signal.get("city_code") and signal.get("predicted_high") is not None:
-                    all_evaluated.append(signal)
+                if signal:
+                    all_decisions.append(signal)
+                    # Capture all signals with forecast data for learning
+                    if signal.get("city_code") and signal.get("predicted_high") is not None:
+                        all_evaluated.append(signal)
                 # Track skip reasons for diagnostics
                 if signal is None:
                     _null_count += 1
@@ -489,6 +581,7 @@ def main(shutdown_event=None):
 
             if not buy_signals:
                 print("  [BOT] No actionable signals this cycle")
+                paper_summary = {}
                 if risk.is_observation_mode():
                     paper_summary = paper_trader.record_observation_cycle(
                         [],
@@ -517,6 +610,21 @@ def main(shutdown_event=None):
                                skip_counts=_skip_counts, null_count=_null_count,
                                evaluated_count=len(all_evaluated),
                                weather_error=strategy.weather.last_api_error)
+                _log_cycle_audit(
+                    journal=journal,
+                    cycle=cycle,
+                    markets=weather_markets,
+                    decisions=all_decisions,
+                    buy_signals=[],
+                    trades_placed=0,
+                    skip_counts=_skip_counts,
+                    null_count=_null_count,
+                    evaluated_count=len(all_evaluated),
+                    weather_error=strategy.weather.last_api_error,
+                    observation_mode=risk.is_observation_mode(),
+                    paper_summary=paper_summary,
+                    paper_lock_signals=paper_lock_signals,
+                )
                 interval = config.SCAN_INTERVAL
                 try:
                     reviewer.check_and_run()
@@ -543,8 +651,10 @@ def main(shutdown_event=None):
                     continue
                 prepared_buy_signals.append(prepared)
             buy_signals = prepared_buy_signals
+            logged_decisions = _enrich_logged_decisions(all_decisions, buy_signals)
             if not buy_signals:
                 print("  [BOT] Actionable signals were filtered by execution guards")
+                paper_summary = {}
                 if risk.is_observation_mode():
                     paper_summary = paper_trader.record_observation_cycle(
                         [],
@@ -573,6 +683,21 @@ def main(shutdown_event=None):
                                skip_counts=_skip_counts, null_count=_null_count,
                                evaluated_count=len(all_evaluated),
                                weather_error=strategy.weather.last_api_error)
+                _log_cycle_audit(
+                    journal=journal,
+                    cycle=cycle,
+                    markets=weather_markets,
+                    decisions=logged_decisions,
+                    buy_signals=[],
+                    trades_placed=0,
+                    skip_counts=_skip_counts,
+                    null_count=_null_count,
+                    evaluated_count=len(all_evaluated),
+                    weather_error=strategy.weather.last_api_error,
+                    observation_mode=risk.is_observation_mode(),
+                    paper_summary=paper_summary,
+                    paper_lock_signals=paper_lock_signals,
+                )
                 interval = config.SCAN_INTERVAL
                 try:
                     reviewer.check_and_run()
@@ -651,6 +776,21 @@ def main(shutdown_event=None):
                               skip_counts=_skip_counts, null_count=_null_count,
                               evaluated_count=len(all_evaluated),
                               weather_error=strategy.weather.last_api_error)
+                _log_cycle_audit(
+                    journal=journal,
+                    cycle=cycle,
+                    markets=weather_markets,
+                    decisions=logged_decisions,
+                    buy_signals=buy_signals,
+                    trades_placed=0,
+                    skip_counts=_skip_counts,
+                    null_count=_null_count,
+                    evaluated_count=len(all_evaluated),
+                    weather_error=strategy.weather.last_api_error,
+                    observation_mode=True,
+                    paper_summary=paper_summary,
+                    paper_lock_signals=paper_lock_signals,
+                )
                 try:
                     reviewer.check_and_run()
                 except Exception as e:
@@ -745,6 +885,21 @@ def main(shutdown_event=None):
                           skip_counts=_skip_counts, null_count=_null_count,
                           evaluated_count=len(all_evaluated),
                           weather_error=strategy.weather.last_api_error)
+            _log_cycle_audit(
+                journal=journal,
+                cycle=cycle,
+                markets=weather_markets,
+                decisions=logged_decisions,
+                buy_signals=buy_signals,
+                trades_placed=trades_this_cycle,
+                skip_counts=_skip_counts,
+                null_count=_null_count,
+                evaluated_count=len(all_evaluated),
+                weather_error=strategy.weather.last_api_error,
+                observation_mode=False,
+                paper_summary={},
+                paper_lock_signals=paper_lock_signals,
+            )
 
             # --- STEP 9: Daily learning review ---
             try:

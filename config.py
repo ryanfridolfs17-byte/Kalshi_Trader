@@ -264,6 +264,12 @@ LEARNING_STATE_FILE = os.path.join(STATE_DIR, "learning_state.json")
 FILL_TRACKING_FILE = os.path.join(STATE_DIR, "fill_tracking.json")
 PAPER_LOCKS_FILE = os.path.join(STATE_DIR, "paper_locks.json")
 PAPER_TRADES_FILE = os.path.join(STATE_DIR, "paper_trades.json")
+OBSERVATION_EVENTS_FILE = os.path.join(STATE_DIR, "observation_events.jsonl")
+SCAN_DECISIONS_FILE = os.path.join(STATE_DIR, "scan_decisions.jsonl")
+OBSERVATION_DAILY_SUMMARY_FILE = os.path.join(STATE_DIR, "observation_daily_summary.json")
+OBSERVATION_SUMMARY_RETENTION_DAYS = int(
+    os.environ.get("OBSERVATION_SUMMARY_RETENTION_DAYS", "30")
+)
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 BOT_VERSION = os.environ.get("BOT_VERSION", "4.1-fill-audit")

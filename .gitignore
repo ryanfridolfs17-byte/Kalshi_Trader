@@ -26,3 +26,6 @@ paper_locks.json
 paper_trades.json
 scan_log.json
 settlement_lock_replay.json
+observation_daily_summary.json
+observation_events.jsonl
+scan_decisions.jsonl

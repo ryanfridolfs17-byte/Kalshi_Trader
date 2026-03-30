@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import dashboard
 import config
 from kalshi_bot import _prepare_entry_signal
+from observation_journal import ObservationJournal
 from observation_paper import ObservationPaperTrader
 from risk_manager_v2 import RiskManager
 from strategy import Strategy
@@ -226,49 +227,138 @@ class ExecutionParityRegressionTests(unittest.TestCase):
         self.assertEqual(prepared["risk_price_cents"], 35)
 
     def test_observation_paper_queues_unfilled_maker_order(self):
-        trader = ObservationPaperTrader(kalshi_client=None)
-        trader.state = {
-            "active": {},
-            "pending_orders": {},
-            "history": [],
-            "summary": {},
-            "last_reconciled_at": "",
-            "last_trade_time": None,
-            "daily_date": "2026-03-27",
-            "trade_count_today": 0,
-            "daily_pnl_cents": 0,
-            "total_exposure_cents": 0,
-            "ticker_entry_dates": {},
-            "cycle_log": [],
-        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            paper_path = os.path.join(temp_dir, "paper_trades.json")
+            events_path = os.path.join(temp_dir, "observation_events.jsonl")
+            decisions_path = os.path.join(temp_dir, "scan_decisions.jsonl")
+            summary_path = os.path.join(temp_dir, "observation_daily_summary.json")
+            with patch.object(config, "PAPER_TRADES_FILE", paper_path), \
+                    patch.object(config, "OBSERVATION_EVENTS_FILE", events_path), \
+                    patch.object(config, "SCAN_DECISIONS_FILE", decisions_path), \
+                    patch.object(config, "OBSERVATION_DAILY_SUMMARY_FILE", summary_path):
+                trader = ObservationPaperTrader(kalshi_client=None)
+                trader.state = {
+                    "active": {},
+                    "pending_orders": {},
+                    "history": [],
+                    "summary": {},
+                    "last_reconciled_at": "",
+                    "last_trade_time": None,
+                    "daily_date": "2026-03-27",
+                    "trade_count_today": 0,
+                    "daily_pnl_cents": 0,
+                    "total_exposure_cents": 0,
+                    "ticker_entry_dates": {},
+                    "cycle_log": [],
+                }
 
-        result = trader.record_observation_cycle(
-            signals=[{
-                "ticker": "KXHIGHNY-TEST",
-                "city_code": "NYC",
-                "side": "no",
-                "suggested_contracts": 1,
-                "price_cents": 40,
-                "current_price_cents": 40,
-                "risk_price_cents": 30,
-                "limit_price": 30,
-                "execution_style": "maker",
-                "edge": 0.08,
-                "fee_adjusted_edge": 0.05,
-                "strategy": "S1-Weather",
-                "confirmation_verdict": "CONFIRM",
-                "target_date": "2026-03-27",
-            }],
-            cycle=1,
-            balance_cents=10000,
-            market_prices={"KXHIGHNY-TEST": {"no": 40}},
-            live_risk=None,
-            max_per_cycle=3,
-        )
+                result = trader.record_observation_cycle(
+                    signals=[{
+                        "ticker": "KXHIGHNY-TEST",
+                        "city_code": "NYC",
+                        "side": "no",
+                        "suggested_contracts": 1,
+                        "price_cents": 40,
+                        "current_price_cents": 40,
+                        "risk_price_cents": 30,
+                        "limit_price": 30,
+                        "execution_style": "maker",
+                        "edge": 0.08,
+                        "fee_adjusted_edge": 0.05,
+                        "strategy": "S1-Weather",
+                        "confirmation_verdict": "CONFIRM",
+                        "target_date": "2026-03-27",
+                    }],
+                    cycle=1,
+                    balance_cents=10000,
+                    market_prices={"KXHIGHNY-TEST": {"no": 40}},
+                    live_risk=None,
+                    max_per_cycle=3,
+                )
 
-        self.assertEqual(result["executed"], [])
-        self.assertEqual(len(result["queued"]), 1)
-        self.assertEqual(trader.state["summary"]["pending_count"], 1)
+                self.assertEqual(result["executed"], [])
+                self.assertEqual(len(result["queued"]), 1)
+                self.assertEqual(trader.state["summary"]["pending_count"], 1)
+
+
+class ObservationJournalRegressionTests(unittest.TestCase):
+
+    def test_observation_journal_writes_recent_history_and_daily_summary(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            journal = ObservationJournal(
+                events_file=os.path.join(temp_dir, "observation_events.jsonl"),
+                decisions_file=os.path.join(temp_dir, "scan_decisions.jsonl"),
+                daily_summary_file=os.path.join(temp_dir, "observation_daily_summary.json"),
+            )
+
+            journal.log_scan_cycle(
+                cycle=42,
+                markets_scanned=120,
+                decisions=[
+                    {
+                        "ticker": "KXHIGHNY-TEST",
+                        "city_code": "NYC",
+                        "target_date": "2026-03-30",
+                        "signal": "buy",
+                        "side": "no",
+                        "edge": 0.12,
+                        "price_cents": 33,
+                        "limit_price": 30,
+                        "risk_price_cents": 30,
+                        "strategy": "S1-Weather",
+                    },
+                    {
+                        "ticker": "KXHIGHBOS-TEST",
+                        "city_code": "BOS",
+                        "target_date": "2026-03-30",
+                        "signal": "skip",
+                        "side": "yes",
+                        "skip_reason": "yes_side_blocked",
+                    },
+                ],
+                signals_found=1,
+                trades_placed=0,
+                skip_counts={"yes_side_blocked": 3, "no_edge": 7},
+                null_count=5,
+                evaluated_count=90,
+                weather_error="",
+                observation_mode=True,
+                top_signals=[{"ticker": "KXHIGHNY-TEST", "side": "no", "edge": 0.12}],
+                paper_result={
+                    "executed": [{"ticker": "KXHIGHNY-TEST"}],
+                    "filled_pending": [],
+                    "queued": [],
+                    "expired_pending": [],
+                    "blocked_reasons": {"per_cycle_limit": 2},
+                },
+                settlement_lock_candidates=1,
+            )
+            journal.log_paper_event(
+                "paper_trade_resolved",
+                {
+                    "ticker": "KXHIGHNY-TEST",
+                    "side": "no",
+                    "contracts": 1,
+                    "strategy": "S1-Weather",
+                    "status": "win",
+                    "net_profit_cents": 68,
+                    "gross_profit_cents": 70,
+                    "market_result": "no",
+                    "resolved_at": "2026-03-30T18:00:00+00:00",
+                },
+            )
+
+            history = journal.get_recent_history(hours=72, include_decisions=True)
+
+            self.assertEqual(history["summary"]["scan_cycles"], 1)
+            self.assertEqual(history["summary"]["decision_rows"], 2)
+            self.assertEqual(history["summary"]["buy_decisions"], 1)
+            self.assertEqual(history["summary"]["paper_resolved"], 1)
+            self.assertEqual(history["summary"]["paper_wins"], 1)
+            self.assertEqual(history["summary"]["paper_net_profit_cents"], 68)
+            self.assertEqual(history["daily_summary"][-1]["paper_entries"], 1)
+            self.assertEqual(history["daily_summary"][-1]["paper_resolved"], 1)
+            self.assertEqual(history["daily_summary"][-1]["skip_reasons"]["yes_side_blocked"], 3)
 
 
 class RiskLifecycleRegressionTests(unittest.TestCase):

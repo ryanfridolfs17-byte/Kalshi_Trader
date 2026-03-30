@@ -17,10 +17,11 @@ import threading
 from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
 import config
+from observation_journal import ObservationJournal
 
 # State file paths — all routed through config.STATE_DIR for persistence
 STATE_FILES = {
@@ -33,6 +34,7 @@ STATE_FILES = {
     "learning": config.LEARNING_STATE_FILE,
     "paper_locks": config.PAPER_LOCKS_FILE,
     "paper_trades": config.PAPER_TRADES_FILE,
+    "observation_daily_summary": config.OBSERVATION_DAILY_SUMMARY_FILE,
 }
 
 DASHBOARD_PORT = int(os.environ.get("PORT", 8050))
@@ -42,6 +44,7 @@ _alerts_sent = {}
 
 # Shared KalshiClient instance — set by kalshi_bot.py after initialization
 _kalshi_client = None
+_observation_journal = ObservationJournal()
 
 
 def set_kalshi_client(client):
@@ -445,6 +448,7 @@ def _build_observation_response():
     paper_active = list((paper_trades.get("active", {}) or {}).values())[:5]
     paper_pending = list((paper_trades.get("pending_orders", {}) or {}).values())[:5]
     cycle_log = list((paper_trades.get("cycle_log", []) or []))[-5:]
+    observation_daily = _observation_journal.load_daily_summary(days=7)
 
     return {
         "status": "observation" if (bot_status.get("observation_mode") or risk_state.get("observation_mode")) else "inactive",
@@ -511,6 +515,7 @@ def _build_observation_response():
                 for row in lock_active
             ],
         },
+        "daily_summary": observation_daily,
     }
 
 
@@ -575,6 +580,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         elif path == "/api/observation":
             self._send_json(_build_observation_response())
+
+        elif path == "/api/observation/history":
+            parsed = urlparse(self.path)
+            qs = parse_qs(parsed.query)
+            hours = int(qs.get("hours", ["72"])[0])
+            events = int(qs.get("events", ["200"])[0])
+            self._send_json(
+                _observation_journal.get_recent_history(
+                    hours=hours,
+                    event_limit=events,
+                    include_decisions=False,
+                )
+            )
+
+        elif path == "/api/observation/export":
+            if not self._check_auth():
+                return
+            parsed = urlparse(self.path)
+            qs = parse_qs(parsed.query)
+            hours = int(qs.get("hours", ["72"])[0])
+            events = int(qs.get("events", ["300"])[0])
+            decisions = int(qs.get("decisions", ["1000"])[0])
+            self._send_json(
+                _observation_journal.get_recent_history(
+                    hours=hours,
+                    event_limit=events,
+                    decision_limit=decisions,
+                    include_decisions=True,
+                )
+            )
 
         elif path == "/api/state":
             if not self._check_auth():

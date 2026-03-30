@@ -14,12 +14,14 @@ from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
 import config
+from observation_journal import ObservationJournal
 from risk_manager_v2 import RiskManager
 
 
 class ObservationPaperTrader:
     def __init__(self, kalshi_client=None):
         self.client = kalshi_client
+        self.journal = ObservationJournal()
         self.state = self._load_state()
         self._ensure_defaults()
 
@@ -108,6 +110,7 @@ class ObservationPaperTrader:
                 self.state["last_trade_time"] = time.time()
                 self.state["trade_count_today"] = int(self.state.get("trade_count_today", 0) or 0) + 1
                 executed.append(position)
+                self.journal.log_paper_event("paper_order_filled", position)
                 placed_this_cycle.append(position)
                 continue
 
@@ -121,6 +124,7 @@ class ObservationPaperTrader:
             )
             self.state.setdefault("pending_orders", {})[order["order_id"]] = order
             self.state.setdefault("ticker_entry_dates", {})[order["ticker"]] = self._today_et()
+            self.journal.log_paper_event("paper_order_queued", order)
             queued.append(order)
             placed_this_cycle.append(order)
 
@@ -185,6 +189,7 @@ class ObservationPaperTrader:
                     "net_profit_cents": net,
                 })
                 history.append(resolved)
+                self.journal.log_paper_event("paper_trade_resolved", resolved)
                 del active[ticker]
                 self.state["daily_pnl_cents"] = int(self.state.get("daily_pnl_cents", 0) or 0) + net
                 changed = True
@@ -203,6 +208,7 @@ class ObservationPaperTrader:
                         "net_profit_cents": 0,
                     })
                     history.append(expired)
+                    self.journal.log_paper_event("paper_trade_expired_unknown", expired)
                     del active[ticker]
                     changed = True
 
@@ -350,6 +356,7 @@ class ObservationPaperTrader:
                     "net_profit_cents": 0,
                 })
                 history.append(expired_row)
+                self.journal.log_paper_event("paper_order_expired_unfilled", expired_row)
                 expired.append(expired_row)
                 del pending_orders[order_id]
                 continue
@@ -386,6 +393,7 @@ class ObservationPaperTrader:
             self.state["last_trade_time"] = time.time()
             self.state["trade_count_today"] = int(self.state.get("trade_count_today", 0) or 0) + 1
             filled.append(position)
+            self.journal.log_paper_event("paper_order_filled", position)
             del pending_orders[order_id]
 
         if history:
