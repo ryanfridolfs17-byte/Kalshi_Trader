@@ -597,6 +597,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         hours=hours,
                         event_limit=events,
                         include_decisions=False,
+                        prefer_db=False,
+                        fast_mode=True,
                     )
                 )
             except Exception as e:
@@ -617,6 +619,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         event_limit=events,
                         decision_limit=decisions,
                         include_decisions=True,
+                        prefer_db=False,
+                        fast_mode=True,
                     )
                 )
             except Exception as e:

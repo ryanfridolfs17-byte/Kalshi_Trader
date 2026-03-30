@@ -178,37 +178,73 @@ class ObservationJournal:
             rows = rows[-days:]
         return rows
 
-    def get_recent_history(self, hours=72, event_limit=200, decision_limit=500, include_decisions=False):
+    @staticmethod
+    def _history_byte_budget(path, max_rows):
+        max_rows = max(1, _as_int(max_rows))
+        per_row = 1024 if str(path).endswith(".jsonl") and "decisions" not in str(path) else 2048
+        floor = 512 * 1024 if "decisions" in str(path) else 256 * 1024
+        ceiling = 16 * 1024 * 1024 if "decisions" in str(path) else 4 * 1024 * 1024
+        return min(max(max_rows * per_row, floor), ceiling)
+
+    def get_recent_history(
+        self,
+        hours=72,
+        event_limit=200,
+        decision_limit=500,
+        include_decisions=False,
+        prefer_db=True,
+        fast_mode=False,
+    ):
         hours = max(1, min(_as_int(hours), 24 * 14))
         event_limit = max(1, min(_as_int(event_limit), 1000))
         decision_limit = max(1, min(_as_int(decision_limit), 5000))
         all_events = []
         all_decisions = []
-        try:
-            all_events = self.db.fetch_recent_events(
-                hours=hours,
-                max_rows=max(event_limit * 20, 5000),
-            )
-            if include_decisions:
-                all_decisions = self.db.fetch_recent_decisions(
-                    hours=hours,
-                    max_rows=max(decision_limit * 20, 50000),
-                )
-        except Exception:
-            all_events = []
-            all_decisions = []
-        if not all_events:
+
+        if fast_mode:
             all_events = self._read_recent_jsonl(
                 self.events_file,
                 hours=hours,
-                max_rows=max(event_limit * 20, 5000),
+                max_rows=event_limit,
+                max_bytes=self._history_byte_budget(self.events_file, event_limit),
             )
-        if include_decisions and not all_decisions:
-            all_decisions = self._read_recent_jsonl(
-                self.decisions_file,
-                hours=hours,
-                max_rows=max(decision_limit * 20, 50000),
-            )
+            if include_decisions:
+                all_decisions = self._read_recent_jsonl(
+                    self.decisions_file,
+                    hours=hours,
+                    max_rows=decision_limit,
+                    max_bytes=self._history_byte_budget(self.decisions_file, decision_limit),
+                )
+        else:
+            if prefer_db:
+                try:
+                    all_events = self.db.fetch_recent_events(
+                        hours=hours,
+                        max_rows=max(event_limit * 4, 1000),
+                    )
+                    if include_decisions:
+                        all_decisions = self.db.fetch_recent_decisions(
+                            hours=hours,
+                            max_rows=max(decision_limit * 4, 5000),
+                        )
+                except Exception:
+                    all_events = []
+                    all_decisions = []
+            if not all_events:
+                all_events = self._read_recent_jsonl(
+                    self.events_file,
+                    hours=hours,
+                    max_rows=max(event_limit * 4, 1000),
+                    max_bytes=self._history_byte_budget(self.events_file, max(event_limit * 4, 1000)),
+                )
+            if include_decisions and not all_decisions:
+                all_decisions = self._read_recent_jsonl(
+                    self.decisions_file,
+                    hours=hours,
+                    max_rows=max(decision_limit * 4, 5000),
+                    max_bytes=self._history_byte_budget(self.decisions_file, max(decision_limit * 4, 5000)),
+                )
+
         recent_events = all_events[-event_limit:]
         recent_decisions = all_decisions[-decision_limit:] if include_decisions else []
 
@@ -222,7 +258,10 @@ class ObservationJournal:
         return {
             "generated_at": _utc_now_iso(),
             "hours": hours,
-            "summary": self._summarize_recent(all_events, all_decisions),
+            "summary": self._summarize_recent(
+                recent_events if fast_mode else all_events,
+                recent_decisions if fast_mode else all_decisions,
+            ),
             "daily_summary": daily_rows,
             "recent_events": recent_events,
             "recent_decisions": recent_decisions if include_decisions else [],

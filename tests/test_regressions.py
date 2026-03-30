@@ -526,6 +526,44 @@ class ObservationJournalRegressionTests(unittest.TestCase):
             self.assertEqual(history["summary"]["skip_reasons"]["no_edge"], 3)
             journal.close()
 
+    def test_observation_journal_fast_mode_uses_jsonl_without_db(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            events_path = os.path.join(temp_dir, "observation_events.jsonl")
+            decisions_path = os.path.join(temp_dir, "scan_decisions.jsonl")
+            journal = ObservationJournal(
+                events_file=events_path,
+                decisions_file=decisions_path,
+                daily_summary_file=os.path.join(temp_dir, "observation_daily_summary.json"),
+                db_path=os.path.join(temp_dir, "bot_data.sqlite3"),
+            )
+
+            now_ts = datetime.now(timezone.utc).isoformat()
+            with open(events_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    '{"timestamp":"%s","event_type":"scan_cycle","cycle":1,"markets_scanned":5,"signals_found":1,"trades_placed":0,"diag_null":0,"diag_evaluated":5,"diag_skips":{"no_edge":4},"paper_entries":0,"paper_filled_pending":0,"paper_resting_orders":0,"paper_expired_pending":0,"paper_blocked_reasons":{},"settlement_lock_candidates":0,"top_signals":[]}\n'
+                    % now_ts
+                )
+            with open(decisions_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    '{"timestamp":"%s","cycle":1,"observation_mode":true,"ticker":"KXHIGHNY-TEST","event_ticker":"KXHIGHNY-TEST","city_code":"NYC","target_date":"2026-03-30","signal":"buy","execution_status":"paper_blocked","side":"no","skip_reason":null,"strategy":"S1-Weather","execution_style":"maker","edge":0.11,"fee_adjusted_edge":0.08,"our_prob":0.75,"market_prob":0.3,"price_cents":30,"entry_price_cents":30,"limit_price_cents":28,"risk_price_cents":28,"yes_price_cents":70,"no_price_cents":30,"predicted_high":48,"todays_high_snapshot":45,"confirmation_verdict":"CONFIRM","market_title":"NYC 47-48","market_subtitle":"47 to 48","strike_type":"between","floor_strike":47,"cap_strike":48}\n'
+                    % now_ts
+                )
+
+            journal.db.close()
+            history = journal.get_recent_history(
+                hours=24,
+                event_limit=10,
+                decision_limit=10,
+                include_decisions=True,
+                prefer_db=False,
+                fast_mode=True,
+            )
+
+            self.assertEqual(history["summary"]["scan_cycles"], 1)
+            self.assertEqual(history["summary"]["decision_rows"], 1)
+            self.assertEqual(history["recent_decisions"][0]["ticker"], "KXHIGHNY-TEST")
+            journal.close()
+
     def test_observation_journal_uses_database_when_jsonl_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             events_path = os.path.join(temp_dir, "observation_events.jsonl")
