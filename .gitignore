@@ -29,3 +29,6 @@ settlement_lock_replay.json
 observation_daily_summary.json
 observation_events.jsonl
 scan_decisions.jsonl
+bot_data.sqlite3
+bot_data.sqlite3-shm
+bot_data.sqlite3-wal

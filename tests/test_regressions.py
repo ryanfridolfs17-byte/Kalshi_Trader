@@ -233,10 +233,12 @@ class ExecutionParityRegressionTests(unittest.TestCase):
             events_path = os.path.join(temp_dir, "observation_events.jsonl")
             decisions_path = os.path.join(temp_dir, "scan_decisions.jsonl")
             summary_path = os.path.join(temp_dir, "observation_daily_summary.json")
+            db_path = os.path.join(temp_dir, "bot_data.sqlite3")
             with patch.object(config, "PAPER_TRADES_FILE", paper_path), \
                     patch.object(config, "OBSERVATION_EVENTS_FILE", events_path), \
                     patch.object(config, "SCAN_DECISIONS_FILE", decisions_path), \
-                    patch.object(config, "OBSERVATION_DAILY_SUMMARY_FILE", summary_path):
+                    patch.object(config, "OBSERVATION_DAILY_SUMMARY_FILE", summary_path), \
+                    patch.object(config, "BOT_DB_FILE", db_path):
                 trader = ObservationPaperTrader(kalshi_client=None)
                 trader.state = {
                     "active": {},
@@ -280,6 +282,7 @@ class ExecutionParityRegressionTests(unittest.TestCase):
                 self.assertEqual(result["executed"], [])
                 self.assertEqual(len(result["queued"]), 1)
                 self.assertEqual(trader.state["summary"]["pending_count"], 1)
+                trader.journal.close()
 
 
 class ObservationJournalRegressionTests(unittest.TestCase):
@@ -290,6 +293,7 @@ class ObservationJournalRegressionTests(unittest.TestCase):
                 events_file=os.path.join(temp_dir, "observation_events.jsonl"),
                 decisions_file=os.path.join(temp_dir, "scan_decisions.jsonl"),
                 daily_summary_file=os.path.join(temp_dir, "observation_daily_summary.json"),
+                db_path=os.path.join(temp_dir, "bot_data.sqlite3"),
             )
 
             journal.log_scan_cycle(
@@ -361,6 +365,7 @@ class ObservationJournalRegressionTests(unittest.TestCase):
             self.assertEqual(history["daily_summary"][-1]["paper_resolved"], 1)
             self.assertEqual(history["daily_summary"][-1]["skip_reasons"]["yes_side_blocked"], 3)
             self.assertEqual(history["recent_decisions"][0]["execution_status"], "")
+            journal.close()
 
     def test_observation_journal_history_reads_recent_tail_only(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -369,6 +374,7 @@ class ObservationJournalRegressionTests(unittest.TestCase):
                 events_file=events_path,
                 decisions_file=os.path.join(temp_dir, "scan_decisions.jsonl"),
                 daily_summary_file=os.path.join(temp_dir, "observation_daily_summary.json"),
+                db_path=os.path.join(temp_dir, "bot_data.sqlite3"),
             )
 
             old_ts = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
@@ -390,6 +396,46 @@ class ObservationJournalRegressionTests(unittest.TestCase):
             self.assertEqual(history["summary"]["scan_cycles"], 3)
             self.assertEqual(len(history["recent_events"]), 3)
             self.assertEqual(history["summary"]["skip_reasons"]["no_edge"], 3)
+            journal.close()
+
+    def test_observation_journal_uses_database_when_jsonl_missing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            events_path = os.path.join(temp_dir, "observation_events.jsonl")
+            decisions_path = os.path.join(temp_dir, "scan_decisions.jsonl")
+            journal = ObservationJournal(
+                events_file=events_path,
+                decisions_file=decisions_path,
+                daily_summary_file=os.path.join(temp_dir, "observation_daily_summary.json"),
+                db_path=os.path.join(temp_dir, "bot_data.sqlite3"),
+            )
+
+            journal.log_scan_cycle(
+                cycle=7,
+                markets_scanned=12,
+                decisions=[{
+                    "ticker": "KXHIGHNY-TEST",
+                    "city_code": "NYC",
+                    "target_date": "2026-03-30",
+                    "signal": "skip",
+                    "side": "no",
+                    "skip_reason": "no_edge",
+                    "strategy": "S1-Weather",
+                }],
+                signals_found=0,
+                trades_placed=0,
+                skip_counts={"no_edge": 1},
+                observation_mode=True,
+            )
+
+            os.remove(events_path)
+            os.remove(decisions_path)
+
+            history = journal.get_recent_history(hours=24, include_decisions=True)
+
+            self.assertEqual(history["summary"]["scan_cycles"], 1)
+            self.assertEqual(history["summary"]["decision_rows"], 1)
+            self.assertEqual(history["recent_events"][0]["cycle"], 7)
+            journal.close()
 
 
 class TradeReviewerRegressionTests(unittest.TestCase):

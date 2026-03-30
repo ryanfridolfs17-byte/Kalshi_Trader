@@ -13,6 +13,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from bot_db import BotDatabase
 import config
 
 MARKET_TZ = ZoneInfo("America/New_York")
@@ -57,14 +58,24 @@ def _summary_day_start_utc(day_str):
 
 
 class ObservationJournal:
-    def __init__(self, events_file=None, decisions_file=None, daily_summary_file=None):
+    def __init__(self, events_file=None, decisions_file=None, daily_summary_file=None, db_path=None):
         self.events_file = events_file or config.OBSERVATION_EVENTS_FILE
         self.decisions_file = decisions_file or config.SCAN_DECISIONS_FILE
         self.daily_summary_file = daily_summary_file or config.OBSERVATION_DAILY_SUMMARY_FILE
+        self.db = BotDatabase(db_path=db_path or config.BOT_DB_FILE)
         self.retention_days = max(
             7,
             _as_int(getattr(config, "OBSERVATION_SUMMARY_RETENTION_DAYS", 30) or 30),
         )
+
+    def close(self):
+        try:
+            self.db.close()
+        except Exception:
+            pass
+
+    def __del__(self):
+        self.close()
 
     def log_scan_cycle(
         self,
@@ -107,16 +118,24 @@ class ObservationJournal:
         }
         self._append_jsonl(self.events_file, event)
 
+        decision_rows = []
         for decision in decisions or []:
+            decision_row = self._build_decision_row(
+                decision=decision,
+                cycle=cycle,
+                timestamp=ts,
+                observation_mode=observation_mode,
+            )
+            decision_rows.append(decision_row)
             self._append_jsonl(
                 self.decisions_file,
-                self._build_decision_row(
-                    decision=decision,
-                    cycle=cycle,
-                    timestamp=ts,
-                    observation_mode=observation_mode,
-                ),
+                decision_row,
             )
+
+        try:
+            self.db.record_scan_cycle(event, decision_rows)
+        except Exception:
+            pass
 
         self._update_daily_summary(scan_event=event)
         return event
@@ -144,6 +163,10 @@ class ObservationJournal:
             "confirmation_verdict": payload.get("confirmation_verdict", ""),
         }
         self._append_jsonl(self.events_file, row)
+        try:
+            self.db.record_paper_event(row)
+        except Exception:
+            pass
         self._update_daily_summary(paper_event=row)
         return row
 
@@ -159,16 +182,33 @@ class ObservationJournal:
         hours = max(1, min(_as_int(hours), 24 * 14))
         event_limit = max(1, min(_as_int(event_limit), 1000))
         decision_limit = max(1, min(_as_int(decision_limit), 5000))
-        all_events = self._read_recent_jsonl(
-            self.events_file,
-            hours=hours,
-            max_rows=max(event_limit * 20, 5000),
-        )
-        all_decisions = self._read_recent_jsonl(
-            self.decisions_file,
-            hours=hours,
-            max_rows=max(decision_limit * 20, 50000),
-        ) if include_decisions else []
+        all_events = []
+        all_decisions = []
+        try:
+            all_events = self.db.fetch_recent_events(
+                hours=hours,
+                max_rows=max(event_limit * 20, 5000),
+            )
+            if include_decisions:
+                all_decisions = self.db.fetch_recent_decisions(
+                    hours=hours,
+                    max_rows=max(decision_limit * 20, 50000),
+                )
+        except Exception:
+            all_events = []
+            all_decisions = []
+        if not all_events:
+            all_events = self._read_recent_jsonl(
+                self.events_file,
+                hours=hours,
+                max_rows=max(event_limit * 20, 5000),
+            )
+        if include_decisions and not all_decisions:
+            all_decisions = self._read_recent_jsonl(
+                self.decisions_file,
+                hours=hours,
+                max_rows=max(decision_limit * 20, 50000),
+            )
         recent_events = all_events[-event_limit:]
         recent_decisions = all_decisions[-decision_limit:] if include_decisions else []
 
