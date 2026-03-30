@@ -59,16 +59,25 @@ def _build_market_price_map(markets):
     return price_map
 
 
+def _decision_key(row):
+    return (
+        row.get("ticker", ""),
+        row.get("strategy", ""),
+        row.get("side", ""),
+        row.get("target_date", ""),
+    )
+
+
 def _enrich_logged_decisions(decisions, prepared_signals):
     prepared_map = {
-        row.get("ticker", ""): row
+        _decision_key(row): row
         for row in prepared_signals
         if row.get("ticker", "")
     }
     enriched = []
     for decision in decisions:
         row = dict(decision)
-        prepared = prepared_map.get(row.get("ticker", ""))
+        prepared = prepared_map.get(_decision_key(row))
         if prepared:
             for key in (
                 "execution_style",
@@ -87,19 +96,18 @@ def _merge_decision_updates(decisions, updates):
     merged = []
     update_map = {}
     for row in updates or []:
-        ticker = row.get("ticker", "")
-        if ticker:
-            update_map[ticker] = row
+        if row.get("ticker", ""):
+            update_map[_decision_key(row)] = row
 
     for decision in decisions or []:
         row = dict(decision)
-        update = update_map.pop(row.get("ticker", ""), None)
+        update = update_map.pop(_decision_key(row), None)
         if update:
             row.update(update)
         merged.append(row)
 
-    for ticker in sorted(update_map.keys()):
-        merged.append(dict(update_map[ticker]))
+    for key in sorted(update_map.keys()):
+        merged.append(dict(update_map[key]))
     return merged
 
 
@@ -1256,6 +1264,9 @@ def _write_bot_status(cycle, risk, intel, maker, signals_count, trades_count, ne
             "allow_settlement_lock_yes": bool(getattr(config, "ALLOW_SETTLEMENT_LOCK_YES", False)),
             "settlement_lock_min_local_hour": getattr(config, "SETTLEMENT_LOCK_MIN_LOCAL_HOUR", None),
             "settlement_lock_max_price_cents": getattr(config, "SETTLEMENT_LOCK_MAX_PRICE_CENTS", None),
+            "enable_observation_challenger_strategies": bool(getattr(config, "ENABLE_OBSERVATION_CHALLENGER_STRATEGIES", False)),
+            "paper_challenger_max_signals_per_cycle": getattr(config, "PAPER_CHALLENGER_MAX_SIGNALS_PER_CYCLE", None),
+            "paper_challenger_min_fee_adj_edge": getattr(config, "PAPER_CHALLENGER_MIN_FEE_ADJ_EDGE", None),
             "no_side_max_price_cents": getattr(config, "NO_SIDE_MAX_PRICE_CENTS", None),
             "longshot_floor_cents": getattr(config, "LONGSHOT_FLOOR_CENTS", None),
             "railway_git_commit_sha": os.environ.get("RAILWAY_GIT_COMMIT_SHA", ""),

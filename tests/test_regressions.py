@@ -17,12 +17,13 @@ import backfill_observation_db
 import sync_local
 from bot_db import BotDatabase
 from execution_models import build_entry_order
-from kalshi_bot import _prepare_entry_signal
+from kalshi_bot import _finalize_observation_decisions, _prepare_entry_signal
 from observation_journal import ObservationJournal
 from observation_paper import ObservationPaperTrader
+from paper_challengers import PaperChallengerEngine
 from risk_manager_v2 import RiskManager
 from strategy import Strategy
-from strategy_registry import build_strategy_scorecards
+from strategy_registry import StrategyRegistry, build_strategy_scorecards
 from trade_reviewer import TradeReviewer
 
 
@@ -837,6 +838,139 @@ class StrategyScorecardRegressionTests(unittest.TestCase):
             self.assertEqual(weather["fill_rate"], 1.0)
             self.assertIn("live_disabled_by_config", weather["promotion_blockers"])
             journal.close()
+
+
+class ObservationChallengerRegressionTests(unittest.TestCase):
+
+    class DummyWeatherStrategy:
+        def __init__(self, signal):
+            self.signal = signal
+
+        def evaluate_market(self, market, todays_high=None):
+            row = dict(self.signal)
+            row.setdefault("ticker", market.get("ticker", ""))
+            row.setdefault("city_code", market.get("_city_code", ""))
+            return row
+
+    class DummySettlementLock:
+        @staticmethod
+        def evaluate_market(market, todays_high=None):
+            return None
+
+        @staticmethod
+        def build_trade_signal(candidate, market, balance_cents):
+            return None
+
+    def test_registry_adds_next_day_no_paper_challenger_in_observation_mode(self):
+        signal = {
+            "ticker": "KXHIGHDEN-26MAR31-B60.5",
+            "strategy": "S1-Weather",
+            "signal": "skip",
+            "side": "no",
+            "skip_reason": "next_day_directional_blocked",
+            "price_cents": 67,
+            "yes_price_cents": 34,
+            "no_price_cents": 67,
+            "edge": 0.2239,
+            "fee_adjusted_edge": 0.2008,
+            "our_prob": 0.1061,
+            "market_prob": 0.67,
+            "target_date": "2026-03-31",
+            "city_code": "DEN",
+            "predicted_high": 58.1,
+            "strike_type": "between",
+            "floor_strike": 60,
+            "cap_strike": 61,
+        }
+        registry = StrategyRegistry(
+            weather_strategy=self.DummyWeatherStrategy(signal),
+            settlement_lock=self.DummySettlementLock(),
+        )
+        market = {"ticker": signal["ticker"], "_city_code": "DEN"}
+
+        with patch.object(config, "ENABLE_OBSERVATION_CHALLENGER_STRATEGIES", True), \
+                patch.object(config, "PAPER_CHALLENGER_ALLOW_NEXT_DAY_NO", True), \
+                patch.object(config, "PAPER_CHALLENGER_MIN_FEE_ADJ_EDGE", 0.05), \
+                patch.object(config, "PAPER_CHALLENGER_MIN_PRICE_CENTS", 35), \
+                patch.object(config, "PAPER_CHALLENGER_MAX_PRICE_CENTS", 80):
+            result = registry.evaluate_markets(
+                [market],
+                observed_highs={},
+                balance_cents=10000,
+                observation_mode=True,
+            )
+            self.assertEqual(len(result["buy_signals"]), 1)
+            self.assertEqual(result["buy_signals"][0]["strategy"], "S4-NextDayNoPaper")
+            self.assertEqual(result["buy_signals"][0]["execution_style"], "taker")
+            self.assertEqual(len(result["all_decisions"]), 2)
+
+            live_result = registry.evaluate_markets(
+                [market],
+                observed_highs={},
+                balance_cents=10000,
+                observation_mode=False,
+            )
+            self.assertEqual(live_result["buy_signals"], [])
+
+    def test_finalize_observation_decisions_keeps_same_ticker_different_strategies(self):
+        decisions = [
+            {
+                "ticker": "KXHIGHDEN-26MAR31-B60.5",
+                "strategy": "S1-Weather",
+                "signal": "skip",
+                "side": "no",
+                "skip_reason": "next_day_directional_blocked",
+                "target_date": "2026-03-31",
+            },
+            {
+                "ticker": "KXHIGHDEN-26MAR31-B60.5",
+                "strategy": "S4-NextDayNoPaper",
+                "signal": "buy",
+                "side": "no",
+                "target_date": "2026-03-31",
+            },
+        ]
+        paper_summary = {
+            "queued": [{
+                "ticker": "KXHIGHDEN-26MAR31-B60.5",
+                "strategy": "S4-NextDayNoPaper",
+                "side": "no",
+                "target_date": "2026-03-31",
+                "execution_status": "paper_queued",
+            }]
+        }
+
+        finalized = _finalize_observation_decisions(decisions, paper_summary)
+        self.assertEqual(len(finalized), 2)
+        s1 = next(row for row in finalized if row["strategy"] == "S1-Weather")
+        s4 = next(row for row in finalized if row["strategy"] == "S4-NextDayNoPaper")
+        self.assertEqual(s1["skip_reason"], "next_day_directional_blocked")
+        self.assertEqual(s4["execution_status"], "paper_queued")
+
+    def test_soft_settlement_lock_challenger_builds_signal(self):
+        engine = PaperChallengerEngine()
+        today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        signal = {
+            "ticker": "KXHIGHTSEA-26MAR30-B52.5",
+            "strategy": "S1-Weather",
+            "signal": "skip",
+            "side": "no",
+            "price_cents": 74,
+            "yes_price_cents": 27,
+            "no_price_cents": 74,
+            "target_date": today,
+            "city_code": "SEA",
+            "strike_type": "between",
+            "floor_strike": 52,
+            "cap_strike": 53,
+        }
+        with patch.object(config, "ENABLE_OBSERVATION_CHALLENGER_STRATEGIES", True), \
+                patch.object(config, "PAPER_CHALLENGER_ALLOW_SOFT_SETTLEMENT_LOCK", True), \
+                patch.object(config, "PAPER_CHALLENGER_SOFT_LOCK_MIN_LOCAL_HOUR", 0), \
+                patch.object(config, "PAPER_CHALLENGER_SOFT_LOCK_MAX_PRICE_CENTS", 85):
+            challengers = engine.generate({}, signal, todays_high=54, observation_mode=True)
+        self.assertEqual(len(challengers), 1)
+        self.assertEqual(challengers[0]["strategy"], "S5-SoftSettlementLockPaper")
 
 
 class ObservationDashboardRegressionTests(unittest.TestCase):

@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 from bot_db import BotDatabase
 import config
+from paper_challengers import PaperChallengerEngine
 
 
 def get_strategy_definitions():
@@ -38,17 +39,98 @@ def get_strategy_definitions():
                 "max_drawdown_cents": 250,
             },
         },
+        "S4-NextDayNoPaper": {
+            "label": "Paper Challenger: Next-Day NO",
+            "enabled": bool(getattr(config, "ENABLE_OBSERVATION_CHALLENGER_STRATEGIES", False)),
+            "live_enabled": False,
+            "paper_default": True,
+            "promotion_gate": {
+                "min_resolved": 30,
+                "min_profit_factor": 1.05,
+                "min_fill_rate": 0.95,
+                "max_drawdown_cents": 400,
+            },
+        },
+        "S5-SoftSettlementLockPaper": {
+            "label": "Paper Challenger: Soft Settlement Lock",
+            "enabled": bool(getattr(config, "ENABLE_OBSERVATION_CHALLENGER_STRATEGIES", False)),
+            "live_enabled": False,
+            "paper_default": True,
+            "promotion_gate": {
+                "min_resolved": 20,
+                "min_profit_factor": 1.03,
+                "min_fill_rate": 0.95,
+                "max_drawdown_cents": 300,
+            },
+        },
     }
 
 
 class StrategyRegistry:
-    def __init__(self, weather_strategy, settlement_lock):
+    def __init__(self, weather_strategy, settlement_lock, challenger_engine=None):
         self.weather_strategy = weather_strategy
         self.settlement_lock = settlement_lock
+        self.challenger_engine = challenger_engine or PaperChallengerEngine()
+
+    @staticmethod
+    def _with_observation_metadata(signal, todays_high=None):
+        if not signal:
+            return signal
+        row = dict(signal)
+        if todays_high is not None and row.get("todays_high_snapshot") is None:
+            row["todays_high_snapshot"] = todays_high
+        return row
+
+    def _select_paper_challengers(self, candidates, existing_signals):
+        if not candidates:
+            return []
+
+        max_total = max(
+            0,
+            int(getattr(config, "PAPER_CHALLENGER_MAX_SIGNALS_PER_CYCLE", 2) or 2),
+        )
+        if max_total <= 0:
+            return []
+
+        max_per_city = max(
+            1,
+            int(getattr(config, "PAPER_CHALLENGER_MAX_PER_CITY", 1) or 1),
+        )
+        existing_tickers = {
+            row.get("ticker", "")
+            for row in existing_signals or []
+            if row.get("ticker", "")
+        }
+        selected = []
+        city_counts = {}
+        seen_tickers = set(existing_tickers)
+        ranked = sorted(
+            candidates,
+            key=lambda row: (
+                -float(row.get("fee_adjusted_edge", 0) or 0),
+                -float(row.get("edge", 0) or 0),
+                int(row.get("price_cents", 0) or 0),
+            ),
+        )
+        for candidate in ranked:
+            ticker = candidate.get("ticker", "")
+            if not ticker or ticker in seen_tickers:
+                continue
+            city_code = candidate.get("city_code", "")
+            if city_code and city_counts.get(city_code, 0) >= max_per_city:
+                continue
+            selected.append(candidate)
+            seen_tickers.add(ticker)
+            if city_code:
+                city_counts[city_code] = city_counts.get(city_code, 0) + 1
+            if len(selected) >= max_total:
+                break
+        return selected
 
     def evaluate_markets(self, markets, observed_highs, balance_cents, observation_mode=False):
         buy_signals = []
         paper_lock_signals = []
+        paper_challenger_candidates = []
         all_decisions = []
         all_evaluated = []
         skip_counts = {}
@@ -68,6 +150,7 @@ class StrategyRegistry:
                     market,
                     balance_cents=balance_cents,
                 )
+                settlement_signal = self._with_observation_metadata(settlement_signal, todays_high=todays_high)
                 if settlement_signal and (
                     observation_mode
                     or getattr(config, "ALLOW_LIVE_SETTLEMENT_LOCK_TRADES", False)
@@ -80,18 +163,36 @@ class StrategyRegistry:
                     skip_counts["settlement_lock_live_disabled"] = skip_counts.get("settlement_lock_live_disabled", 0) + 1
 
             signal = self.weather_strategy.evaluate_market(market, todays_high=todays_high)
+            signal = self._with_observation_metadata(signal, todays_high=todays_high)
             if settlement_signal is None and signal and signal.get("signal") == "buy":
                 buy_signals.append(signal)
             if signal:
                 all_decisions.append(signal)
                 if signal.get("city_code") and signal.get("predicted_high") is not None:
                     all_evaluated.append(signal)
+                if observation_mode:
+                    paper_challenger_candidates.extend(
+                        self.challenger_engine.generate(
+                            market,
+                            signal,
+                            todays_high=todays_high,
+                            observation_mode=observation_mode,
+                        )
+                    )
 
             if signal is None:
                 null_count += 1
             elif signal.get("skip_reason"):
                 reason = signal.get("skip_reason", "?")
                 skip_counts[reason] = skip_counts.get(reason, 0) + 1
+
+        selected_challengers = self._select_paper_challengers(paper_challenger_candidates, buy_signals)
+        if selected_challengers:
+            buy_signals.extend(selected_challengers)
+            all_decisions.extend(selected_challengers)
+            for row in selected_challengers:
+                if row.get("city_code") and row.get("predicted_high") is not None:
+                    all_evaluated.append(row)
 
         return {
             "buy_signals": buy_signals,
