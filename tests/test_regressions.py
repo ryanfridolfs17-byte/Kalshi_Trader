@@ -2,7 +2,7 @@ import os
 import sys
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -361,6 +361,35 @@ class ObservationJournalRegressionTests(unittest.TestCase):
             self.assertEqual(history["daily_summary"][-1]["paper_resolved"], 1)
             self.assertEqual(history["daily_summary"][-1]["skip_reasons"]["yes_side_blocked"], 3)
             self.assertEqual(history["recent_decisions"][0]["execution_status"], "")
+
+    def test_observation_journal_history_reads_recent_tail_only(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            events_path = os.path.join(temp_dir, "observation_events.jsonl")
+            journal = ObservationJournal(
+                events_file=events_path,
+                decisions_file=os.path.join(temp_dir, "scan_decisions.jsonl"),
+                daily_summary_file=os.path.join(temp_dir, "observation_daily_summary.json"),
+            )
+
+            old_ts = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+            recent_ts = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+            with open(events_path, "w", encoding="utf-8") as handle:
+                for idx in range(4000):
+                    handle.write(
+                        '{"timestamp":"%s","event_type":"scan_cycle","cycle":%d,"markets_scanned":1,"signals_found":0,"trades_placed":0,"diag_null":0,"diag_evaluated":1,"diag_skips":{},"paper_entries":0,"paper_filled_pending":0,"paper_resting_orders":0,"paper_expired_pending":0,"paper_blocked_reasons":{},"settlement_lock_candidates":0,"top_signals":[]}\n'
+                        % (old_ts, idx)
+                    )
+                for idx in range(3):
+                    handle.write(
+                        '{"timestamp":"%s","event_type":"scan_cycle","cycle":%d,"markets_scanned":2,"signals_found":1,"trades_placed":0,"diag_null":0,"diag_evaluated":2,"diag_skips":{"no_edge":1},"paper_entries":0,"paper_filled_pending":0,"paper_resting_orders":0,"paper_expired_pending":0,"paper_blocked_reasons":{},"settlement_lock_candidates":0,"top_signals":[]}\n'
+                        % (recent_ts, 5000 + idx)
+                    )
+
+            history = journal.get_recent_history(hours=24, event_limit=10, include_decisions=False)
+
+            self.assertEqual(history["summary"]["scan_cycles"], 3)
+            self.assertEqual(len(history["recent_events"]), 3)
+            self.assertEqual(history["summary"]["skip_reasons"]["no_edge"], 3)
 
 
 class TradeReviewerRegressionTests(unittest.TestCase):

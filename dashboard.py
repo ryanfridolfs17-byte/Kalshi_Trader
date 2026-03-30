@@ -584,32 +584,38 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path == "/api/observation/history":
             parsed = urlparse(self.path)
             qs = parse_qs(parsed.query)
-            hours = int(qs.get("hours", ["72"])[0])
-            events = int(qs.get("events", ["200"])[0])
-            self._send_json(
-                _observation_journal.get_recent_history(
-                    hours=hours,
-                    event_limit=events,
-                    include_decisions=False,
+            try:
+                hours = int(qs.get("hours", ["72"])[0])
+                events = int(qs.get("events", ["200"])[0])
+                self._send_json(
+                    _observation_journal.get_recent_history(
+                        hours=hours,
+                        event_limit=events,
+                        include_decisions=False,
+                    )
                 )
-            )
+            except Exception as e:
+                self._send_json({"error": "Observation history unavailable", "detail": str(e)}, 500)
 
         elif path == "/api/observation/export":
             if not self._check_auth():
                 return
             parsed = urlparse(self.path)
             qs = parse_qs(parsed.query)
-            hours = int(qs.get("hours", ["72"])[0])
-            events = int(qs.get("events", ["300"])[0])
-            decisions = int(qs.get("decisions", ["1000"])[0])
-            self._send_json(
-                _observation_journal.get_recent_history(
-                    hours=hours,
-                    event_limit=events,
-                    decision_limit=decisions,
-                    include_decisions=True,
+            try:
+                hours = int(qs.get("hours", ["72"])[0])
+                events = int(qs.get("events", ["300"])[0])
+                decisions = int(qs.get("decisions", ["1000"])[0])
+                self._send_json(
+                    _observation_journal.get_recent_history(
+                        hours=hours,
+                        event_limit=events,
+                        decision_limit=decisions,
+                        include_decisions=True,
+                    )
                 )
-            )
+            except Exception as e:
+                self._send_json({"error": "Observation export unavailable", "detail": str(e)}, 500)
 
         elif path == "/api/state":
             if not self._check_auth():

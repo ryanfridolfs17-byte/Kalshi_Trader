@@ -8,6 +8,7 @@ trades resolved afterward.
 
 import json
 import os
+from collections import deque
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -156,10 +157,20 @@ class ObservationJournal:
 
     def get_recent_history(self, hours=72, event_limit=200, decision_limit=500, include_decisions=False):
         hours = max(1, min(_as_int(hours), 24 * 14))
-        all_events = self._read_recent_jsonl(self.events_file, hours=hours)
-        all_decisions = self._read_recent_jsonl(self.decisions_file, hours=hours) if include_decisions else []
-        recent_events = all_events[-max(1, min(_as_int(event_limit), 1000)):]
-        recent_decisions = all_decisions[-max(1, min(_as_int(decision_limit), 5000)):] if include_decisions else []
+        event_limit = max(1, min(_as_int(event_limit), 1000))
+        decision_limit = max(1, min(_as_int(decision_limit), 5000))
+        all_events = self._read_recent_jsonl(
+            self.events_file,
+            hours=hours,
+            max_rows=max(event_limit * 20, 5000),
+        )
+        all_decisions = self._read_recent_jsonl(
+            self.decisions_file,
+            hours=hours,
+            max_rows=max(decision_limit * 20, 50000),
+        ) if include_decisions else []
+        recent_events = all_events[-event_limit:]
+        recent_decisions = all_decisions[-decision_limit:] if include_decisions else []
 
         daily_rows = []
         cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
@@ -383,25 +394,57 @@ class ObservationJournal:
         except Exception:
             pass
 
-    def _read_recent_jsonl(self, path, hours=72):
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, _as_int(hours)))
-        rows = []
+    def _tail_lines(self, path, max_bytes):
         try:
-            if not os.path.exists(path):
-                return rows
-            with open(path, "r", encoding="utf-8") as handle:
-                for line in handle:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        row = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    ts = _parse_timestamp(row.get("timestamp"))
-                    if ts is None or ts < cutoff:
-                        continue
-                    rows.append(row)
+            with open(path, "rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                file_size = handle.tell()
+                if file_size <= 0:
+                    return []
+                block_size = 65536
+                remaining = min(file_size, max(65536, int(max_bytes or 0)))
+                chunks = deque()
+                while remaining > 0 and handle.tell() > 0:
+                    read_size = min(block_size, remaining, handle.tell())
+                    handle.seek(-read_size, os.SEEK_CUR)
+                    chunk = handle.read(read_size)
+                    handle.seek(-read_size, os.SEEK_CUR)
+                    chunks.appendleft(chunk)
+                    remaining -= read_size
+                    if handle.tell() == 0:
+                        break
+                payload = b"".join(chunks).decode("utf-8", errors="ignore")
+                return payload.splitlines()
         except Exception:
             return []
-        return rows
+
+    def _read_recent_jsonl(self, path, hours=72, max_rows=None, max_bytes=None):
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, _as_int(hours)))
+        rows = deque()
+        try:
+            if not os.path.exists(path):
+                return []
+            if max_bytes is None:
+                max_bytes = 32 * 1024 * 1024 if path == self.decisions_file else 4 * 1024 * 1024
+            lines = self._tail_lines(path, max_bytes=max_bytes)
+            if not lines:
+                return []
+            for raw_line in reversed(lines):
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ts = _parse_timestamp(row.get("timestamp"))
+                if ts is None:
+                    continue
+                if ts < cutoff:
+                    break
+                rows.appendleft(row)
+                if max_rows and len(rows) >= int(max_rows):
+                    break
+        except Exception:
+            return []
+        return list(rows)
