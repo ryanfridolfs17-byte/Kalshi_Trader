@@ -66,11 +66,13 @@ class ObservationJournal:
         db_path=None,
         recent_events_file=None,
         recent_decisions_file=None,
+        recent_cache_file=None,
     ):
         self.events_file = events_file or config.OBSERVATION_EVENTS_FILE
         self.decisions_file = decisions_file or config.SCAN_DECISIONS_FILE
         self.recent_events_file = recent_events_file or config.OBSERVATION_RECENT_EVENTS_FILE
         self.recent_decisions_file = recent_decisions_file or config.OBSERVATION_RECENT_DECISIONS_FILE
+        self.recent_cache_file = recent_cache_file or config.OBSERVATION_RECENT_CACHE_FILE
         self.daily_summary_file = daily_summary_file or config.OBSERVATION_DAILY_SUMMARY_FILE
         self.db = BotDatabase(db_path=db_path or config.BOT_DB_FILE)
         self.retention_days = max(
@@ -165,6 +167,7 @@ class ObservationJournal:
             pass
 
         self._update_daily_summary(scan_event=event)
+        self._update_recent_cache(scan_event=event, decision_rows=decision_rows)
         return event
 
     def log_paper_event(self, event_type, payload=None, timestamp=None):
@@ -201,6 +204,7 @@ class ObservationJournal:
         except Exception:
             pass
         self._update_daily_summary(paper_event=row)
+        self._update_recent_cache(paper_event=row)
         return row
 
     def load_daily_summary(self, days=7):
@@ -298,6 +302,43 @@ class ObservationJournal:
                 recent_events if fast_mode else all_events,
                 recent_decisions if fast_mode else all_decisions,
             ),
+            "daily_summary": daily_rows,
+            "recent_events": recent_events,
+            "recent_decisions": recent_decisions if include_decisions else [],
+        }
+
+    def get_cached_history(
+        self,
+        hours=72,
+        event_limit=200,
+        decision_limit=500,
+        include_decisions=False,
+    ):
+        hours = max(1, min(_as_int(hours), 24 * 14))
+        event_limit = max(1, min(_as_int(event_limit), 1000))
+        decision_limit = max(1, min(_as_int(decision_limit), 5000))
+        cache = self._read_recent_cache()
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+        def _within_hours(row):
+            ts = _parse_timestamp((row or {}).get("timestamp"))
+            return ts is not None and ts >= cutoff
+
+        filtered_events = [row for row in (cache.get("recent_events", []) or []) if _within_hours(row)]
+        filtered_decisions = [row for row in (cache.get("recent_decisions", []) or []) if _within_hours(row)]
+        recent_events = filtered_events[-event_limit:]
+        recent_decisions = filtered_decisions[-decision_limit:] if include_decisions else []
+
+        daily_rows = []
+        for row in self.load_daily_summary(days=self.retention_days):
+            day_dt = _summary_day_start_utc(row.get("date", ""))
+            if day_dt and day_dt >= cutoff - timedelta(days=1):
+                daily_rows.append(row)
+
+        return {
+            "generated_at": _utc_now_iso(),
+            "hours": hours,
+            "summary": self._summarize_recent(filtered_events, filtered_decisions if include_decisions else []),
             "daily_summary": daily_rows,
             "recent_events": recent_events,
             "recent_decisions": recent_decisions if include_decisions else [],
@@ -497,6 +538,66 @@ class ObservationJournal:
     def _merge_counter(target, incoming):
         for key, value in (incoming or {}).items():
             target[key] = _as_int(target.get(key, 0)) + _as_int(value)
+
+    def _blank_recent_cache(self):
+        return {
+            "updated_at": "",
+            "recent_events": [],
+            "recent_decisions": [],
+        }
+
+    def _read_recent_cache(self):
+        try:
+            if os.path.exists(self.recent_cache_file):
+                with open(self.recent_cache_file, "r", encoding="utf-8") as handle:
+                    data = json.load(handle)
+                    if isinstance(data, dict):
+                        data.setdefault("updated_at", "")
+                        data.setdefault("recent_events", [])
+                        data.setdefault("recent_decisions", [])
+                        return data
+        except Exception:
+            pass
+        return self._blank_recent_cache()
+
+    def _trim_recent_rows(self, rows, max_rows):
+        cutoff = datetime.now(timezone.utc) - timedelta(days=self.retention_days)
+        kept = []
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            ts = _parse_timestamp(row.get("timestamp"))
+            if ts is None:
+                continue
+            if ts < cutoff:
+                continue
+            kept.append(row)
+        if max_rows and len(kept) > max_rows:
+            kept = kept[-max_rows:]
+        return kept
+
+    def _update_recent_cache(self, scan_event=None, decision_rows=None, paper_event=None):
+        cache = self._read_recent_cache()
+        if scan_event:
+            cache["recent_events"].append(scan_event)
+        if decision_rows:
+            cache["recent_decisions"].extend([row for row in decision_rows if isinstance(row, dict)])
+        if paper_event:
+            cache["recent_events"].append(paper_event)
+
+        cache["recent_events"] = self._trim_recent_rows(
+            cache.get("recent_events", []),
+            self.recent_event_limit,
+        )
+        cache["recent_decisions"] = self._trim_recent_rows(
+            cache.get("recent_decisions", []),
+            self.recent_decision_limit,
+        )
+        cache["updated_at"] = _utc_now_iso()
+        try:
+            config.atomic_json_save(self.recent_cache_file, cache)
+        except Exception:
+            pass
 
     def _append_jsonl(self, path, row):
         self._append_many_jsonl(path, [row])

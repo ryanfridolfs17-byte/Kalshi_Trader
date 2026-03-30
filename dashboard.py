@@ -593,13 +593,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 hours = int(qs.get("hours", ["72"])[0])
                 events = int(qs.get("events", ["200"])[0])
                 self._send_json(
-                    _observation_journal.get_recent_history(
+                    _observation_journal.get_cached_history(
                         hours=hours,
                         event_limit=events,
                         include_decisions=False,
-                        prefer_db=False,
-                        fast_mode=True,
-                        cached_only=True,
                     )
                 )
             except Exception as e:
@@ -615,14 +612,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 events = int(qs.get("events", ["300"])[0])
                 decisions = int(qs.get("decisions", ["1000"])[0])
                 self._send_json(
-                    _observation_journal.get_recent_history(
+                    _observation_journal.get_cached_history(
                         hours=hours,
                         event_limit=events,
                         decision_limit=decisions,
                         include_decisions=True,
-                        prefer_db=False,
-                        fast_mode=True,
-                        cached_only=True,
                     )
                 )
             except Exception as e:

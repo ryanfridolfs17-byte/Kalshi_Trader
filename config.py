@@ -274,6 +274,7 @@ OBSERVATION_EVENTS_FILE = os.path.join(STATE_DIR, "observation_events.jsonl")
 SCAN_DECISIONS_FILE = os.path.join(STATE_DIR, "scan_decisions.jsonl")
 OBSERVATION_RECENT_EVENTS_FILE = os.path.join(STATE_DIR, "observation_recent_events.jsonl")
 OBSERVATION_RECENT_DECISIONS_FILE = os.path.join(STATE_DIR, "observation_recent_decisions.jsonl")
+OBSERVATION_RECENT_CACHE_FILE = os.path.join(STATE_DIR, "observation_recent_cache.json")
 OBSERVATION_DAILY_SUMMARY_FILE = os.path.join(STATE_DIR, "observation_daily_summary.json")
 BOT_DB_FILE = os.path.join(STATE_DIR, "bot_data.sqlite3")
 OBSERVATION_SUMMARY_RETENTION_DAYS = int(

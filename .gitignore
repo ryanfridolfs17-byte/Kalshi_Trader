@@ -31,6 +31,7 @@ observation_events.jsonl
 scan_decisions.jsonl
 observation_recent_events.jsonl
 observation_recent_decisions.jsonl
+observation_recent_cache.json
 bot_data.sqlite3
 bot_data.sqlite3-shm
 bot_data.sqlite3-wal
