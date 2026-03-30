@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import dashboard
 import config
 import backfill_observation_db
+import sync_local
 from bot_db import BotDatabase
 from execution_models import build_entry_order
 from kalshi_bot import _prepare_entry_signal
@@ -989,6 +990,59 @@ class ObservationBackfillRegressionTests(unittest.TestCase):
             self.assertEqual(len(db.fetch_recent_decisions(hours=24 * 365, max_rows=20)), 1)
             events = db.fetch_recent_events(hours=24 * 365, max_rows=20)
             self.assertTrue(any(row.get("event_type") == "paper_trade_resolved" for row in events))
+            db.close()
+
+
+class SyncLocalRegressionTests(unittest.TestCase):
+
+    def test_sync_local_falls_back_when_export_unavailable(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            calls = []
+
+            def fake_request(endpoint, token, timeout=30):
+                calls.append(endpoint)
+                if endpoint.endswith("/api/state"):
+                    return {
+                        "trades": [],
+                        "risk": {},
+                        "pnl": {},
+                        "bot_status": {},
+                        "scan_log": {},
+                        "maker": {},
+                        "learning": {
+                            "scan_snapshots": {
+                                "2026-03-20": {
+                                    "KXHIGHNY-26MAR20-B54.5": {
+                                        "timestamp": "2026-03-20T15:00:00+00:00",
+                                        "ticker": "KXHIGHNY-26MAR20-B54.5",
+                                        "city_code": "NYC",
+                                        "target_date": "2026-03-20",
+                                        "signal": "buy",
+                                        "side": "no",
+                                        "edge": 0.12,
+                                        "our_prob": 0.8,
+                                        "market_prob": 0.3,
+                                        "price_cents": 30,
+                                    }
+                                }
+                            }
+                        },
+                        "paper_locks": {"retrospective": {"history": []}},
+                        "paper_trades": {"history": [], "active": {}, "pending_orders": {}, "cycle_log": [], "summary": {}},
+                        "observation_daily_summary": {"updated_at": "", "days": {}},
+                    }
+                raise RuntimeError("HTTP 502: export unavailable")
+
+            with patch.object(sync_local, "_request_json", side_effect=fake_request):
+                sync_local.sync(
+                    url="https://example.com",
+                    token="token",
+                    state_dir=temp_dir,
+                    observation_hours=24,
+                )
+
+            db = BotDatabase(db_path=os.path.join(temp_dir, "bot_data.sqlite3"))
+            self.assertEqual(len(db.fetch_recent_decisions(hours=24 * 365, max_rows=20)), 1)
             db.close()
 
 

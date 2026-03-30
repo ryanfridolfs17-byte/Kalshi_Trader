@@ -32,6 +32,21 @@ def _observation_paths(state_dir=None):
     }
 
 
+def _legacy_paths(state_dir=None):
+    if state_dir is None:
+        return {
+            "learning_state": config.LEARNING_STATE_FILE,
+            "trade_log": config.TRADE_LOG_FILE,
+            "paper_locks": config.PAPER_LOCKS_FILE,
+        }
+    base = state_dir
+    return {
+        "learning_state": os.path.join(base, "learning_state.json"),
+        "trade_log": os.path.join(base, "trade_history.json"),
+        "paper_locks": os.path.join(base, "paper_locks.json"),
+    }
+
+
 def _read_json(path, default):
     try:
         if os.path.exists(path):
@@ -235,6 +250,7 @@ def _reset_observation_store(state_dir=None):
 
 def import_observation_export(payload, replace=False, state_dir=None):
     paths = _observation_paths(state_dir=state_dir)
+    legacy = _legacy_paths(state_dir=state_dir)
     if replace:
         _reset_observation_store(state_dir=state_dir)
 
@@ -336,6 +352,7 @@ def import_observation_export(payload, replace=False, state_dir=None):
 
 def run_backfill(replace=False, include_live_trades=True, include_retro_locks=True, state_dir=None):
     paths = _observation_paths(state_dir=state_dir)
+    legacy = _legacy_paths(state_dir=state_dir)
     if replace:
         _reset_observation_store(state_dir=state_dir)
 
@@ -357,7 +374,7 @@ def run_backfill(replace=False, include_live_trades=True, include_retro_locks=Tr
     }
 
     try:
-        learning_state = _read_json(config.LEARNING_STATE_FILE, {})
+        learning_state = _read_json(legacy["learning_state"], {})
         scan_snapshots = learning_state.get("scan_snapshots", {}) if isinstance(learning_state, dict) else {}
 
         for cycle, day in enumerate(sorted(scan_snapshots.keys()), start=1):
@@ -402,7 +419,7 @@ def run_backfill(replace=False, include_live_trades=True, include_retro_locks=Tr
             summary["scan_buy_decisions"] += len(buy_rows)
 
         if include_retro_locks:
-            paper_locks = _read_json(config.PAPER_LOCKS_FILE, {})
+            paper_locks = _read_json(legacy["paper_locks"], {})
             retro_history = (
                 (((paper_locks or {}).get("retrospective", {}) or {}).get("history", []))
                 if isinstance(paper_locks, dict)
@@ -453,7 +470,7 @@ def run_backfill(replace=False, include_live_trades=True, include_retro_locks=Tr
                         summary["retrospective_lock_resolved_events"] += 1
 
         if include_live_trades:
-            trades = _read_json(config.TRADE_LOG_FILE, [])
+            trades = _read_json(legacy["trade_log"], [])
             for row in trades:
                 if not isinstance(row, dict):
                     continue

@@ -15,7 +15,7 @@ import sys
 
 import requests
 
-from backfill_observation_db import import_observation_export
+from backfill_observation_db import import_observation_export, run_backfill
 
 
 FILE_MAP = {
@@ -47,8 +47,7 @@ def _request_json(endpoint, token, timeout=30):
         print("ERROR: Unauthorized - check your DASHBOARD_TOKEN")
         sys.exit(1)
     if response.status_code != 200:
-        print(f"ERROR: HTTP {response.status_code}: {response.text[:200]}")
-        sys.exit(1)
+        raise RuntimeError(f"HTTP {response.status_code}: {response.text[:200]}")
     return response.json()
 
 
@@ -62,7 +61,11 @@ def sync(url=None, token=None, state_dir=".", observation_hours=24 * 14):
 
     state_endpoint = f"{url.rstrip('/')}/api/state"
     print(f"Fetching {state_endpoint} ...")
-    data = _request_json(state_endpoint, token=token, timeout=30)
+    try:
+        data = _request_json(state_endpoint, token=token, timeout=30)
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}")
+        sys.exit(1)
     written = 0
 
     for key, filename in FILE_MAP.items():
@@ -80,19 +83,29 @@ def sync(url=None, token=None, state_dir=".", observation_hours=24 * 14):
         f"?hours={int(observation_hours)}&events=1000&decisions=5000"
     )
     print(f"\nFetching {export_endpoint} ...")
-    export_data = _request_json(export_endpoint, token=token, timeout=60)
-    import_summary = import_observation_export(
-        export_data,
-        replace=True,
-        state_dir=state_dir,
-    )
+    try:
+        export_data = _request_json(export_endpoint, token=token, timeout=60)
+        import_summary = import_observation_export(
+            export_data,
+            replace=True,
+            state_dir=state_dir,
+        )
+        import_mode = "Railway observation export"
+    except RuntimeError as exc:
+        print(f"WARNING: {exc}")
+        print("Falling back to local DB backfill from synced Railway state files ...")
+        import_summary = run_backfill(
+            replace=True,
+            include_live_trades=True,
+            include_retro_locks=True,
+            state_dir=state_dir,
+        )
+        import_mode = "legacy state backfill"
 
     print(f"\nSynced {written} state files")
     print(
-        "Observation import: "
-        f"{import_summary['scan_cycles_imported']} cycles, "
-        f"{import_summary['scan_decisions_imported']} decisions, "
-        f"{import_summary['paper_events_imported']} paper events"
+        f"Observation import ({import_mode}): "
+        f"{json.dumps(import_summary, separators=(',', ':'))}"
     )
 
 
