@@ -833,7 +833,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/trades"):
             if not self._check_auth():
                 return
-            from urllib.parse import parse_qs
             parsed = urlparse(self.path)
             qs = parse_qs(parsed.query)
             page = int(qs.get("page", ["1"])[0])

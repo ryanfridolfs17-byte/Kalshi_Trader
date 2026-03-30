@@ -1,7 +1,10 @@
+import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -901,6 +904,55 @@ class ObservationDashboardRegressionTests(unittest.TestCase):
             self.assertIn("strategy_scorecards", response)
             self.assertTrue(any(card["strategy"] == "S1-Weather" for card in response["strategy_scorecards"]))
             journal.close()
+
+    def test_observation_history_endpoint_returns_json(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            journal = ObservationJournal(
+                events_file=os.path.join(temp_dir, "observation_events.jsonl"),
+                decisions_file=os.path.join(temp_dir, "scan_decisions.jsonl"),
+                recent_events_file=os.path.join(temp_dir, "observation_recent_events.jsonl"),
+                recent_decisions_file=os.path.join(temp_dir, "observation_recent_decisions.jsonl"),
+                recent_cache_file=os.path.join(temp_dir, "observation_recent_cache.json"),
+                daily_summary_file=os.path.join(temp_dir, "observation_daily_summary.json"),
+                db_path=os.path.join(temp_dir, "bot_data.sqlite3"),
+            )
+            journal.log_scan_cycle(
+                cycle=3,
+                markets_scanned=8,
+                decisions=[{
+                    "ticker": "KXHIGHNY-TEST",
+                    "city_code": "NYC",
+                    "target_date": "2026-03-30",
+                    "signal": "skip",
+                    "side": "no",
+                    "strategy": "S1-Weather",
+                    "skip_reason": "no_edge",
+                }],
+                signals_found=0,
+                trades_placed=0,
+                skip_counts={"no_edge": 1},
+                observation_mode=True,
+            )
+
+            old_journal = dashboard._observation_journal
+            dashboard._observation_journal = journal
+            server = dashboard.HTTPServer(("127.0.0.1", 0), dashboard.DashboardHandler)
+            thread = threading.Thread(target=server.handle_request, daemon=True)
+            thread.start()
+            try:
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{server.server_port}/api/observation/history?hours=24&events=10",
+                    timeout=10,
+                ) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(response.status, 200)
+                self.assertEqual(payload["summary"]["scan_cycles"], 1)
+                self.assertEqual(len(payload["recent_events"]), 1)
+            finally:
+                server.server_close()
+                thread.join(timeout=2)
+                dashboard._observation_journal = old_journal
+                journal.close()
 
 
 class ObservationBackfillRegressionTests(unittest.TestCase):
