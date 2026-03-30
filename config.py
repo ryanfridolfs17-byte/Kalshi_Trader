@@ -272,10 +272,18 @@ PAPER_LOCKS_FILE = os.path.join(STATE_DIR, "paper_locks.json")
 PAPER_TRADES_FILE = os.path.join(STATE_DIR, "paper_trades.json")
 OBSERVATION_EVENTS_FILE = os.path.join(STATE_DIR, "observation_events.jsonl")
 SCAN_DECISIONS_FILE = os.path.join(STATE_DIR, "scan_decisions.jsonl")
+OBSERVATION_RECENT_EVENTS_FILE = os.path.join(STATE_DIR, "observation_recent_events.jsonl")
+OBSERVATION_RECENT_DECISIONS_FILE = os.path.join(STATE_DIR, "observation_recent_decisions.jsonl")
 OBSERVATION_DAILY_SUMMARY_FILE = os.path.join(STATE_DIR, "observation_daily_summary.json")
 BOT_DB_FILE = os.path.join(STATE_DIR, "bot_data.sqlite3")
 OBSERVATION_SUMMARY_RETENTION_DAYS = int(
     os.environ.get("OBSERVATION_SUMMARY_RETENTION_DAYS", "30")
+)
+OBSERVATION_RECENT_EVENT_LIMIT = int(
+    os.environ.get("OBSERVATION_RECENT_EVENT_LIMIT", "1500")
+)
+OBSERVATION_RECENT_DECISION_LIMIT = int(
+    os.environ.get("OBSERVATION_RECENT_DECISION_LIMIT", "6000")
 )
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")

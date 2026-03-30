@@ -254,11 +254,15 @@ class ExecutionParityRegressionTests(unittest.TestCase):
             paper_path = os.path.join(temp_dir, "paper_trades.json")
             events_path = os.path.join(temp_dir, "observation_events.jsonl")
             decisions_path = os.path.join(temp_dir, "scan_decisions.jsonl")
+            recent_events_path = os.path.join(temp_dir, "observation_recent_events.jsonl")
+            recent_decisions_path = os.path.join(temp_dir, "observation_recent_decisions.jsonl")
             summary_path = os.path.join(temp_dir, "observation_daily_summary.json")
             db_path = os.path.join(temp_dir, "bot_data.sqlite3")
             with patch.object(config, "PAPER_TRADES_FILE", paper_path), \
                     patch.object(config, "OBSERVATION_EVENTS_FILE", events_path), \
                     patch.object(config, "SCAN_DECISIONS_FILE", decisions_path), \
+                    patch.object(config, "OBSERVATION_RECENT_EVENTS_FILE", recent_events_path), \
+                    patch.object(config, "OBSERVATION_RECENT_DECISIONS_FILE", recent_decisions_path), \
                     patch.object(config, "OBSERVATION_DAILY_SUMMARY_FILE", summary_path), \
                     patch.object(config, "BOT_DB_FILE", db_path):
                 trader = ObservationPaperTrader(kalshi_client=None)
@@ -311,11 +315,15 @@ class ExecutionParityRegressionTests(unittest.TestCase):
             paper_path = os.path.join(temp_dir, "paper_trades.json")
             events_path = os.path.join(temp_dir, "observation_events.jsonl")
             decisions_path = os.path.join(temp_dir, "scan_decisions.jsonl")
+            recent_events_path = os.path.join(temp_dir, "observation_recent_events.jsonl")
+            recent_decisions_path = os.path.join(temp_dir, "observation_recent_decisions.jsonl")
             summary_path = os.path.join(temp_dir, "observation_daily_summary.json")
             db_path = os.path.join(temp_dir, "bot_data.sqlite3")
             with patch.object(config, "PAPER_TRADES_FILE", paper_path), \
                     patch.object(config, "OBSERVATION_EVENTS_FILE", events_path), \
                     patch.object(config, "SCAN_DECISIONS_FILE", decisions_path), \
+                    patch.object(config, "OBSERVATION_RECENT_EVENTS_FILE", recent_events_path), \
+                    patch.object(config, "OBSERVATION_RECENT_DECISIONS_FILE", recent_decisions_path), \
                     patch.object(config, "OBSERVATION_DAILY_SUMMARY_FILE", summary_path), \
                     patch.object(config, "BOT_DB_FILE", db_path):
                 trader = ObservationPaperTrader(kalshi_client=None)
@@ -369,12 +377,16 @@ class ExecutionParityRegressionTests(unittest.TestCase):
             paper_path = os.path.join(temp_dir, "paper_trades.json")
             events_path = os.path.join(temp_dir, "observation_events.jsonl")
             decisions_path = os.path.join(temp_dir, "scan_decisions.jsonl")
+            recent_events_path = os.path.join(temp_dir, "observation_recent_events.jsonl")
+            recent_decisions_path = os.path.join(temp_dir, "observation_recent_decisions.jsonl")
             summary_path = os.path.join(temp_dir, "observation_daily_summary.json")
             db_path = os.path.join(temp_dir, "bot_data.sqlite3")
             risk_path = os.path.join(temp_dir, "risk_state.json")
             with patch.object(config, "PAPER_TRADES_FILE", paper_path), \
                     patch.object(config, "OBSERVATION_EVENTS_FILE", events_path), \
                     patch.object(config, "SCAN_DECISIONS_FILE", decisions_path), \
+                    patch.object(config, "OBSERVATION_RECENT_EVENTS_FILE", recent_events_path), \
+                    patch.object(config, "OBSERVATION_RECENT_DECISIONS_FILE", recent_decisions_path), \
                     patch.object(config, "OBSERVATION_DAILY_SUMMARY_FILE", summary_path), \
                     patch.object(config, "BOT_DB_FILE", db_path), \
                     patch.object(config, "RISK_STATE_FILE", risk_path):
@@ -421,6 +433,8 @@ class ObservationJournalRegressionTests(unittest.TestCase):
             journal = ObservationJournal(
                 events_file=os.path.join(temp_dir, "observation_events.jsonl"),
                 decisions_file=os.path.join(temp_dir, "scan_decisions.jsonl"),
+                recent_events_file=os.path.join(temp_dir, "observation_recent_events.jsonl"),
+                recent_decisions_file=os.path.join(temp_dir, "observation_recent_decisions.jsonl"),
                 daily_summary_file=os.path.join(temp_dir, "observation_daily_summary.json"),
                 db_path=os.path.join(temp_dir, "bot_data.sqlite3"),
             )
@@ -502,6 +516,8 @@ class ObservationJournalRegressionTests(unittest.TestCase):
             journal = ObservationJournal(
                 events_file=events_path,
                 decisions_file=os.path.join(temp_dir, "scan_decisions.jsonl"),
+                recent_events_file=os.path.join(temp_dir, "observation_recent_events.jsonl"),
+                recent_decisions_file=os.path.join(temp_dir, "observation_recent_decisions.jsonl"),
                 daily_summary_file=os.path.join(temp_dir, "observation_daily_summary.json"),
                 db_path=os.path.join(temp_dir, "bot_data.sqlite3"),
             )
@@ -534,6 +550,8 @@ class ObservationJournalRegressionTests(unittest.TestCase):
             journal = ObservationJournal(
                 events_file=events_path,
                 decisions_file=decisions_path,
+                recent_events_file=os.path.join(temp_dir, "observation_recent_events.jsonl"),
+                recent_decisions_file=os.path.join(temp_dir, "observation_recent_decisions.jsonl"),
                 daily_summary_file=os.path.join(temp_dir, "observation_daily_summary.json"),
                 db_path=os.path.join(temp_dir, "bot_data.sqlite3"),
             )
@@ -565,6 +583,64 @@ class ObservationJournalRegressionTests(unittest.TestCase):
             self.assertEqual(history["recent_decisions"][0]["ticker"], "KXHIGHNY-TEST")
             journal.close()
 
+    def test_observation_journal_cached_history_reads_recent_cache_only(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            recent_events_path = os.path.join(temp_dir, "observation_recent_events.jsonl")
+            recent_decisions_path = os.path.join(temp_dir, "observation_recent_decisions.jsonl")
+            journal = ObservationJournal(
+                events_file=os.path.join(temp_dir, "observation_events.jsonl"),
+                decisions_file=os.path.join(temp_dir, "scan_decisions.jsonl"),
+                recent_events_file=recent_events_path,
+                recent_decisions_file=recent_decisions_path,
+                daily_summary_file=os.path.join(temp_dir, "observation_daily_summary.json"),
+                db_path=os.path.join(temp_dir, "bot_data.sqlite3"),
+            )
+
+            journal.log_scan_cycle(
+                cycle=9,
+                markets_scanned=12,
+                decisions=[{
+                    "ticker": "KXHIGHNY-TEST",
+                    "city_code": "NYC",
+                    "target_date": "2026-03-30",
+                    "signal": "buy",
+                    "side": "no",
+                    "strategy": "S1-Weather",
+                    "execution_status": "paper_queued",
+                }],
+                signals_found=1,
+                trades_placed=0,
+                observation_mode=True,
+            )
+            journal.log_paper_event("paper_trade_resolved", {
+                "ticker": "KXHIGHNY-TEST",
+                "side": "no",
+                "contracts": 1,
+                "strategy": "S1-Weather",
+                "status": "win",
+                "net_profit_cents": 70,
+            })
+
+            os.remove(journal.events_file)
+            os.remove(journal.decisions_file)
+            journal.db.close()
+
+            history = journal.get_recent_history(
+                hours=24,
+                event_limit=10,
+                decision_limit=10,
+                include_decisions=True,
+                prefer_db=False,
+                fast_mode=True,
+                cached_only=True,
+            )
+
+            self.assertEqual(history["summary"]["scan_cycles"], 1)
+            self.assertEqual(history["summary"]["paper_resolved"], 1)
+            self.assertEqual(history["summary"]["decision_rows"], 1)
+            self.assertEqual(history["recent_decisions"][0]["execution_status"], "paper_queued")
+            journal.close()
+
     def test_observation_journal_uses_database_when_jsonl_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             events_path = os.path.join(temp_dir, "observation_events.jsonl")
@@ -572,6 +648,8 @@ class ObservationJournalRegressionTests(unittest.TestCase):
             journal = ObservationJournal(
                 events_file=events_path,
                 decisions_file=decisions_path,
+                recent_events_file=os.path.join(temp_dir, "observation_recent_events.jsonl"),
+                recent_decisions_file=os.path.join(temp_dir, "observation_recent_decisions.jsonl"),
                 daily_summary_file=os.path.join(temp_dir, "observation_daily_summary.json"),
                 db_path=os.path.join(temp_dir, "bot_data.sqlite3"),
             )
@@ -613,6 +691,8 @@ class StrategyScorecardRegressionTests(unittest.TestCase):
             journal = ObservationJournal(
                 events_file=os.path.join(temp_dir, "observation_events.jsonl"),
                 decisions_file=os.path.join(temp_dir, "scan_decisions.jsonl"),
+                recent_events_file=os.path.join(temp_dir, "observation_recent_events.jsonl"),
+                recent_decisions_file=os.path.join(temp_dir, "observation_recent_decisions.jsonl"),
                 daily_summary_file=os.path.join(temp_dir, "observation_daily_summary.json"),
                 db_path=db_path,
             )
@@ -723,6 +803,8 @@ class ObservationDashboardRegressionTests(unittest.TestCase):
             journal = ObservationJournal(
                 events_file=events_path,
                 decisions_file=decisions_path,
+                recent_events_file=os.path.join(temp_dir, "observation_recent_events.jsonl"),
+                recent_decisions_file=os.path.join(temp_dir, "observation_recent_decisions.jsonl"),
                 daily_summary_file=daily_summary,
                 db_path=db_path,
             )
@@ -854,6 +936,8 @@ class ObservationBackfillRegressionTests(unittest.TestCase):
                     patch.object(config, "PAPER_LOCKS_FILE", paper_locks), \
                     patch.object(config, "OBSERVATION_EVENTS_FILE", events_path), \
                     patch.object(config, "SCAN_DECISIONS_FILE", decisions_path), \
+                    patch.object(config, "OBSERVATION_RECENT_EVENTS_FILE", os.path.join(temp_dir, "observation_recent_events.jsonl")), \
+                    patch.object(config, "OBSERVATION_RECENT_DECISIONS_FILE", os.path.join(temp_dir, "observation_recent_decisions.jsonl")), \
                     patch.object(config, "OBSERVATION_DAILY_SUMMARY_FILE", summary_path), \
                     patch.object(config, "BOT_DB_FILE", db_path):
                 summary = backfill_observation_db.run_backfill(replace=True)

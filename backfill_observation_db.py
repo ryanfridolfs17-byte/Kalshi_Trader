@@ -20,6 +20,8 @@ def _observation_paths(state_dir=None):
         return {
             "events": config.OBSERVATION_EVENTS_FILE,
             "decisions": config.SCAN_DECISIONS_FILE,
+            "recent_events": config.OBSERVATION_RECENT_EVENTS_FILE,
+            "recent_decisions": config.OBSERVATION_RECENT_DECISIONS_FILE,
             "daily_summary": config.OBSERVATION_DAILY_SUMMARY_FILE,
             "db": config.BOT_DB_FILE,
         }
@@ -27,6 +29,8 @@ def _observation_paths(state_dir=None):
     return {
         "events": os.path.join(base, "observation_events.jsonl"),
         "decisions": os.path.join(base, "scan_decisions.jsonl"),
+        "recent_events": os.path.join(base, "observation_recent_events.jsonl"),
+        "recent_decisions": os.path.join(base, "observation_recent_decisions.jsonl"),
         "daily_summary": os.path.join(base, "observation_daily_summary.json"),
         "db": os.path.join(base, "bot_data.sqlite3"),
     }
@@ -258,6 +262,8 @@ def import_observation_export(payload, replace=False, state_dir=None):
     journal = ObservationJournal(
         events_file=paths["events"],
         decisions_file=paths["decisions"],
+        recent_events_file=paths["recent_events"],
+        recent_decisions_file=paths["recent_decisions"],
         daily_summary_file=paths["daily_summary"],
         db_path=paths["db"],
     )
@@ -359,6 +365,8 @@ def run_backfill(replace=False, include_live_trades=True, include_retro_locks=Tr
     journal = ObservationJournal(
         events_file=paths["events"],
         decisions_file=paths["decisions"],
+        recent_events_file=paths["recent_events"],
+        recent_decisions_file=paths["recent_decisions"],
         daily_summary_file=paths["daily_summary"],
         db_path=paths["db"],
     )

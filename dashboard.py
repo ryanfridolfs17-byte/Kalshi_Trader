@@ -599,6 +599,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         include_decisions=False,
                         prefer_db=False,
                         fast_mode=True,
+                        cached_only=True,
                     )
                 )
             except Exception as e:
@@ -621,6 +622,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         include_decisions=True,
                         prefer_db=False,
                         fast_mode=True,
+                        cached_only=True,
                     )
                 )
             except Exception as e:

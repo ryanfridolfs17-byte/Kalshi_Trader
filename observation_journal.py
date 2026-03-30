@@ -58,14 +58,32 @@ def _summary_day_start_utc(day_str):
 
 
 class ObservationJournal:
-    def __init__(self, events_file=None, decisions_file=None, daily_summary_file=None, db_path=None):
+    def __init__(
+        self,
+        events_file=None,
+        decisions_file=None,
+        daily_summary_file=None,
+        db_path=None,
+        recent_events_file=None,
+        recent_decisions_file=None,
+    ):
         self.events_file = events_file or config.OBSERVATION_EVENTS_FILE
         self.decisions_file = decisions_file or config.SCAN_DECISIONS_FILE
+        self.recent_events_file = recent_events_file or config.OBSERVATION_RECENT_EVENTS_FILE
+        self.recent_decisions_file = recent_decisions_file or config.OBSERVATION_RECENT_DECISIONS_FILE
         self.daily_summary_file = daily_summary_file or config.OBSERVATION_DAILY_SUMMARY_FILE
         self.db = BotDatabase(db_path=db_path or config.BOT_DB_FILE)
         self.retention_days = max(
             7,
             _as_int(getattr(config, "OBSERVATION_SUMMARY_RETENTION_DAYS", 30) or 30),
+        )
+        self.recent_event_limit = max(
+            100,
+            _as_int(getattr(config, "OBSERVATION_RECENT_EVENT_LIMIT", 1500) or 1500),
+        )
+        self.recent_decision_limit = max(
+            100,
+            _as_int(getattr(config, "OBSERVATION_RECENT_DECISION_LIMIT", 6000) or 6000),
         )
 
     def close(self):
@@ -117,6 +135,12 @@ class ObservationJournal:
             "top_signals": list(top_signals or [])[:5],
         }
         self._append_jsonl(self.events_file, event)
+        self._append_recent_rows(
+            self.recent_events_file,
+            [event],
+            max_rows=self.recent_event_limit,
+            max_bytes=self._history_byte_budget(self.recent_events_file, self.recent_event_limit),
+        )
 
         decision_rows = []
         for decision in decisions or []:
@@ -127,10 +151,13 @@ class ObservationJournal:
                 observation_mode=observation_mode,
             )
             decision_rows.append(decision_row)
-            self._append_jsonl(
-                self.decisions_file,
-                decision_row,
-            )
+        self._append_many_jsonl(self.decisions_file, decision_rows)
+        self._append_recent_rows(
+            self.recent_decisions_file,
+            decision_rows,
+            max_rows=self.recent_decision_limit,
+            max_bytes=self._history_byte_budget(self.recent_decisions_file, self.recent_decision_limit),
+        )
 
         try:
             self.db.record_scan_cycle(event, decision_rows)
@@ -163,6 +190,12 @@ class ObservationJournal:
             "confirmation_verdict": payload.get("confirmation_verdict", ""),
         }
         self._append_jsonl(self.events_file, row)
+        self._append_recent_rows(
+            self.recent_events_file,
+            [row],
+            max_rows=self.recent_event_limit,
+            max_bytes=self._history_byte_budget(self.recent_events_file, self.recent_event_limit),
+        )
         try:
             self.db.record_paper_event(row)
         except Exception:
@@ -194,6 +227,7 @@ class ObservationJournal:
         include_decisions=False,
         prefer_db=True,
         fast_mode=False,
+        cached_only=False,
     ):
         hours = max(1, min(_as_int(hours), 24 * 14))
         event_limit = max(1, min(_as_int(event_limit), 1000))
@@ -202,18 +236,20 @@ class ObservationJournal:
         all_decisions = []
 
         if fast_mode:
+            events_path = self.recent_events_file if cached_only else self.events_file
+            decisions_path = self.recent_decisions_file if cached_only else self.decisions_file
             all_events = self._read_recent_jsonl(
-                self.events_file,
+                events_path,
                 hours=hours,
                 max_rows=event_limit,
-                max_bytes=self._history_byte_budget(self.events_file, event_limit),
+                max_bytes=self._history_byte_budget(events_path, event_limit),
             )
             if include_decisions:
                 all_decisions = self._read_recent_jsonl(
-                    self.decisions_file,
+                    decisions_path,
                     hours=hours,
                     max_rows=decision_limit,
-                    max_bytes=self._history_byte_budget(self.decisions_file, decision_limit),
+                    max_bytes=self._history_byte_budget(decisions_path, decision_limit),
                 )
         else:
             if prefer_db:
@@ -463,15 +499,49 @@ class ObservationJournal:
             target[key] = _as_int(target.get(key, 0)) + _as_int(value)
 
     def _append_jsonl(self, path, row):
+        self._append_many_jsonl(path, [row])
+
+    def _append_many_jsonl(self, path, rows):
         try:
+            rows = [row for row in (rows or []) if isinstance(row, dict)]
+            if not rows:
+                return
             directory = os.path.dirname(path)
             if directory:
                 os.makedirs(directory, exist_ok=True)
             with open(path, "a", encoding="utf-8") as handle:
-                handle.write(json.dumps(row, separators=(",", ":"), default=str))
-                handle.write("\n")
+                for row in rows:
+                    handle.write(json.dumps(row, separators=(",", ":"), default=str))
+                    handle.write("\n")
         except Exception:
             pass
+
+    def _rewrite_jsonl(self, path, rows):
+        try:
+            directory = os.path.dirname(path)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as handle:
+                for row in rows or []:
+                    if not isinstance(row, dict):
+                        continue
+                    handle.write(json.dumps(row, separators=(",", ":"), default=str))
+                    handle.write("\n")
+        except Exception:
+            pass
+
+    def _append_recent_rows(self, path, rows, max_rows, max_bytes):
+        rows = [row for row in (rows or []) if isinstance(row, dict)]
+        if not rows:
+            return
+        self._append_many_jsonl(path, rows)
+        trimmed = self._read_recent_jsonl(
+            path,
+            hours=self.retention_days * 24,
+            max_rows=max_rows,
+            max_bytes=max(max_bytes, self._history_byte_budget(path, max_rows)),
+        )
+        self._rewrite_jsonl(path, trimmed)
 
     def _tail_lines(self, path, max_bytes):
         try:
