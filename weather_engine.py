@@ -231,6 +231,10 @@ def _in_fetch_window():
     # If key is set, always allow fetching (paid tier has no limit)
     if _OM_KEY:
         return True
+    # While the bot is in long-running paper/observation mode, keep the
+    # forecast pipeline alive across redeploys instead of going blind after 6 PM.
+    if getattr(config, "ALLOW_OFF_HOURS_FORECAST_FETCH", False):
+        return True
     return start <= now_et.hour < end
 
 

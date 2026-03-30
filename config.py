@@ -350,6 +350,10 @@ PAPER_CHALLENGER_SOFT_LOCK_MIN_LOCAL_HOUR = int(
 PAPER_CHALLENGER_SOFT_LOCK_MAX_PRICE_CENTS = int(
     os.environ.get("PAPER_CHALLENGER_SOFT_LOCK_MAX_PRICE_CENTS", "85")
 )
+ALLOW_OFF_HOURS_FORECAST_FETCH = os.environ.get(
+    "ALLOW_OFF_HOURS_FORECAST_FETCH",
+    "true" if ENVIRONMENT == "production" and AUTO_OBSERVATION_MODE else "false"
+).lower() == "true"
 
 # === API URLS ===
 DEMO_API_URL = "https://demo-api.kalshi.co/trade-api/v2"

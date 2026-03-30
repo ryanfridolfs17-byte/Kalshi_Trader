@@ -25,6 +25,7 @@ from risk_manager_v2 import RiskManager
 from strategy import Strategy
 from strategy_registry import StrategyRegistry, build_strategy_scorecards
 from trade_reviewer import TradeReviewer
+import weather_engine
 
 
 class DummyWeather:
@@ -971,6 +972,24 @@ class ObservationChallengerRegressionTests(unittest.TestCase):
             challengers = engine.generate({}, signal, todays_high=54, observation_mode=True)
         self.assertEqual(len(challengers), 1)
         self.assertEqual(challengers[0]["strategy"], "S5-SoftSettlementLockPaper")
+
+
+class WeatherFetchWindowRegressionTests(unittest.TestCase):
+
+    class EveningDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            base = datetime(2026, 3, 30, 19, 30, tzinfo=ZoneInfo("America/New_York"))
+            if tz is None:
+                return base.replace(tzinfo=None)
+            return base.astimezone(tz)
+
+    @patch("weather_engine.datetime", EveningDateTime)
+    def test_off_hours_fetch_override_keeps_weather_engine_live(self):
+        with patch.object(config, "ALLOW_OFF_HOURS_FORECAST_FETCH", True):
+            self.assertTrue(weather_engine._in_fetch_window())
+        with patch.object(config, "ALLOW_OFF_HOURS_FORECAST_FETCH", False):
+            self.assertFalse(weather_engine._in_fetch_window())
 
 
 class ObservationDashboardRegressionTests(unittest.TestCase):
