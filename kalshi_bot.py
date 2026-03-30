@@ -27,41 +27,18 @@ from trade_reviewer import TradeReviewer
 from settlement_lock import SettlementLockPaper
 from observation_journal import ObservationJournal
 from observation_paper import ObservationPaperTrader
+from execution_models import (
+    apply_risk_to_order,
+    build_entry_order,
+    build_risk_signal,
+    display_price_cents,
+)
+from strategy_registry import StrategyRegistry
 
 
 def _prepare_entry_signal(signal, maker):
-    """Annotate a signal with the actual execution style and risk price."""
-    prepared = dict(signal)
-    price_cents = int(prepared.get("price_cents", 0) or 0)
-    if price_cents <= 0:
-        return None
-
-    edge = prepared.get("edge", 0)
-    fee_adj_edge = prepared.get("fee_adjusted_edge", 0)
-    verdict = prepared.get("confirmation_verdict", "")
-    is_confirmed = verdict == "CONFIRMED_OUTCOME"
-    use_taker = (
-        (is_confirmed and edge > getattr(config, "TAKER_MODE_MIN_EDGE", 0.15)
-         and fee_adj_edge > 0.10)
-        or (verdict == "STRONG"
-            and fee_adj_edge > getattr(config, "STRONG_TAKER_MIN_FEE_ADJ_EDGE", 0.20))
-    )
-
-    prepared["execution_style"] = "taker" if use_taker else "maker"
-    prepared["risk_price_cents"] = price_cents
-    prepared["current_price_cents"] = price_cents
-
-    if use_taker:
-        prepared["limit_price"] = price_cents
-        return prepared
-
-    limit_price = int(prepared.get("limit_price", 0) or 0) or maker.calculate_limit_price(prepared)
-    if not limit_price or limit_price <= 0:
-        return None
-
-    prepared["limit_price"] = limit_price
-    prepared["risk_price_cents"] = limit_price
-    return prepared
+    """Backwards-compatible wrapper around the shared entry-order builder."""
+    return build_entry_order(signal, maker=maker)
 
 
 def _build_market_price_map(markets):
@@ -344,6 +321,7 @@ def main(shutdown_event=None):
     paper_locks = SettlementLockPaper(kalshi_client=client, weather_engine=strategy.weather)
     paper_trader = ObservationPaperTrader(kalshi_client=client)
     journal = ObservationJournal()
+    strategy_registry = StrategyRegistry(weather_strategy=strategy, settlement_lock=paper_locks)
 
     auto_obs_reason = ""
     if getattr(config, "AUTO_OBSERVATION_MODE", False):
@@ -529,49 +507,18 @@ def main(shutdown_event=None):
                       f"yes_ask_dollars={_m0.get('yes_ask_dollars','N/A')}")
 
             # --- STEP 6: Evaluate all markets for edge ---
-            buy_signals = []
-            paper_lock_signals = []
-            all_decisions = []
-            all_evaluated = []
-            _skip_counts = {}
-            _null_count = 0
-            for market in weather_markets:
-                city_code = market.get("_city_code", "")
-                todays_high = obs_highs.get(city_code)
-                paper_lock = paper_locks.evaluate_market(market, todays_high=todays_high)
-                if paper_lock:
-                    paper_lock_signals.append(paper_lock)
-                settlement_signal = None
-                if getattr(config, "ENABLE_SETTLEMENT_LOCK_STRATEGY", False) and paper_lock:
-                    settlement_signal = paper_locks.build_trade_signal(
-                        paper_lock,
-                        market,
-                        balance_cents=balance,
-                    )
-                    if settlement_signal and (
-                        risk.is_observation_mode()
-                        or getattr(config, "ALLOW_LIVE_SETTLEMENT_LOCK_TRADES", False)
-                    ):
-                        buy_signals.append(settlement_signal)
-                        all_decisions.append(settlement_signal)
-                        if settlement_signal.get("city_code") and settlement_signal.get("predicted_high") is not None:
-                            all_evaluated.append(settlement_signal)
-                    elif settlement_signal and not risk.is_observation_mode():
-                        _skip_counts["settlement_lock_live_disabled"] = _skip_counts.get("settlement_lock_live_disabled", 0) + 1
-                signal = strategy.evaluate_market(market, todays_high=todays_high)
-                if settlement_signal is None and signal and signal.get("signal") == "buy":
-                    buy_signals.append(signal)
-                if signal:
-                    all_decisions.append(signal)
-                    # Capture all signals with forecast data for learning
-                    if signal.get("city_code") and signal.get("predicted_high") is not None:
-                        all_evaluated.append(signal)
-                # Track skip reasons for diagnostics
-                if signal is None:
-                    _null_count += 1
-                elif signal.get("skip_reason"):
-                    r = signal.get("skip_reason", "?")
-                    _skip_counts[r] = _skip_counts.get(r, 0) + 1
+            strategy_results = strategy_registry.evaluate_markets(
+                weather_markets,
+                observed_highs=obs_highs,
+                balance_cents=balance,
+                observation_mode=risk.is_observation_mode(),
+            )
+            buy_signals = strategy_results["buy_signals"]
+            paper_lock_signals = strategy_results["paper_lock_signals"]
+            all_decisions = strategy_results["all_decisions"]
+            all_evaluated = strategy_results["all_evaluated"]
+            _skip_counts = strategy_results["skip_counts"]
+            _null_count = strategy_results["null_count"]
 
             # Diagnostic summary
             _top = sorted(_skip_counts.items(), key=lambda x: -x[1])[:5]
@@ -865,60 +812,33 @@ def main(shutdown_event=None):
                 edge = signal.get("edge", 0)
                 side = signal.get("side", "?")
                 city_code = signal.get("city_code", "")
-                contracts = signal.get("suggested_contracts", 1)
-                price_cents = signal.get("price_cents", 0)
-                is_confirmed = signal.get("confirmation_verdict") == "CONFIRMED_OUTCOME"
-                is_arb = signal.get("strategy", "") == "S2-Arbitrage"
-
-                risk_price_cents = int(signal.get("risk_price_cents", price_cents) or price_cents)
-                cost_cents = risk_price_cents * contracts
-
-                # Build risk check signal
-                risk_signal = {
-                    "ticker": ticker,
-                    "city_code": city_code,
-                    "side": side,
-                    "price_cents": risk_price_cents,
-                    "contracts": contracts,
-                    "cost_cents": cost_cents,
-                    "edge": edge,
-                    "is_confirmed": is_confirmed,
-                    "is_arb": is_arb,
-                    "same_cycle": trades_this_cycle > 0,
-                }
-
+                contracts = signal.get("contracts", signal.get("suggested_contracts", 1))
+                risk_signal = build_risk_signal(signal, same_cycle=trades_this_cycle > 0)
                 approved, reason = risk.check_trade(risk_signal)
                 if not approved:
                     print("  [RISK] BLOCKED %s: %s" % (ticker, reason))
                     continue
 
-                # Re-read contracts (risk manager may have sized down)
-                contracts = risk_signal.get("contracts", contracts)
-                cost_cents = risk_price_cents * contracts
-                signal["suggested_contracts"] = contracts  # Update for trade log
+                apply_risk_to_order(signal, risk_signal)
+                contracts = signal.get("contracts", contracts)
 
-                # Calculate maker limit price
                 execution_style = signal.get("execution_style", "maker")
-                limit_price = int(signal.get("limit_price", 0) or 0)
+                limit_price = int(signal.get("limit_price_cents", signal.get("limit_price", 0)) or 0)
                 if execution_style == "maker" and limit_price <= 0:
                     print("  [MAKER] %s: invalid limit price %s - skipping" % (ticker, limit_price))
                     continue
 
                 # Place order
                 strat_name = signal.get("strategy", "?")
-                display_price = limit_price if execution_style == "maker" else risk_price_cents
+                display_price = display_price_cents(signal)
                 print("  [TRADE] %s %s %s edge=%.1f%% @ %dc x%d" % (
                     strat_name, side.upper(), ticker, edge * 100,
                     display_price, contracts))
 
                 order_signal = dict(signal)
-                order_signal["contracts"] = contracts
-                order_signal["city_code"] = city_code
-                order_signal["is_confirmed"] = is_confirmed
-                order_signal["is_arb"] = is_arb
                 use_taker = execution_style == "taker"
                 if use_taker:
-                    reason = "confirmed" if is_confirmed else "STRONG+high_edge"
+                    reason = "confirmed" if signal.get("is_confirmed", False) else "STRONG+high_edge"
                     print("  [TRADE] TAKER MODE (%s): %s edge=%.1f%%" % (reason, ticker, edge * 100))
                     order = maker.place_market_order(order_signal)
                 else:

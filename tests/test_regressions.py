@@ -10,11 +10,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import dashboard
 import config
+from bot_db import BotDatabase
+from execution_models import build_entry_order
 from kalshi_bot import _prepare_entry_signal
 from observation_journal import ObservationJournal
 from observation_paper import ObservationPaperTrader
 from risk_manager_v2 import RiskManager
 from strategy import Strategy
+from strategy_registry import build_strategy_scorecards
 from trade_reviewer import TradeReviewer
 
 
@@ -227,6 +230,23 @@ class ExecutionParityRegressionTests(unittest.TestCase):
         self.assertEqual(prepared["limit_price"], 35)
         self.assertEqual(prepared["risk_price_cents"], 35)
 
+    def test_build_entry_order_preserves_explicit_execution_style(self):
+        order = build_entry_order({
+            "ticker": "KXHIGHNY-TEST",
+            "side": "no",
+            "price_cents": 40,
+            "current_price_cents": 40,
+            "limit_price_cents": 28,
+            "execution_style": "maker",
+            "edge": 0.30,
+            "fee_adjusted_edge": 0.25,
+            "confirmation_verdict": "CONFIRMED_OUTCOME",
+        })
+
+        self.assertEqual(order["execution_style"], "maker")
+        self.assertEqual(order["limit_price_cents"], 28)
+        self.assertEqual(order["risk_price_cents"], 28)
+
     def test_observation_paper_queues_unfilled_maker_order(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             paper_path = os.path.join(temp_dir, "paper_trades.json")
@@ -282,6 +302,113 @@ class ExecutionParityRegressionTests(unittest.TestCase):
                 self.assertEqual(result["executed"], [])
                 self.assertEqual(len(result["queued"]), 1)
                 self.assertEqual(trader.state["summary"]["pending_count"], 1)
+                trader.journal.close()
+
+    def test_observation_paper_uses_final_order_metadata_for_fill(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            paper_path = os.path.join(temp_dir, "paper_trades.json")
+            events_path = os.path.join(temp_dir, "observation_events.jsonl")
+            decisions_path = os.path.join(temp_dir, "scan_decisions.jsonl")
+            summary_path = os.path.join(temp_dir, "observation_daily_summary.json")
+            db_path = os.path.join(temp_dir, "bot_data.sqlite3")
+            with patch.object(config, "PAPER_TRADES_FILE", paper_path), \
+                    patch.object(config, "OBSERVATION_EVENTS_FILE", events_path), \
+                    patch.object(config, "SCAN_DECISIONS_FILE", decisions_path), \
+                    patch.object(config, "OBSERVATION_DAILY_SUMMARY_FILE", summary_path), \
+                    patch.object(config, "BOT_DB_FILE", db_path):
+                trader = ObservationPaperTrader(kalshi_client=None)
+                trader.state = {
+                    "active": {},
+                    "pending_orders": {},
+                    "history": [],
+                    "summary": {},
+                    "last_reconciled_at": "",
+                    "last_trade_time": None,
+                    "daily_date": "2026-03-27",
+                    "trade_count_today": 0,
+                    "daily_pnl_cents": 0,
+                    "total_exposure_cents": 0,
+                    "ticker_entry_dates": {},
+                    "cycle_log": [],
+                }
+
+                result = trader.record_observation_cycle(
+                    signals=[{
+                        "ticker": "KXHIGHNY-TEST",
+                        "city_code": "NYC",
+                        "side": "no",
+                        "suggested_contracts": 1,
+                        "price_cents": 35,
+                        "current_price_cents": 30,
+                        "risk_price_cents": 28,
+                        "limit_price_cents": 28,
+                        "execution_style": "maker",
+                        "edge": 0.08,
+                        "fee_adjusted_edge": 0.05,
+                        "strategy": "S1-Weather",
+                        "confirmation_verdict": "CONFIRM",
+                        "target_date": "2026-03-27",
+                    }],
+                    cycle=2,
+                    balance_cents=10000,
+                    market_prices={"KXHIGHNY-TEST": {"no": 25}},
+                    live_risk=None,
+                    max_per_cycle=3,
+                )
+
+                self.assertEqual(len(result["executed"]), 1)
+                self.assertEqual(result["executed"][0]["limit_price_cents"], 28)
+                self.assertEqual(result["executed"][0]["risk_price_cents"], 28)
+                self.assertEqual(result["executed"][0]["entry_price_cents"], 25)
+                trader.journal.close()
+
+    def test_observation_paper_shadow_risk_merges_live_exposure(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            paper_path = os.path.join(temp_dir, "paper_trades.json")
+            events_path = os.path.join(temp_dir, "observation_events.jsonl")
+            decisions_path = os.path.join(temp_dir, "scan_decisions.jsonl")
+            summary_path = os.path.join(temp_dir, "observation_daily_summary.json")
+            db_path = os.path.join(temp_dir, "bot_data.sqlite3")
+            risk_path = os.path.join(temp_dir, "risk_state.json")
+            with patch.object(config, "PAPER_TRADES_FILE", paper_path), \
+                    patch.object(config, "OBSERVATION_EVENTS_FILE", events_path), \
+                    patch.object(config, "SCAN_DECISIONS_FILE", decisions_path), \
+                    patch.object(config, "OBSERVATION_DAILY_SUMMARY_FILE", summary_path), \
+                    patch.object(config, "BOT_DB_FILE", db_path), \
+                    patch.object(config, "RISK_STATE_FILE", risk_path):
+                trader = ObservationPaperTrader(kalshi_client=None)
+                trader.state["active"] = {
+                    "KXHIGHCHI-TEST": {
+                        "ticker": "KXHIGHCHI-TEST",
+                        "city_code": "CHI",
+                        "side": "no",
+                        "contracts": 1,
+                        "entry_price_cents": 25,
+                        "cost_cents": 25,
+                        "strategy": "S1-Weather",
+                        "confirmation_verdict": "CONFIRM",
+                    }
+                }
+
+                live_risk = RiskManager()
+                live_risk.state["positions"] = {
+                    "KXHIGHNY-TEST": {
+                        "ticker": "KXHIGHNY-TEST",
+                        "city_code": "NYC",
+                        "side": "no",
+                        "contracts": 2,
+                        "price_cents": 20,
+                        "cost_cents": 40,
+                        "order_status": "executed",
+                    }
+                }
+                live_risk._refresh_exposure()
+
+                shadow = trader._build_shadow_risk(10000, live_risk=live_risk)
+
+                self.assertEqual(shadow.state["total_exposure_cents"], 65)
+                self.assertIn("KXHIGHNY-TEST", shadow.state["positions"])
+                self.assertIn("KXHIGHCHI-TEST", shadow.state["positions"])
                 trader.journal.close()
 
 
@@ -435,6 +562,159 @@ class ObservationJournalRegressionTests(unittest.TestCase):
             self.assertEqual(history["summary"]["scan_cycles"], 1)
             self.assertEqual(history["summary"]["decision_rows"], 1)
             self.assertEqual(history["recent_events"][0]["cycle"], 7)
+            journal.close()
+
+
+class StrategyScorecardRegressionTests(unittest.TestCase):
+
+    def test_strategy_scorecards_use_event_counts_without_double_counting(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = os.path.join(temp_dir, "bot_data.sqlite3")
+            journal = ObservationJournal(
+                events_file=os.path.join(temp_dir, "observation_events.jsonl"),
+                decisions_file=os.path.join(temp_dir, "scan_decisions.jsonl"),
+                daily_summary_file=os.path.join(temp_dir, "observation_daily_summary.json"),
+                db_path=db_path,
+            )
+            journal.log_scan_cycle(
+                cycle=11,
+                markets_scanned=20,
+                decisions=[
+                    {
+                        "ticker": "KXHIGHNY-TEST",
+                        "city_code": "NYC",
+                        "target_date": "2026-03-30",
+                        "signal": "buy",
+                        "side": "no",
+                        "strategy": "S1-Weather",
+                        "execution_status": "paper_blocked",
+                    },
+                    {
+                        "ticker": "KXHIGHSEA-TEST",
+                        "city_code": "SEA",
+                        "target_date": "2026-03-30",
+                        "signal": "skip",
+                        "side": "no",
+                        "strategy": "S3-SettlementLock",
+                        "skip_reason": "no_edge",
+                    },
+                ],
+                signals_found=1,
+                trades_placed=0,
+                observation_mode=True,
+            )
+            journal.log_paper_event("paper_order_queued", {
+                "ticker": "KXHIGHNY-TEST",
+                "side": "no",
+                "contracts": 1,
+                "strategy": "S1-Weather",
+                "target_date": "2026-03-30",
+                "cycle": 11,
+                "status": "resting",
+                "limit_price_cents": 30,
+            })
+            journal.log_paper_event("paper_order_filled", {
+                "ticker": "KXHIGHNY-TEST",
+                "side": "no",
+                "contracts": 1,
+                "strategy": "S1-Weather",
+                "target_date": "2026-03-30",
+                "cycle": 11,
+                "status": "active",
+                "limit_price_cents": 30,
+                "entry_price_cents": 29,
+            })
+            journal.log_paper_event("paper_trade_resolved", {
+                "ticker": "KXHIGHNY-TEST",
+                "side": "no",
+                "contracts": 1,
+                "strategy": "S1-Weather",
+                "target_date": "2026-03-30",
+                "cycle": 11,
+                "status": "win",
+                "net_profit_cents": 69,
+                "gross_profit_cents": 70,
+            })
+
+            with patch.object(config, "ALLOW_LIVE_WEATHER_STRATEGY", False), \
+                    patch.object(config, "ENABLE_SETTLEMENT_LOCK_STRATEGY", True), \
+                    patch.object(config, "ALLOW_LIVE_SETTLEMENT_LOCK_TRADES", False):
+                db = BotDatabase(db_path=db_path)
+                cards = build_strategy_scorecards(hours=24, db=db)
+                db.close()
+
+            weather = next(card for card in cards if card["strategy"] == "S1-Weather")
+            self.assertEqual(weather["buy_decisions"], 1)
+            self.assertEqual(weather["paper_blocked"], 1)
+            self.assertEqual(weather["paper_queued"], 1)
+            self.assertEqual(weather["paper_filled"], 1)
+            self.assertEqual(weather["paper_resolved"], 1)
+            self.assertEqual(weather["fill_rate"], 1.0)
+            self.assertIn("live_disabled_by_config", weather["promotion_blockers"])
+            journal.close()
+
+
+class ObservationDashboardRegressionTests(unittest.TestCase):
+
+    def test_observation_response_includes_strategy_scorecards(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bot_status = os.path.join(temp_dir, "bot_status.json")
+            risk_state = os.path.join(temp_dir, "risk_state.json")
+            scan_log = os.path.join(temp_dir, "scan_log.json")
+            paper_trades = os.path.join(temp_dir, "paper_trades.json")
+            paper_locks = os.path.join(temp_dir, "paper_locks.json")
+            daily_summary = os.path.join(temp_dir, "observation_daily_summary.json")
+            events_path = os.path.join(temp_dir, "observation_events.jsonl")
+            decisions_path = os.path.join(temp_dir, "scan_decisions.jsonl")
+            db_path = os.path.join(temp_dir, "bot_data.sqlite3")
+
+            for path, payload in (
+                (bot_status, {"observation_mode": True, "timestamp": "2026-03-30T18:00:00+00:00"}),
+                (risk_state, {"observation_mode": True, "observation_reason": "testing"}),
+                (scan_log, {"markets_scanned": 10, "signals_found": 1, "trades_placed": 0}),
+                (paper_trades, {"summary": {}, "active": {}, "pending_orders": {}, "history": [], "cycle_log": []}),
+                (paper_locks, {"summary": {}, "active": {}}),
+                (daily_summary, {"updated_at": "", "days": {}}),
+            ):
+                with open(path, "w", encoding="utf-8") as handle:
+                    import json
+                    json.dump(payload, handle)
+
+            journal = ObservationJournal(
+                events_file=events_path,
+                decisions_file=decisions_path,
+                daily_summary_file=daily_summary,
+                db_path=db_path,
+            )
+            journal.log_scan_cycle(
+                cycle=1,
+                markets_scanned=10,
+                decisions=[{
+                    "ticker": "KXHIGHNY-TEST",
+                    "city_code": "NYC",
+                    "target_date": "2026-03-30",
+                    "signal": "skip",
+                    "side": "no",
+                    "strategy": "S1-Weather",
+                    "skip_reason": "no_edge",
+                }],
+                signals_found=0,
+                trades_placed=0,
+                observation_mode=True,
+            )
+
+            with patch.dict(dashboard.STATE_FILES, {
+                "bot_status": bot_status,
+                "risk": risk_state,
+                "scan_log": scan_log,
+                "paper_trades": paper_trades,
+                "paper_locks": paper_locks,
+                "observation_daily_summary": daily_summary,
+            }, clear=False), patch.object(dashboard, "_observation_journal", journal):
+                response = dashboard._build_observation_response()
+
+            self.assertIn("strategy_scorecards", response)
+            self.assertTrue(any(card["strategy"] == "S1-Weather" for card in response["strategy_scorecards"]))
             journal.close()
 
 

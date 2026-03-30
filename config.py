@@ -280,6 +280,13 @@ OBSERVATION_SUMMARY_RETENTION_DAYS = int(
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 BOT_VERSION = os.environ.get("BOT_VERSION", "4.1-fill-audit")
+STRATEGY_SCORECARD_WINDOW_HOURS = int(
+    os.environ.get("STRATEGY_SCORECARD_WINDOW_HOURS", str(24 * 14))
+)
+ALLOW_LIVE_WEATHER_STRATEGY = os.environ.get(
+    "ALLOW_LIVE_WEATHER_STRATEGY",
+    "false"
+).lower() == "true"
 
 # Explicit production kill switches for historically losing paths.
 ALLOW_YES_SIDE_TRADES = os.environ.get("ALLOW_YES_SIDE_TRADES", "false").lower() == "true"

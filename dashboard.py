@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 
 import config
 from observation_journal import ObservationJournal
+from strategy_registry import build_strategy_scorecards
 
 # State file paths — all routed through config.STATE_DIR for persistence
 STATE_FILES = {
@@ -449,6 +450,9 @@ def _build_observation_response():
     paper_pending = list((paper_trades.get("pending_orders", {}) or {}).values())[:5]
     cycle_log = list((paper_trades.get("cycle_log", []) or []))[-5:]
     observation_daily = _observation_journal.load_daily_summary(days=7)
+    strategy_scorecards = build_strategy_scorecards(
+        hours=getattr(config, "STRATEGY_SCORECARD_WINDOW_HOURS", 24 * 14)
+    )
 
     return {
         "status": "observation" if (bot_status.get("observation_mode") or risk_state.get("observation_mode")) else "inactive",
@@ -515,6 +519,7 @@ def _build_observation_response():
                 for row in lock_active
             ],
         },
+        "strategy_scorecards": strategy_scorecards,
         "daily_summary": observation_daily,
     }
 

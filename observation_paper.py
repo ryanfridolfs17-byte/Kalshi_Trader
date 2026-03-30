@@ -14,6 +14,7 @@ from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
 import config
+from execution_models import apply_risk_to_order, build_entry_order, build_risk_signal
 from observation_journal import ObservationJournal
 from risk_manager_v2 import RiskManager
 
@@ -80,27 +81,28 @@ class ObservationPaperTrader:
                 blocked_signals.append(self._build_blocked_signal(signal, "per_cycle_limit"))
                 continue
 
-            limit_price = int(signal.get("limit_price", 0) or 0)
-            if limit_price <= 0:
-                blocked_reasons["invalid_limit_price"] += 1
-                blocked_signals.append(self._build_blocked_signal(signal, "invalid_limit_price"))
+            entry_order = build_entry_order(signal)
+            if not entry_order:
+                blocked_reasons["invalid_execution_plan"] += 1
+                blocked_signals.append(self._build_blocked_signal(signal, "invalid_execution_plan"))
                 continue
 
             approved, result = self._fit_trade(
-                signal,
+                entry_order,
                 balance_cents=balance_cents,
-                limit_price=limit_price,
                 live_risk=live_risk,
                 same_cycle=bool(placed_this_cycle or filled_pending),
             )
             if not approved:
                 blocked_reasons[result] += 1
-                blocked_signals.append(self._build_blocked_signal(signal, result))
+                blocked_signals.append(self._build_blocked_signal(entry_order, result))
                 continue
 
-            contracts = int(result or 0)
-            current_price = self._market_price_for_signal(signal, market_prices)
-            execution_style = signal.get("execution_style", "maker")
+            execution_order = result
+            limit_price = int(execution_order.get("limit_price_cents", execution_order.get("limit_price", 0)) or 0)
+            contracts = int(execution_order.get("contracts", 0) or 0)
+            current_price = self._market_price_for_signal(execution_order, market_prices)
+            execution_style = execution_order.get("execution_style", "maker")
             fills_now = (
                 execution_style == "taker"
                 or (current_price > 0 and current_price <= limit_price)
@@ -108,7 +110,7 @@ class ObservationPaperTrader:
 
             if fills_now:
                 fill_price = current_price if current_price > 0 else limit_price
-                position = self._build_position(signal, cycle, fill_price, contracts, now_iso)
+                position = self._build_position(execution_order, cycle, fill_price, contracts, now_iso)
                 self._store_active_position(position)
                 self.state.setdefault("ticker_entry_dates", {})[position["ticker"]] = self._today_et()
                 self.state["last_trade_time"] = time.time()
@@ -119,10 +121,8 @@ class ObservationPaperTrader:
                 continue
 
             order = self._build_pending_order(
-                signal=signal,
+                entry_order=execution_order,
                 cycle=cycle,
-                limit_price=limit_price,
-                contracts=contracts,
                 opened_at=now_iso,
                 current_price=current_price,
             )
@@ -148,7 +148,9 @@ class ObservationPaperTrader:
                     "edge": round(s.get("edge", 0) or 0, 4),
                     "strategy": s.get("strategy", ""),
                     "execution_style": s.get("execution_style", ""),
-                    "limit_price_cents": int(s.get("limit_price", 0) or 0),
+                    "limit_price_cents": int(
+                        s.get("limit_price_cents", s.get("limit_price", 0)) or 0
+                    ),
                 }
                 for s in signals[:5]
             ],
@@ -265,10 +267,11 @@ class ObservationPaperTrader:
             "recent_cycles": self.state.get("cycle_log", [])[-10:],
         }
 
-    def _fit_trade(self, signal, balance_cents, limit_price, live_risk=None, same_cycle=False):
-        ticker = signal.get("ticker", "")
-        city = signal.get("city_code", "")
-        contracts = int(signal.get("suggested_contracts", signal.get("contracts", 1)) or 0)
+    def _fit_trade(self, entry_order, balance_cents, live_risk=None, same_cycle=False):
+        ticker = entry_order.get("ticker", "")
+        city = entry_order.get("city_code", "")
+        contracts = int(entry_order.get("contracts", entry_order.get("requested_contracts", 1)) or 0)
+        limit_price = int(entry_order.get("limit_price_cents", entry_order.get("limit_price", 0)) or 0)
         if not ticker or not city or contracts <= 0 or limit_price <= 0:
             return False, "invalid_signal"
 
@@ -278,23 +281,14 @@ class ObservationPaperTrader:
             return False, "paper_pending_exists"
 
         shadow = self._build_shadow_risk(balance_cents, live_risk)
-        risk_price_cents = int(signal.get("risk_price_cents", limit_price) or limit_price)
-        risk_signal = {
-            "ticker": ticker,
-            "city_code": city,
-            "side": signal.get("side", ""),
-            "price_cents": risk_price_cents,
-            "contracts": contracts,
-            "cost_cents": risk_price_cents * contracts,
-            "edge": signal.get("edge", 0),
-            "is_confirmed": signal.get("confirmation_verdict") == "CONFIRMED_OUTCOME",
-            "is_arb": signal.get("strategy", "") == "S2-Arbitrage",
-            "same_cycle": same_cycle,
-        }
+        risk_signal = build_risk_signal(entry_order, same_cycle=same_cycle)
+        if not risk_signal:
+            return False, "invalid_signal"
         approved, reason = shadow.check_trade(risk_signal)
         if not approved:
             return False, self._normalize_block_reason(reason)
-        return True, int(risk_signal.get("contracts", contracts) or contracts)
+        applied_order = apply_risk_to_order(dict(entry_order), risk_signal)
+        return True, applied_order
 
     def _build_position(self, signal, cycle, entry_price_cents, contracts, opened_at):
         ticker = signal.get("ticker", "")
@@ -308,6 +302,10 @@ class ObservationPaperTrader:
             "price_cents": entry_price_cents,
             "cost_cents": entry_price_cents * contracts,
             "estimated_entry_fee_cents": estimated_fee,
+            "limit_price_cents": int(signal.get("limit_price_cents", signal.get("limit_price", entry_price_cents)) or entry_price_cents),
+            "risk_price_cents": int(signal.get("risk_price_cents", entry_price_cents) or entry_price_cents),
+            "current_price_cents": int(signal.get("current_price_cents", entry_price_cents) or entry_price_cents),
+            "requested_contracts": int(signal.get("requested_contracts", contracts) or contracts),
             "city_code": signal.get("city_code", ""),
             "target_date": signal.get("target_date", ""),
             "strategy": signal.get("strategy", ""),
@@ -319,6 +317,7 @@ class ObservationPaperTrader:
             "predicted_high": signal.get("predicted_high"),
             "model_means": signal.get("model_means", {}),
             "model_stds": signal.get("model_stds", {}),
+            "execution_style": signal.get("execution_style", "maker"),
             "execution_status": "paper_filled",
             "reasoning": signal.get("reasoning", ""),
             "opened_at": opened_at,
@@ -326,32 +325,34 @@ class ObservationPaperTrader:
             "status": "active",
         }
 
-    def _build_pending_order(self, signal, cycle, limit_price, contracts, opened_at, current_price):
-        ticker = signal.get("ticker", "")
+    def _build_pending_order(self, entry_order, cycle, opened_at, current_price):
+        ticker = entry_order.get("ticker", "")
+        limit_price = int(entry_order.get("limit_price_cents", entry_order.get("limit_price", 0)) or 0)
+        contracts = int(entry_order.get("contracts", 0) or 0)
         return {
             "order_id": "paper_%s_%d_%d" % (ticker, cycle, int(time.time() * 1000)),
             "ticker": ticker,
             "signal": "buy",
-            "side": signal.get("side", ""),
+            "side": entry_order.get("side", ""),
             "contracts": contracts,
             "limit_price_cents": limit_price,
             "current_price_cents": int(current_price or 0),
             "reserved_cost_cents": limit_price * contracts,
-            "city_code": signal.get("city_code", ""),
-            "target_date": signal.get("target_date", ""),
-            "strategy": signal.get("strategy", ""),
-            "confirmation_verdict": signal.get("confirmation_verdict", ""),
-            "edge": round(signal.get("edge", 0) or 0, 4),
-            "fee_adjusted_edge": round(signal.get("fee_adjusted_edge", 0) or 0, 4),
-            "our_prob": round(signal.get("our_prob", 0) or 0, 4),
-            "market_prob": round(signal.get("market_prob", 0) or 0, 4),
-            "predicted_high": signal.get("predicted_high"),
-            "model_means": signal.get("model_means", {}),
-            "model_stds": signal.get("model_stds", {}),
-            "reasoning": signal.get("reasoning", ""),
+            "city_code": entry_order.get("city_code", ""),
+            "target_date": entry_order.get("target_date", ""),
+            "strategy": entry_order.get("strategy", ""),
+            "confirmation_verdict": entry_order.get("confirmation_verdict", ""),
+            "edge": round(entry_order.get("edge", 0) or 0, 4),
+            "fee_adjusted_edge": round(entry_order.get("fee_adjusted_edge", 0) or 0, 4),
+            "our_prob": round(entry_order.get("our_prob", 0) or 0, 4),
+            "market_prob": round(entry_order.get("market_prob", 0) or 0, 4),
+            "predicted_high": entry_order.get("predicted_high"),
+            "model_means": entry_order.get("model_means", {}),
+            "model_stds": entry_order.get("model_stds", {}),
+            "reasoning": entry_order.get("reasoning", ""),
             "placed_at": opened_at,
             "cycle": cycle,
-            "execution_style": signal.get("execution_style", "maker"),
+            "execution_style": entry_order.get("execution_style", "maker"),
             "execution_status": "paper_queued",
             "status": "resting",
         }
@@ -401,6 +402,12 @@ class ObservationPaperTrader:
                 "model_means": order.get("model_means", {}),
                 "model_stds": order.get("model_stds", {}),
                 "reasoning": order.get("reasoning", ""),
+                "limit_price_cents": order.get("limit_price_cents", 0),
+                "limit_price": order.get("limit_price_cents", 0),
+                "risk_price_cents": order.get("limit_price_cents", 0),
+                "current_price_cents": current_price,
+                "requested_contracts": order.get("contracts", 0),
+                "execution_style": order.get("execution_style", "maker"),
             }
             position = self._build_position(
                 signal=fill_signal,
@@ -470,8 +477,9 @@ class ObservationPaperTrader:
             if key not in state:
                 state[key] = copy.deepcopy(value)
 
-        state["positions"] = {
-            ticker: {
+        merged_positions = copy.deepcopy(state.get("positions", {}) or {})
+        for ticker, row in self.state.get("active", {}).items():
+            paper_position = {
                 "ticker": row.get("ticker", ""),
                 "city_code": row.get("city_code", ""),
                 "side": row.get("side", ""),
@@ -482,11 +490,25 @@ class ObservationPaperTrader:
                 "is_confirmed": row.get("confirmation_verdict") == "CONFIRMED_OUTCOME",
                 "is_arb": row.get("strategy", "") == "S2-Arbitrage",
             }
-            for ticker, row in self.state.get("active", {}).items()
-        }
-        state["pending_orders"] = {
-            row.get("order_id", ""): {
-                "order_id": row.get("order_id", ""),
+            existing = merged_positions.get(ticker)
+            if existing and existing.get("side") == paper_position.get("side"):
+                combined = dict(existing)
+                combined["contracts"] = int(existing.get("contracts", 0) or 0) + paper_position["contracts"]
+                combined["cost_cents"] = int(existing.get("cost_cents", 0) or 0) + paper_position["cost_cents"]
+                if combined["contracts"] > 0:
+                    combined["price_cents"] = int(round(combined["cost_cents"] / float(combined["contracts"])))
+                merged_positions[ticker] = combined
+            else:
+                merged_positions[ticker] = paper_position
+        state["positions"] = merged_positions
+
+        merged_pending = copy.deepcopy(state.get("pending_orders", {}) or {})
+        for row in self.state.get("pending_orders", {}).values():
+            order_id = row.get("order_id", "")
+            if not order_id:
+                continue
+            merged_pending[order_id] = {
+                "order_id": order_id,
                 "ticker": row.get("ticker", ""),
                 "city_code": row.get("city_code", ""),
                 "side": row.get("side", ""),
@@ -501,9 +523,7 @@ class ObservationPaperTrader:
                 "is_confirmed": row.get("confirmation_verdict") == "CONFIRMED_OUTCOME",
                 "is_arb": row.get("strategy", "") == "S2-Arbitrage",
             }
-            for row in self.state.get("pending_orders", {}).values()
-            if row.get("order_id")
-        }
+        state["pending_orders"] = merged_pending
 
         merged_entry_dates = dict(state.get("ticker_entry_dates", {}) or {})
         merged_entry_dates.update(self.state.get("ticker_entry_dates", {}) or {})
