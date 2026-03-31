@@ -74,7 +74,17 @@ class ObservationJournal:
         self.recent_decisions_file = recent_decisions_file or config.OBSERVATION_RECENT_DECISIONS_FILE
         self.recent_cache_file = recent_cache_file or config.OBSERVATION_RECENT_CACHE_FILE
         self.daily_summary_file = daily_summary_file or config.OBSERVATION_DAILY_SUMMARY_FILE
-        self.db = BotDatabase(db_path=db_path or config.BOT_DB_FILE)
+        self.enable_recent_mirrors = bool(getattr(config, "OBSERVATION_ENABLE_RECENT_MIRRORS", True))
+        self.max_events_file_bytes = max(
+            512 * 1024,
+            _as_int(getattr(config, "OBSERVATION_MAX_EVENTS_FILE_BYTES", 16 * 1024 * 1024) or 0),
+        )
+        self.max_decisions_file_bytes = max(
+            2 * 1024 * 1024,
+            _as_int(getattr(config, "OBSERVATION_MAX_DECISIONS_FILE_BYTES", 96 * 1024 * 1024) or 0),
+        )
+        self.enable_sqlite = bool(getattr(config, "OBSERVATION_ENABLE_SQLITE", True))
+        self.db = BotDatabase(db_path=db_path or config.BOT_DB_FILE) if self.enable_sqlite else None
         self.retention_days = max(
             7,
             _as_int(getattr(config, "OBSERVATION_SUMMARY_RETENTION_DAYS", 30) or 30),
@@ -137,12 +147,18 @@ class ObservationJournal:
             "top_signals": list(top_signals or [])[:5],
         }
         self._append_jsonl(self.events_file, event)
-        self._append_recent_rows(
-            self.recent_events_file,
-            [event],
-            max_rows=self.recent_event_limit,
-            max_bytes=self._history_byte_budget(self.recent_events_file, self.recent_event_limit),
+        self._maybe_trim_canonical_history(
+            self.events_file,
+            max_bytes=self.max_events_file_bytes,
+            max_rows=max(self.recent_event_limit * 8, 5000),
         )
+        if self.enable_recent_mirrors:
+            self._append_recent_rows(
+                self.recent_events_file,
+                [event],
+                max_rows=self.recent_event_limit,
+                max_bytes=self._history_byte_budget(self.recent_events_file, self.recent_event_limit),
+            )
 
         decision_rows = []
         for decision in decisions or []:
@@ -154,20 +170,28 @@ class ObservationJournal:
             )
             decision_rows.append(decision_row)
         self._append_many_jsonl(self.decisions_file, decision_rows)
-        self._append_recent_rows(
-            self.recent_decisions_file,
-            decision_rows,
-            max_rows=self.recent_decision_limit,
-            max_bytes=self._history_byte_budget(self.recent_decisions_file, self.recent_decision_limit),
+        self._maybe_trim_canonical_history(
+            self.decisions_file,
+            max_bytes=self.max_decisions_file_bytes,
+            max_rows=max(self.recent_decision_limit * 12, 50000),
         )
+        if self.enable_recent_mirrors:
+            self._append_recent_rows(
+                self.recent_decisions_file,
+                decision_rows,
+                max_rows=self.recent_decision_limit,
+                max_bytes=self._history_byte_budget(self.recent_decisions_file, self.recent_decision_limit),
+            )
 
-        try:
-            self.db.record_scan_cycle(event, decision_rows)
-        except Exception:
-            pass
+        if self.db is not None:
+            try:
+                self.db.record_scan_cycle(event, decision_rows)
+            except Exception:
+                pass
 
         self._update_daily_summary(scan_event=event, decision_rows=decision_rows)
-        self._update_recent_cache(scan_event=event, decision_rows=decision_rows)
+        if self.enable_recent_mirrors:
+            self._update_recent_cache(scan_event=event, decision_rows=decision_rows)
         return event
 
     def log_paper_event(self, event_type, payload=None, timestamp=None):
@@ -193,18 +217,26 @@ class ObservationJournal:
             "confirmation_verdict": payload.get("confirmation_verdict", ""),
         }
         self._append_jsonl(self.events_file, row)
-        self._append_recent_rows(
-            self.recent_events_file,
-            [row],
-            max_rows=self.recent_event_limit,
-            max_bytes=self._history_byte_budget(self.recent_events_file, self.recent_event_limit),
+        self._maybe_trim_canonical_history(
+            self.events_file,
+            max_bytes=self.max_events_file_bytes,
+            max_rows=max(self.recent_event_limit * 8, 5000),
         )
-        try:
-            self.db.record_paper_event(row)
-        except Exception:
-            pass
+        if self.enable_recent_mirrors:
+            self._append_recent_rows(
+                self.recent_events_file,
+                [row],
+                max_rows=self.recent_event_limit,
+                max_bytes=self._history_byte_budget(self.recent_events_file, self.recent_event_limit),
+            )
+        if self.db is not None:
+            try:
+                self.db.record_paper_event(row)
+            except Exception:
+                pass
         self._update_daily_summary(paper_event=row)
-        self._update_recent_cache(paper_event=row)
+        if self.enable_recent_mirrors:
+            self._update_recent_cache(paper_event=row)
         return row
 
     def load_daily_summary(self, days=7):
@@ -317,6 +349,17 @@ class ObservationJournal:
         hours = max(1, min(_as_int(hours), 24 * 14))
         event_limit = max(1, min(_as_int(event_limit), 1000))
         decision_limit = max(1, min(_as_int(decision_limit), 5000))
+        if not self.enable_recent_mirrors:
+            return self.get_recent_history(
+                hours=hours,
+                event_limit=event_limit,
+                decision_limit=decision_limit,
+                include_decisions=include_decisions,
+                prefer_db=False,
+                fast_mode=True,
+                cached_only=False,
+            )
+
         cache = self._read_recent_cache()
         cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
@@ -659,6 +702,22 @@ class ObservationJournal:
             hours=self.retention_days * 24,
             max_rows=max_rows,
             max_bytes=max(max_bytes, self._history_byte_budget(path, max_rows)),
+        )
+        self._rewrite_jsonl(path, trimmed)
+
+    def _maybe_trim_canonical_history(self, path, max_bytes, max_rows):
+        try:
+            if not os.path.exists(path):
+                return
+            if os.path.getsize(path) <= max_bytes:
+                return
+        except Exception:
+            return
+        trimmed = self._read_recent_jsonl(
+            path,
+            hours=self.retention_days * 24,
+            max_rows=max_rows,
+            max_bytes=max_bytes,
         )
         self._rewrite_jsonl(path, trimmed)
 

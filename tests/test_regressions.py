@@ -828,6 +828,49 @@ class ObservationJournalRegressionTests(unittest.TestCase):
             self.assertEqual(rows[0]["scan_cycles"], 2)
             journal.close()
 
+    def test_observation_journal_skips_recent_mirror_writes_when_disabled(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+                patch.object(config, "OBSERVATION_ENABLE_RECENT_MIRRORS", False):
+            recent_events = os.path.join(temp_dir, "observation_recent_events.jsonl")
+            recent_decisions = os.path.join(temp_dir, "observation_recent_decisions.jsonl")
+            recent_cache = os.path.join(temp_dir, "observation_recent_cache.json")
+            journal = ObservationJournal(
+                events_file=os.path.join(temp_dir, "observation_events.jsonl"),
+                decisions_file=os.path.join(temp_dir, "scan_decisions.jsonl"),
+                recent_events_file=recent_events,
+                recent_decisions_file=recent_decisions,
+                recent_cache_file=recent_cache,
+                daily_summary_file=os.path.join(temp_dir, "observation_daily_summary.json"),
+                db_path=os.path.join(temp_dir, "bot_data.sqlite3"),
+            )
+
+            journal.log_scan_cycle(
+                cycle=14,
+                markets_scanned=4,
+                decisions=[{
+                    "ticker": "KXHIGHNY-TEST",
+                    "city_code": "NYC",
+                    "target_date": "2026-03-31",
+                    "signal": "skip",
+                    "side": "no",
+                    "strategy": "S1-Weather",
+                    "skip_reason": "no_edge",
+                }],
+                signals_found=0,
+                trades_placed=0,
+                skip_counts={"no_edge": 1},
+                observation_mode=True,
+            )
+
+            self.assertFalse(os.path.exists(recent_events))
+            self.assertFalse(os.path.exists(recent_decisions))
+            self.assertFalse(os.path.exists(recent_cache))
+
+            history = journal.get_cached_history(hours=24, include_decisions=True)
+            self.assertEqual(history["summary"]["decision_rows"], 1)
+            self.assertEqual(history["recent_decisions"][0]["ticker"], "KXHIGHNY-TEST")
+            journal.close()
+
     def test_observation_journal_uses_database_when_jsonl_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             events_path = os.path.join(temp_dir, "observation_events.jsonl")
@@ -960,6 +1003,61 @@ class StrategyScorecardRegressionTests(unittest.TestCase):
             self.assertEqual(weather["paper_resolved"], 1)
             self.assertEqual(weather["fill_rate"], 1.0)
             self.assertIn("live_disabled_by_config", weather["promotion_blockers"])
+            journal.close()
+
+    def test_strategy_scorecards_fall_back_to_jsonl_when_sqlite_disabled(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+                patch.object(config, "OBSERVATION_ENABLE_SQLITE", False):
+            events_path = os.path.join(temp_dir, "observation_events.jsonl")
+            decisions_path = os.path.join(temp_dir, "scan_decisions.jsonl")
+            recent_events_path = os.path.join(temp_dir, "observation_recent_events.jsonl")
+            recent_decisions_path = os.path.join(temp_dir, "observation_recent_decisions.jsonl")
+            recent_cache_path = os.path.join(temp_dir, "observation_recent_cache.json")
+            daily_summary_path = os.path.join(temp_dir, "observation_daily_summary.json")
+            db_path = os.path.join(temp_dir, "bot_data.sqlite3")
+            journal = ObservationJournal(
+                events_file=events_path,
+                decisions_file=decisions_path,
+                recent_events_file=recent_events_path,
+                recent_decisions_file=recent_decisions_path,
+                recent_cache_file=recent_cache_path,
+                daily_summary_file=daily_summary_path,
+                db_path=db_path,
+            )
+            journal.log_scan_cycle(
+                cycle=15,
+                markets_scanned=12,
+                decisions=[{
+                    "ticker": "KXHIGHNY-TEST",
+                    "city_code": "NYC",
+                    "target_date": "2026-03-31",
+                    "signal": "buy",
+                    "side": "no",
+                    "strategy": "S4-NextDayNoPaper",
+                    "execution_status": "paper_filled",
+                }],
+                signals_found=1,
+                trades_placed=0,
+                observation_mode=True,
+            )
+            journal.log_paper_event("paper_order_filled", {
+                "ticker": "KXHIGHNY-TEST",
+                "side": "no",
+                "contracts": 1,
+                "strategy": "S4-NextDayNoPaper",
+            })
+
+            with patch.object(config, "OBSERVATION_EVENTS_FILE", events_path), \
+                    patch.object(config, "SCAN_DECISIONS_FILE", decisions_path), \
+                    patch.object(config, "OBSERVATION_RECENT_EVENTS_FILE", recent_events_path), \
+                    patch.object(config, "OBSERVATION_RECENT_DECISIONS_FILE", recent_decisions_path), \
+                    patch.object(config, "OBSERVATION_RECENT_CACHE_FILE", recent_cache_path), \
+                    patch.object(config, "OBSERVATION_DAILY_SUMMARY_FILE", daily_summary_path), \
+                    patch.object(config, "BOT_DB_FILE", db_path):
+                cards = build_strategy_scorecards(hours=24)
+            s4 = next(card for card in cards if card["strategy"] == "S4-NextDayNoPaper")
+            self.assertEqual(s4["buy_decisions"], 1)
+            self.assertEqual(s4["paper_filled"], 1)
             journal.close()
 
 

@@ -220,12 +220,30 @@ def _compute_drawdown_cents(profit_series):
 
 def build_strategy_scorecards(hours=None, db=None):
     hours = int(hours or getattr(config, "STRATEGY_SCORECARD_WINDOW_HOURS", 24 * 14) or (24 * 14))
-    owns_db = db is None
-    db = db or BotDatabase()
     definitions = get_strategy_definitions()
+    owns_db = db is None
+    use_sqlite = bool(getattr(config, "OBSERVATION_ENABLE_SQLITE", True))
+    if use_sqlite:
+        db = db or BotDatabase()
     try:
-        decisions = db.fetch_recent_decisions(hours=hours, max_rows=50000)
-        events = db.fetch_recent_events(hours=hours, max_rows=20000)
+        if use_sqlite:
+            decisions = db.fetch_recent_decisions(hours=hours, max_rows=50000)
+            events = db.fetch_recent_events(hours=hours, max_rows=20000)
+        else:
+            from observation_journal import ObservationJournal
+            journal = ObservationJournal()
+            history = journal.get_recent_history(
+                hours=hours,
+                event_limit=20000,
+                decision_limit=100000,
+                include_decisions=True,
+                prefer_db=False,
+                fast_mode=True,
+                cached_only=False,
+            )
+            events = history.get("recent_events", []) or []
+            decisions = history.get("recent_decisions", []) or []
+            journal.close()
 
         scorecards = {}
         for strategy_id, definition in definitions.items():
@@ -337,5 +355,5 @@ def build_strategy_scorecards(hours=None, db=None):
 
         return [scorecards[key] for key in sorted(scorecards.keys())]
     finally:
-        if owns_db:
+        if use_sqlite and owns_db:
             db.close()

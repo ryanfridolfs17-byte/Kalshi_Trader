@@ -1268,6 +1268,8 @@ def _write_bot_status(cycle, risk, intel, maker, signals_count, trades_count, ne
             "paper_challenger_max_signals_per_cycle": getattr(config, "PAPER_CHALLENGER_MAX_SIGNALS_PER_CYCLE", None),
             "paper_challenger_min_fee_adj_edge": getattr(config, "PAPER_CHALLENGER_MIN_FEE_ADJ_EDGE", None),
             "allow_off_hours_forecast_fetch": bool(getattr(config, "ALLOW_OFF_HOURS_FORECAST_FETCH", False)),
+            "observation_enable_recent_mirrors": bool(getattr(config, "OBSERVATION_ENABLE_RECENT_MIRRORS", True)),
+            "observation_enable_sqlite": bool(getattr(config, "OBSERVATION_ENABLE_SQLITE", True)),
             "no_side_max_price_cents": getattr(config, "NO_SIDE_MAX_PRICE_CENTS", None),
             "longshot_floor_cents": getattr(config, "LONGSHOT_FLOOR_CENTS", None),
             "railway_git_commit_sha": os.environ.get("RAILWAY_GIT_COMMIT_SHA", ""),

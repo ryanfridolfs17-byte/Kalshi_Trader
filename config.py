@@ -286,6 +286,20 @@ OBSERVATION_RECENT_EVENT_LIMIT = int(
 OBSERVATION_RECENT_DECISION_LIMIT = int(
     os.environ.get("OBSERVATION_RECENT_DECISION_LIMIT", "6000")
 )
+OBSERVATION_ENABLE_RECENT_MIRRORS = os.environ.get(
+    "OBSERVATION_ENABLE_RECENT_MIRRORS",
+    "false" if ENVIRONMENT == "production" else "true"
+).lower() == "true"
+OBSERVATION_MAX_EVENTS_FILE_BYTES = int(
+    os.environ.get("OBSERVATION_MAX_EVENTS_FILE_BYTES", str(16 * 1024 * 1024))
+)
+OBSERVATION_MAX_DECISIONS_FILE_BYTES = int(
+    os.environ.get("OBSERVATION_MAX_DECISIONS_FILE_BYTES", str(96 * 1024 * 1024))
+)
+OBSERVATION_ENABLE_SQLITE = os.environ.get(
+    "OBSERVATION_ENABLE_SQLITE",
+    "false" if ENVIRONMENT == "production" else "true"
+).lower() == "true"
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 BOT_VERSION = os.environ.get("BOT_VERSION", "4.1-fill-audit")
