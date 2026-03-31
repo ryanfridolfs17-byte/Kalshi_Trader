@@ -455,6 +455,13 @@ class ObservationJournal:
                     data = json.load(handle)
                     if isinstance(data, dict):
                         data.setdefault("days", {})
+                        normalized = {}
+                        for day_str, row in (data.get("days", {}) or {}).items():
+                            base = self._blank_day(day_str)
+                            if isinstance(row, dict):
+                                base.update(row)
+                            normalized[day_str] = base
+                        data["days"] = normalized
                         return data
         except Exception:
             pass
@@ -499,7 +506,10 @@ class ObservationJournal:
 
         summary = self._read_daily_summary()
         days = summary.setdefault("days", {})
-        row = dict(days.get(day_str, self._blank_day(day_str)))
+        row = self._blank_day(day_str)
+        existing = days.get(day_str, {})
+        if isinstance(existing, dict):
+            row.update(existing)
 
         if scan_event:
             row["scan_cycles"] += 1

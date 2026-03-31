@@ -764,6 +764,70 @@ class ObservationJournalRegressionTests(unittest.TestCase):
             self.assertEqual(history["recent_decisions"], [])
             journal.close()
 
+    def test_observation_journal_upgrades_legacy_daily_summary_rows(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            daily_summary_path = os.path.join(temp_dir, "observation_daily_summary.json")
+            with open(daily_summary_path, "w", encoding="utf-8") as handle:
+                json.dump({
+                    "updated_at": "2026-03-31T18:00:00+00:00",
+                    "days": {
+                        "2026-03-31": {
+                            "date": "2026-03-31",
+                            "scan_cycles": 1,
+                            "markets_scanned": 10,
+                            "signals_found": 0,
+                            "trades_placed_live": 0,
+                            "diag_null": 0,
+                            "diag_evaluated": 10,
+                            "weather_errors": 0,
+                            "paper_entries": 0,
+                            "paper_filled_pending": 0,
+                            "paper_resting_orders": 0,
+                            "paper_expired_pending": 0,
+                            "paper_resolved": 0,
+                            "paper_wins": 0,
+                            "paper_losses": 0,
+                            "paper_net_profit_cents": 0,
+                            "settlement_lock_candidates": 0,
+                            "skip_reasons": {"no_edge": 2},
+                            "paper_blocked_reasons": {},
+                        }
+                    },
+                }, handle)
+
+            journal = ObservationJournal(
+                events_file=os.path.join(temp_dir, "observation_events.jsonl"),
+                decisions_file=os.path.join(temp_dir, "scan_decisions.jsonl"),
+                recent_events_file=os.path.join(temp_dir, "observation_recent_events.jsonl"),
+                recent_decisions_file=os.path.join(temp_dir, "observation_recent_decisions.jsonl"),
+                recent_cache_file=os.path.join(temp_dir, "observation_recent_cache.json"),
+                daily_summary_file=daily_summary_path,
+                db_path=os.path.join(temp_dir, "bot_data.sqlite3"),
+            )
+
+            journal.log_scan_cycle(
+                cycle=13,
+                markets_scanned=6,
+                decisions=[{
+                    "ticker": "KXHIGHNY-TEST",
+                    "city_code": "NYC",
+                    "target_date": "2026-03-31",
+                    "signal": "buy",
+                    "side": "no",
+                    "strategy": "S4-NextDayNoPaper",
+                }],
+                signals_found=1,
+                trades_placed=0,
+                observation_mode=True,
+            )
+
+            rows = journal.load_daily_summary(days=1)
+            self.assertEqual(rows[0]["decision_rows"], 1)
+            self.assertEqual(rows[0]["buy_decisions"], 1)
+            self.assertEqual(rows[0]["skip_decisions"], 0)
+            self.assertEqual(rows[0]["scan_cycles"], 2)
+            journal.close()
+
     def test_observation_journal_uses_database_when_jsonl_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             events_path = os.path.join(temp_dir, "observation_events.jsonl")
