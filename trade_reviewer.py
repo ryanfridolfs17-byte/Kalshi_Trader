@@ -387,6 +387,7 @@ class TradeReviewer:
             "latest_report": latest_report,
             "total_snapshots": len(self.state.get("forecast_snapshots", [])),
             "last_review_date": self.state.get("last_review_date", ""),
+            "last_incremental_review_at": self.state.get("last_incremental_review_at", ""),
             "scan_reconciliation": latest_recon,
             "guard_stats": self.state.get("guard_stats", {}),
             "calibration": self.state.get("calibration", {}),

@@ -453,6 +453,19 @@ def _build_observation_response():
     strategy_scorecards = build_strategy_scorecards(
         hours=getattr(config, "STRATEGY_SCORECARD_WINDOW_HOURS", 24 * 14)
     )
+    learning_status = {}
+    if _trade_reviewer is not None:
+        try:
+            learning_summary = _trade_reviewer.get_learning_summary()
+            latest_recon = learning_summary.get("scan_reconciliation") or {}
+            learning_status = {
+                "last_review_date": learning_summary.get("last_review_date", ""),
+                "last_incremental_review_at": learning_summary.get("last_incremental_review_at", ""),
+                "latest_reconciliation_date": latest_recon.get("date", ""),
+                "latest_reconciliation_rows": len(latest_recon.get("rows", []) or []),
+            }
+        except Exception:
+            learning_status = {}
 
     return {
         "status": "observation" if (bot_status.get("observation_mode") or risk_state.get("observation_mode")) else "inactive",
@@ -520,6 +533,7 @@ def _build_observation_response():
             ],
         },
         "strategy_scorecards": strategy_scorecards,
+        "learning_status": learning_status,
         "daily_summary": observation_daily,
     }
 

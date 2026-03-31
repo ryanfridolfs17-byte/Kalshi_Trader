@@ -516,9 +516,14 @@ class ObservationJournalRegressionTests(unittest.TestCase):
             self.assertEqual(history["summary"]["paper_resolved"], 1)
             self.assertEqual(history["summary"]["paper_wins"], 1)
             self.assertEqual(history["summary"]["paper_net_profit_cents"], 68)
-            self.assertEqual(history["daily_summary"][-1]["paper_entries"], 1)
-            self.assertEqual(history["daily_summary"][-1]["paper_resolved"], 1)
-            self.assertEqual(history["daily_summary"][-1]["skip_reasons"]["yes_side_blocked"], 3)
+            by_date = {row["date"]: row for row in history["daily_summary"]}
+            scan_day = max(by_date)
+            self.assertEqual(by_date[scan_day]["decision_rows"], 2)
+            self.assertEqual(by_date[scan_day]["buy_decisions"], 1)
+            self.assertEqual(by_date[scan_day]["skip_decisions"], 1)
+            self.assertEqual(by_date[scan_day]["paper_entries"], 1)
+            self.assertEqual(by_date[scan_day]["skip_reasons"]["yes_side_blocked"], 3)
+            self.assertTrue(any(row["paper_resolved"] == 1 for row in history["daily_summary"]))
             self.assertEqual(history["recent_decisions"][0]["execution_status"], "")
             journal.close()
 
@@ -704,6 +709,59 @@ class ObservationJournalRegressionTests(unittest.TestCase):
             self.assertEqual(history["summary"]["scan_cycles"], 1)
             self.assertEqual(history["summary"]["decision_rows"], 1)
             self.assertEqual(history["recent_events"][0]["cycle"], 10)
+            journal.close()
+
+    def test_observation_journal_cached_history_summarizes_decisions_without_exposing_rows(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            journal = ObservationJournal(
+                events_file=os.path.join(temp_dir, "observation_events.jsonl"),
+                decisions_file=os.path.join(temp_dir, "scan_decisions.jsonl"),
+                recent_events_file=os.path.join(temp_dir, "observation_recent_events.jsonl"),
+                recent_decisions_file=os.path.join(temp_dir, "observation_recent_decisions.jsonl"),
+                recent_cache_file=os.path.join(temp_dir, "observation_recent_cache.json"),
+                daily_summary_file=os.path.join(temp_dir, "observation_daily_summary.json"),
+                db_path=os.path.join(temp_dir, "bot_data.sqlite3"),
+            )
+
+            journal.log_scan_cycle(
+                cycle=12,
+                markets_scanned=6,
+                decisions=[
+                    {
+                        "ticker": "KXHIGHNY-TEST",
+                        "city_code": "NYC",
+                        "target_date": "2026-03-30",
+                        "signal": "buy",
+                        "side": "no",
+                        "strategy": "S4-NextDayNoPaper",
+                    },
+                    {
+                        "ticker": "KXHIGHSEA-TEST",
+                        "city_code": "SEA",
+                        "target_date": "2026-03-30",
+                        "signal": "skip",
+                        "side": "no",
+                        "strategy": "S1-Weather",
+                        "skip_reason": "no_edge",
+                    },
+                ],
+                signals_found=1,
+                trades_placed=0,
+                skip_counts={"no_edge": 1},
+                observation_mode=True,
+            )
+
+            history = journal.get_cached_history(
+                hours=24,
+                event_limit=10,
+                decision_limit=10,
+                include_decisions=False,
+            )
+
+            self.assertEqual(history["summary"]["decision_rows"], 2)
+            self.assertEqual(history["summary"]["buy_decisions"], 1)
+            self.assertEqual(history["summary"]["skip_decisions"], 1)
+            self.assertEqual(history["recent_decisions"], [])
             journal.close()
 
     def test_observation_journal_uses_database_when_jsonl_missing(self):
@@ -1027,6 +1085,9 @@ class ObservationDashboardRegressionTests(unittest.TestCase):
                 daily_summary_file=daily_summary,
                 db_path=db_path,
             )
+            reviewer = TradeReviewer()
+            reviewer.state["last_review_date"] = "2026-03-30"
+            reviewer.state["last_incremental_review_at"] = "2026-03-30T18:15:00+00:00"
             journal.log_scan_cycle(
                 cycle=1,
                 markets_scanned=10,
@@ -1051,10 +1112,13 @@ class ObservationDashboardRegressionTests(unittest.TestCase):
                 "paper_trades": paper_trades,
                 "paper_locks": paper_locks,
                 "observation_daily_summary": daily_summary,
-            }, clear=False), patch.object(dashboard, "_observation_journal", journal):
+            }, clear=False), patch.object(dashboard, "_observation_journal", journal), patch.object(dashboard, "_trade_reviewer", reviewer):
                 response = dashboard._build_observation_response()
 
             self.assertIn("strategy_scorecards", response)
+            self.assertIn("learning_status", response)
+            self.assertEqual(response["learning_status"]["last_review_date"], "2026-03-30")
+            self.assertEqual(response["learning_status"]["last_incremental_review_at"], "2026-03-30T18:15:00+00:00")
             self.assertTrue(any(card["strategy"] == "S1-Weather" for card in response["strategy_scorecards"]))
             journal.close()
 
@@ -1100,6 +1164,9 @@ class ObservationDashboardRegressionTests(unittest.TestCase):
                     payload = json.loads(response.read().decode("utf-8"))
                 self.assertEqual(response.status, 200)
                 self.assertEqual(payload["summary"]["scan_cycles"], 1)
+                self.assertEqual(payload["summary"]["decision_rows"], 1)
+                self.assertEqual(payload["summary"]["buy_decisions"], 0)
+                self.assertEqual(payload["summary"]["skip_decisions"], 1)
                 self.assertEqual(len(payload["recent_events"]), 1)
             finally:
                 server.server_close()

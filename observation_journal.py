@@ -166,7 +166,7 @@ class ObservationJournal:
         except Exception:
             pass
 
-        self._update_daily_summary(scan_event=event)
+        self._update_daily_summary(scan_event=event, decision_rows=decision_rows)
         self._update_recent_cache(scan_event=event, decision_rows=decision_rows)
         return event
 
@@ -338,7 +338,9 @@ class ObservationJournal:
         return {
             "generated_at": _utc_now_iso(),
             "hours": hours,
-            "summary": self._summarize_recent(filtered_events, filtered_decisions if include_decisions else []),
+            # Public history should still report decision counts even when the raw
+            # decision rows are omitted from the response body.
+            "summary": self._summarize_recent(filtered_events, filtered_decisions),
             "daily_summary": daily_rows,
             "recent_events": recent_events,
             "recent_decisions": recent_decisions if include_decisions else [],
@@ -468,6 +470,9 @@ class ObservationJournal:
             "diag_null": 0,
             "diag_evaluated": 0,
             "weather_errors": 0,
+            "decision_rows": 0,
+            "buy_decisions": 0,
+            "skip_decisions": 0,
             "paper_entries": 0,
             "paper_filled_pending": 0,
             "paper_resting_orders": 0,
@@ -481,7 +486,7 @@ class ObservationJournal:
             "paper_blocked_reasons": {},
         }
 
-    def _update_daily_summary(self, scan_event=None, paper_event=None):
+    def _update_daily_summary(self, scan_event=None, decision_rows=None, paper_event=None):
         ts_value = ""
         if scan_event:
             ts_value = scan_event.get("timestamp", "")
@@ -503,6 +508,9 @@ class ObservationJournal:
             row["trades_placed_live"] += _as_int(scan_event.get("trades_placed", 0))
             row["diag_null"] += _as_int(scan_event.get("diag_null", 0))
             row["diag_evaluated"] += _as_int(scan_event.get("diag_evaluated", 0))
+            row["decision_rows"] += len(decision_rows or [])
+            row["buy_decisions"] += sum(1 for decision in (decision_rows or []) if decision.get("signal") == "buy")
+            row["skip_decisions"] += sum(1 for decision in (decision_rows or []) if decision.get("signal") != "buy")
             row["paper_entries"] += _as_int(scan_event.get("paper_entries", 0))
             row["paper_filled_pending"] += _as_int(scan_event.get("paper_filled_pending", 0))
             row["paper_resting_orders"] += _as_int(scan_event.get("paper_resting_orders", 0))
