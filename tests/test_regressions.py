@@ -215,6 +215,46 @@ class StrategyRegressionTests(unittest.TestCase):
         self.assertEqual(signal["price_cents"], 20)
         self.assertGreater(signal["suggested_contracts"], 0)
 
+    @patch("strategy.datetime", FixedDateTime)
+    @patch.object(config, "LONGSHOT_FLOOR_CENTS", 1)
+    @patch.object(config, "ALLOW_NEXT_DAY_DIRECTIONAL_TRADES", False)
+    @patch.object(Strategy, "_get_edge_threshold", return_value=0.0)
+    def test_weather_strategy_shadow_override_runs_full_next_day_pipeline(self, _mock_threshold):
+        strategy = self._build_strategy(
+            probability=0.20,
+            distribution={
+                "forecasted_high_mean": 40.0,
+                "raw_forecast_mean": 40.0,
+                "model_spread": 1.5,
+                "std_dev": 2.0,
+                "total_members": 100,
+                "model_means": {"gfs_ensemble": 40.0},
+            },
+            verdict="CONFIRM",
+        )
+        strategy.weather.parsed["target_date"] = "2026-03-28"
+        market = {
+            "ticker": "KXHIGHNY-26MAR28-B50.5",
+            "yes_ask": 85,
+            "no_ask": 20,
+            "last_price": 85,
+            "volume": 100,
+            "open_interest": 50,
+            "volume_24h": 100,
+        }
+
+        default_signal = strategy.evaluate_market(market)
+        shadow_signal = strategy.evaluate_market(
+            market,
+            allow_next_day_directional_override=True,
+        )
+
+        self.assertEqual(default_signal["signal"], "skip")
+        self.assertEqual(default_signal["skip_reason"], "next_day_directional_blocked")
+        self.assertEqual(shadow_signal["signal"], "buy")
+        self.assertEqual(shadow_signal["side"], "no")
+        self.assertEqual(shadow_signal["shadow_mode"], "next_day_directional_override")
+
 
 class ExecutionParityRegressionTests(unittest.TestCase):
 
@@ -821,11 +861,16 @@ class ObservationJournalRegressionTests(unittest.TestCase):
                 observation_mode=True,
             )
 
-            rows = journal.load_daily_summary(days=1)
-            self.assertEqual(rows[0]["decision_rows"], 1)
-            self.assertEqual(rows[0]["buy_decisions"], 1)
-            self.assertEqual(rows[0]["skip_decisions"], 0)
-            self.assertEqual(rows[0]["scan_cycles"], 2)
+            rows = journal.load_daily_summary(days=2)
+            rows_by_date = {row["date"]: row for row in rows}
+            self.assertEqual(rows_by_date["2026-03-31"]["decision_rows"], 0)
+            self.assertEqual(rows_by_date["2026-03-31"]["buy_decisions"], 0)
+            self.assertEqual(rows_by_date["2026-03-31"]["skip_decisions"], 0)
+            today_key = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+            self.assertEqual(rows_by_date[today_key]["decision_rows"], 1)
+            self.assertEqual(rows_by_date[today_key]["buy_decisions"], 1)
+            self.assertEqual(rows_by_date[today_key]["skip_decisions"], 0)
+            self.assertEqual(rows_by_date[today_key]["scan_cycles"], 1)
             journal.close()
 
     def test_observation_journal_skips_recent_mirror_writes_when_disabled(self):
@@ -1142,15 +1187,68 @@ class StrategyScorecardRegressionTests(unittest.TestCase):
             self.assertEqual(s4["paper_filled"], 1)
             journal.close()
 
+    def test_strategy_scorecards_auto_kill_negative_paper_challenger(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = os.path.join(temp_dir, "bot_data.sqlite3")
+            journal = ObservationJournal(
+                events_file=os.path.join(temp_dir, "observation_events.jsonl"),
+                decisions_file=os.path.join(temp_dir, "scan_decisions.jsonl"),
+                recent_events_file=os.path.join(temp_dir, "observation_recent_events.jsonl"),
+                recent_decisions_file=os.path.join(temp_dir, "observation_recent_decisions.jsonl"),
+                recent_cache_file=os.path.join(temp_dir, "observation_recent_cache.json"),
+                daily_summary_file=os.path.join(temp_dir, "observation_daily_summary.json"),
+                db_path=db_path,
+            )
+            journal.log_scan_cycle(
+                cycle=21,
+                markets_scanned=6,
+                decisions=[{
+                    "ticker": "KXHIGHNY-TEST",
+                    "city_code": "NYC",
+                    "target_date": "2026-03-31",
+                    "signal": "buy",
+                    "side": "no",
+                    "strategy": "S4-NextDayNoPaper",
+                    "execution_status": "paper_filled",
+                }],
+                signals_found=1,
+                trades_placed=0,
+                observation_mode=True,
+            )
+            for idx, pnl in enumerate((-55, -46, -54, 43, 42), start=1):
+                journal.log_paper_event("paper_trade_resolved", {
+                    "ticker": f"KXHIGHNY-TEST-{idx}",
+                    "side": "no",
+                    "contracts": 1,
+                    "strategy": "S4-NextDayNoPaper",
+                    "target_date": "2026-03-31",
+                    "net_profit_cents": pnl,
+                })
+
+            with patch.object(config, "PAPER_CHALLENGER_ALLOW_NEXT_DAY_NO", True), \
+                    patch.object(config, "PAPER_STRATEGY_AUTOKILL_ENABLED", True), \
+                    patch.object(config, "PAPER_STRATEGY_AUTOKILL_MIN_RESOLVED", 5), \
+                    patch.object(config, "PAPER_STRATEGY_AUTOKILL_MIN_PROFIT_FACTOR", 1.0), \
+                    patch.object(config, "PAPER_STRATEGY_AUTOKILL_MIN_EXPECTANCY_CENTS", 0.0):
+                db = BotDatabase(db_path=db_path)
+                cards = build_strategy_scorecards(hours=24, db=db)
+                db.close()
+
+            s4 = next(card for card in cards if card["strategy"] == "S4-NextDayNoPaper")
+            self.assertIn("auto_killed_negative_paper_performance", s4["paper_entry_blockers"])
+            self.assertFalse(s4["eligible_for_paper_entries"])
+            journal.close()
+
 
 class ObservationChallengerRegressionTests(unittest.TestCase):
 
     class DummyWeatherStrategy:
-        def __init__(self, signal):
+        def __init__(self, signal, shadow_signal=None):
             self.signal = signal
+            self.shadow_signal = shadow_signal or signal
 
-        def evaluate_market(self, market, todays_high=None):
-            row = dict(self.signal)
+        def evaluate_market(self, market, todays_high=None, allow_next_day_directional_override=False):
+            row = dict(self.shadow_signal if allow_next_day_directional_override else self.signal)
             row.setdefault("ticker", market.get("ticker", ""))
             row.setdefault("city_code", market.get("_city_code", ""))
             return row
@@ -1185,8 +1283,17 @@ class ObservationChallengerRegressionTests(unittest.TestCase):
             "floor_strike": 60,
             "cap_strike": 61,
         }
+        shadow_signal = dict(signal)
+        shadow_signal.update({
+            "signal": "buy",
+            "skip_reason": None,
+            "strategy": "S1-Weather",
+            "shadow_mode": "next_day_directional_override",
+            "confirmation_verdict": "CONFIRM",
+            "suggested_contracts": 2,
+        })
         registry = StrategyRegistry(
-            weather_strategy=self.DummyWeatherStrategy(signal),
+            weather_strategy=self.DummyWeatherStrategy(signal, shadow_signal=shadow_signal),
             settlement_lock=self.DummySettlementLock(),
         )
         market = {"ticker": signal["ticker"], "_city_code": "DEN"}
@@ -1195,7 +1302,8 @@ class ObservationChallengerRegressionTests(unittest.TestCase):
                 patch.object(config, "PAPER_CHALLENGER_ALLOW_NEXT_DAY_NO", True), \
                 patch.object(config, "PAPER_CHALLENGER_MIN_FEE_ADJ_EDGE", 0.05), \
                 patch.object(config, "PAPER_CHALLENGER_MIN_PRICE_CENTS", 35), \
-                patch.object(config, "PAPER_CHALLENGER_MAX_PRICE_CENTS", 80):
+                patch.object(config, "PAPER_CHALLENGER_MAX_PRICE_CENTS", 80), \
+                patch.object(config, "PAPER_STRATEGY_STATUS_CACHE_SECONDS", 0):
             result = registry.evaluate_markets(
                 [market],
                 observed_highs={},
@@ -1205,6 +1313,7 @@ class ObservationChallengerRegressionTests(unittest.TestCase):
             self.assertEqual(len(result["buy_signals"]), 1)
             self.assertEqual(result["buy_signals"][0]["strategy"], "S4-NextDayNoPaper")
             self.assertEqual(result["buy_signals"][0]["execution_style"], "taker")
+            self.assertEqual(result["buy_signals"][0]["paper_shadow_mode"], "next_day_directional_override")
             self.assertEqual(len(result["all_decisions"]), 2)
 
             live_result = registry.evaluate_markets(
@@ -1214,6 +1323,45 @@ class ObservationChallengerRegressionTests(unittest.TestCase):
                 observation_mode=False,
             )
             self.assertEqual(live_result["buy_signals"], [])
+
+    def test_registry_does_not_add_next_day_challenger_without_shadow_buy(self):
+        signal = {
+            "ticker": "KXHIGHDEN-26MAR31-B60.5",
+            "strategy": "S1-Weather",
+            "signal": "skip",
+            "side": "no",
+            "skip_reason": "next_day_directional_blocked",
+            "price_cents": 67,
+            "fee_adjusted_edge": 0.20,
+            "target_date": "2026-03-31",
+            "city_code": "DEN",
+            "predicted_high": 58.1,
+            "strike_type": "between",
+            "floor_strike": 60,
+            "cap_strike": 61,
+        }
+        shadow_skip = dict(signal)
+        shadow_skip.update({
+            "skip_reason": "confirmation_reject",
+            "shadow_mode": "next_day_directional_override",
+        })
+        registry = StrategyRegistry(
+            weather_strategy=self.DummyWeatherStrategy(signal, shadow_signal=shadow_skip),
+            settlement_lock=self.DummySettlementLock(),
+        )
+        market = {"ticker": signal["ticker"], "_city_code": "DEN"}
+
+        with patch.object(config, "ENABLE_OBSERVATION_CHALLENGER_STRATEGIES", True), \
+                patch.object(config, "PAPER_CHALLENGER_ALLOW_NEXT_DAY_NO", True), \
+                patch.object(config, "PAPER_STRATEGY_STATUS_CACHE_SECONDS", 0):
+            result = registry.evaluate_markets(
+                [market],
+                observed_highs={},
+                balance_cents=10000,
+                observation_mode=True,
+            )
+        self.assertEqual(result["buy_signals"], [])
+        self.assertEqual(len(result["all_decisions"]), 1)
 
     def test_finalize_observation_decisions_keeps_same_ticker_different_strategies(self):
         decisions = [
@@ -1269,11 +1417,68 @@ class ObservationChallengerRegressionTests(unittest.TestCase):
         }
         with patch.object(config, "ENABLE_OBSERVATION_CHALLENGER_STRATEGIES", True), \
                 patch.object(config, "PAPER_CHALLENGER_ALLOW_SOFT_SETTLEMENT_LOCK", True), \
-                patch.object(config, "PAPER_CHALLENGER_SOFT_LOCK_MIN_LOCAL_HOUR", 0), \
+                patch.object(config, "PAPER_CHALLENGER_SOFT_LOCK_MIN_LOCAL_HOUR", 1), \
                 patch.object(config, "PAPER_CHALLENGER_SOFT_LOCK_MAX_PRICE_CENTS", 85):
             challengers = engine.generate({}, signal, todays_high=54, observation_mode=True)
         self.assertEqual(len(challengers), 1)
         self.assertEqual(challengers[0]["strategy"], "S5-SoftSettlementLockPaper")
+
+    def test_registry_blocks_auto_killed_next_day_challenger(self):
+        signal = {
+            "ticker": "KXHIGHDEN-26MAR31-B60.5",
+            "strategy": "S1-Weather",
+            "signal": "skip",
+            "side": "no",
+            "skip_reason": "next_day_directional_blocked",
+            "price_cents": 67,
+            "yes_price_cents": 34,
+            "no_price_cents": 67,
+            "edge": 0.2239,
+            "fee_adjusted_edge": 0.2008,
+            "our_prob": 0.1061,
+            "market_prob": 0.67,
+            "target_date": "2026-03-31",
+            "city_code": "DEN",
+            "predicted_high": 58.1,
+            "strike_type": "between",
+            "floor_strike": 60,
+            "cap_strike": 61,
+        }
+        shadow_signal = dict(signal)
+        shadow_signal.update({
+            "signal": "buy",
+            "skip_reason": None,
+            "strategy": "S1-Weather",
+            "shadow_mode": "next_day_directional_override",
+            "confirmation_verdict": "CONFIRM",
+            "suggested_contracts": 2,
+        })
+        registry = StrategyRegistry(
+            weather_strategy=self.DummyWeatherStrategy(signal, shadow_signal=shadow_signal),
+            settlement_lock=self.DummySettlementLock(),
+        )
+        registry._scorecard_cache = {
+            "S4-NextDayNoPaper": {
+                "strategy": "S4-NextDayNoPaper",
+                "paper_entry_enabled": True,
+                "paper_entry_blockers": ["auto_killed_negative_paper_performance"],
+            }
+        }
+        registry._scorecard_cache_at = datetime.now(timezone.utc)
+        market = {"ticker": signal["ticker"], "_city_code": "DEN"}
+
+        with patch.object(config, "ENABLE_OBSERVATION_CHALLENGER_STRATEGIES", True), \
+                patch.object(config, "PAPER_CHALLENGER_ALLOW_NEXT_DAY_NO", True), \
+                patch.object(config, "PAPER_STRATEGY_STATUS_CACHE_SECONDS", 3600):
+            result = registry.evaluate_markets(
+                [market],
+                observed_highs={},
+                balance_cents=10000,
+                observation_mode=True,
+            )
+
+        self.assertEqual(result["buy_signals"], [])
+        self.assertEqual(len(result["all_decisions"]), 1)
 
 
 class WeatherFetchWindowRegressionTests(unittest.TestCase):

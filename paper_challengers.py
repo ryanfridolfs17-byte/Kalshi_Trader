@@ -20,23 +20,57 @@ def _no_price_cents(source):
 
 
 class PaperChallengerEngine:
-    def generate(self, market, weather_signal, todays_high=None, observation_mode=False):
+    @staticmethod
+    def _paper_strategy_blockers(strategy_id, strategy_statuses=None):
+        if not strategy_id:
+            return []
+        card = (strategy_statuses or {}).get(strategy_id) or {}
+        blockers = list(card.get("paper_entry_blockers", []) or [])
+        if card and card.get("paper_entry_enabled") is False:
+            blockers.append("paper_disabled_by_config")
+        deduped = []
+        seen = set()
+        for blocker in blockers:
+            if blocker and blocker not in seen:
+                deduped.append(blocker)
+                seen.add(blocker)
+        return deduped
+
+    def generate(
+        self,
+        market,
+        weather_signal,
+        todays_high=None,
+        observation_mode=False,
+        next_day_shadow_signal=None,
+        strategy_statuses=None,
+    ):
         if not observation_mode or not getattr(config, "ENABLE_OBSERVATION_CHALLENGER_STRATEGIES", False):
             return []
 
         challengers = []
-        next_day = self._build_next_day_no_challenger(weather_signal)
+        next_day = self._build_next_day_no_challenger(
+            weather_signal,
+            shadow_signal=next_day_shadow_signal,
+            strategy_statuses=strategy_statuses,
+        )
         if next_day:
             challengers.append(next_day)
 
-        soft_lock = self._build_soft_settlement_lock(weather_signal, todays_high=todays_high)
+        soft_lock = self._build_soft_settlement_lock(
+            weather_signal,
+            todays_high=todays_high,
+            strategy_statuses=strategy_statuses,
+        )
         if soft_lock:
             challengers.append(soft_lock)
 
         return challengers
 
-    def _build_next_day_no_challenger(self, signal):
+    def _build_next_day_no_challenger(self, signal, shadow_signal=None, strategy_statuses=None):
         if not getattr(config, "PAPER_CHALLENGER_ALLOW_NEXT_DAY_NO", False):
+            return None
+        if self._paper_strategy_blockers("S4-NextDayNoPaper", strategy_statuses):
             return None
         if not signal or signal.get("skip_reason") != "next_day_directional_blocked":
             return None
@@ -44,18 +78,24 @@ class PaperChallengerEngine:
             return None
         if signal.get("strike_type") != "between":
             return None
+        if not shadow_signal or shadow_signal.get("signal") != "buy":
+            return None
+        if shadow_signal.get("side") != "no":
+            return None
+        if shadow_signal.get("strike_type") != "between":
+            return None
 
-        price_cents = int(signal.get("price_cents", 0) or 0)
+        price_cents = int(shadow_signal.get("price_cents", 0) or 0)
         if price_cents < int(getattr(config, "PAPER_CHALLENGER_MIN_PRICE_CENTS", 35) or 35):
             return None
         if price_cents > int(getattr(config, "PAPER_CHALLENGER_MAX_PRICE_CENTS", 80) or 80):
             return None
 
-        fee_adj_edge = float(signal.get("fee_adjusted_edge", 0) or 0)
+        fee_adj_edge = float(shadow_signal.get("fee_adjusted_edge", 0) or 0)
         if fee_adj_edge < float(getattr(config, "PAPER_CHALLENGER_MIN_FEE_ADJ_EDGE", 0.05) or 0.05):
             return None
 
-        challenger = dict(signal)
+        challenger = dict(shadow_signal)
         challenger.update({
             "signal": "buy",
             "strategy": "S4-NextDayNoPaper",
@@ -72,15 +112,19 @@ class PaperChallengerEngine:
             "paper_only": True,
             "paper_source_strategy": signal.get("strategy", ""),
             "paper_source_skip_reason": signal.get("skip_reason", ""),
+            "paper_shadow_strategy": shadow_signal.get("strategy", ""),
+            "paper_shadow_mode": shadow_signal.get("shadow_mode", ""),
             "reasoning": (
-                "[S4] Paper-only challenger for next-day NO. "
+                "[S4] Paper-only challenger for next-day NO after full shadow pass. "
                 f"fee_adj_edge={fee_adj_edge:.3f}, price={price_cents}c."
             ),
         })
         return challenger
 
-    def _build_soft_settlement_lock(self, signal, todays_high=None):
+    def _build_soft_settlement_lock(self, signal, todays_high=None, strategy_statuses=None):
         if not getattr(config, "PAPER_CHALLENGER_ALLOW_SOFT_SETTLEMENT_LOCK", False):
+            return None
+        if self._paper_strategy_blockers("S5-SoftSettlementLockPaper", strategy_statuses):
             return None
         if todays_high is None:
             return None

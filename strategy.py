@@ -49,13 +49,17 @@ class Strategy:
     # MAIN ENTRY
     # ===========================================================
 
-    def evaluate_market(self, market, todays_high=None):
+    def evaluate_market(self, market, todays_high=None, allow_next_day_directional_override=False):
         """Evaluate a market for trading signals.
 
         Args:
             market: Kalshi market dict
             todays_high: Optional observed high so far (float, degF).
                           If provided, enables confirmed outcome checks.
+            allow_next_day_directional_override: Shadow-only override used by
+                          paper challengers. When true, the strategy still runs
+                          the full downstream pipeline instead of stopping at the
+                          early next-day directional kill switch.
 
         Returns: signal dict with keys per spec.
         """
@@ -78,7 +82,12 @@ class Strategy:
             return self._skip("Dead market", ticker)
 
         # --- Try weather strategy ---
-        signal = self._strategy_weather(market, ref_price, todays_high)
+        signal = self._strategy_weather(
+            market,
+            ref_price,
+            todays_high,
+            allow_next_day_directional_override=allow_next_day_directional_override,
+        )
         if signal and signal["signal"] == "buy":
             _t = signal["ticker"]
             _s = signal["side"]
@@ -107,7 +116,7 @@ class Strategy:
     # S1: WEATHER ENSEMBLE EDGE
     # ===========================================================
 
-    def _strategy_weather(self, market, ref_price, todays_high=None):
+    def _strategy_weather(self, market, ref_price, todays_high=None, allow_next_day_directional_override=False):
         """Core weather edge detection."""
         ticker = market.get("ticker", "")
 
@@ -205,6 +214,7 @@ class Strategy:
             our_prob=round(our_prob, 4),
             market_prob=round(yes_market_prob, 4),
             strategy="S1-Weather",
+            shadow_mode="next_day_directional_override" if allow_next_day_directional_override else "",
             yes_price_cents=yes_price,
             no_price_cents=no_price,
             **market_context,
@@ -251,7 +261,11 @@ class Strategy:
         if not is_next_day and local_hour < 6:
             return _side_skip("before_6am_local")
 
-        if is_next_day and not getattr(config, "ALLOW_NEXT_DAY_DIRECTIONAL_TRADES", False):
+        if (
+            is_next_day
+            and not getattr(config, "ALLOW_NEXT_DAY_DIRECTIONAL_TRADES", False)
+            and not allow_next_day_directional_override
+        ):
             return _side_skip("next_day_directional_blocked")
 
         if is_threshold_market and not getattr(config, "ALLOW_THRESHOLD_DIRECTIONAL_TRADES", False):
@@ -454,6 +468,7 @@ class Strategy:
             "bet_description": self._describe_bet(side, temp_low, temp_high),
             "temp_low": temp_low,
             "temp_high": temp_high,
+            "shadow_mode": "next_day_directional_override" if allow_next_day_directional_override else "",
         }
 
     # ===========================================================

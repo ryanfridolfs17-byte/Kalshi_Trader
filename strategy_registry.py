@@ -19,6 +19,8 @@ def get_strategy_definitions():
             "label": "Directional Weather Ensemble",
             "enabled": True,
             "live_enabled": bool(getattr(config, "ALLOW_LIVE_WEATHER_STRATEGY", False)),
+            "paper_entry_enabled": True,
+            "paper_only": False,
             "paper_default": True,
             "promotion_gate": {
                 "min_resolved": 75,
@@ -31,6 +33,8 @@ def get_strategy_definitions():
             "label": "Settlement Lock",
             "enabled": bool(getattr(config, "ENABLE_SETTLEMENT_LOCK_STRATEGY", False)),
             "live_enabled": bool(getattr(config, "ALLOW_LIVE_SETTLEMENT_LOCK_TRADES", False)),
+            "paper_entry_enabled": bool(getattr(config, "ENABLE_SETTLEMENT_LOCK_STRATEGY", False)),
+            "paper_only": False,
             "paper_default": True,
             "promotion_gate": {
                 "min_resolved": 25,
@@ -43,6 +47,11 @@ def get_strategy_definitions():
             "label": "Paper Challenger: Next-Day NO",
             "enabled": bool(getattr(config, "ENABLE_OBSERVATION_CHALLENGER_STRATEGIES", False)),
             "live_enabled": False,
+            "paper_entry_enabled": bool(
+                getattr(config, "ENABLE_OBSERVATION_CHALLENGER_STRATEGIES", False)
+                and getattr(config, "PAPER_CHALLENGER_ALLOW_NEXT_DAY_NO", False)
+            ),
+            "paper_only": True,
             "paper_default": True,
             "promotion_gate": {
                 "min_resolved": 30,
@@ -55,6 +64,11 @@ def get_strategy_definitions():
             "label": "Paper Challenger: Soft Settlement Lock",
             "enabled": bool(getattr(config, "ENABLE_OBSERVATION_CHALLENGER_STRATEGIES", False)),
             "live_enabled": False,
+            "paper_entry_enabled": bool(
+                getattr(config, "ENABLE_OBSERVATION_CHALLENGER_STRATEGIES", False)
+                and getattr(config, "PAPER_CHALLENGER_ALLOW_SOFT_SETTLEMENT_LOCK", False)
+            ),
+            "paper_only": True,
             "paper_default": True,
             "promotion_gate": {
                 "min_resolved": 20,
@@ -71,6 +85,8 @@ class StrategyRegistry:
         self.weather_strategy = weather_strategy
         self.settlement_lock = settlement_lock
         self.challenger_engine = challenger_engine or PaperChallengerEngine()
+        self._scorecard_cache = {}
+        self._scorecard_cache_at = None
 
     @staticmethod
     def _with_observation_metadata(signal, todays_high=None):
@@ -127,6 +143,64 @@ class StrategyRegistry:
                 break
         return selected
 
+    def _get_strategy_statuses(self, observation_mode=False):
+        if not observation_mode:
+            return {}
+
+        ttl_seconds = max(
+            0,
+            int(getattr(config, "PAPER_STRATEGY_STATUS_CACHE_SECONDS", 300) or 300),
+        )
+        now = datetime.now(timezone.utc)
+        if (
+            self._scorecard_cache
+            and self._scorecard_cache_at is not None
+            and ttl_seconds > 0
+            and (now - self._scorecard_cache_at).total_seconds() < ttl_seconds
+        ):
+            return self._scorecard_cache
+
+        try:
+            cards = build_strategy_scorecards()
+        except Exception as exc:
+            print(f"[STRATEGY-STATUS] scorecard refresh failed: {exc}")
+            return self._scorecard_cache or {}
+
+        statuses = {
+            row.get("strategy", ""): row
+            for row in cards
+            if row.get("strategy")
+        }
+        self._scorecard_cache = statuses
+        self._scorecard_cache_at = now
+        return statuses
+
+    def _build_next_day_shadow_signal(self, market, signal, todays_high=None, strategy_statuses=None):
+        if not signal or signal.get("skip_reason") != "next_day_directional_blocked":
+            return None
+        if signal.get("side") != "no":
+            return None
+        if signal.get("strike_type") != "between":
+            return None
+        s4_status = (strategy_statuses or {}).get("S4-NextDayNoPaper", {}) or {}
+        if list(s4_status.get("paper_entry_blockers", []) or []):
+            return None
+        if s4_status and s4_status.get("paper_entry_enabled") is False:
+            return None
+        if not hasattr(self.weather_strategy, "evaluate_market"):
+            return None
+        try:
+            shadow_signal = self.weather_strategy.evaluate_market(
+                market,
+                todays_high=todays_high,
+                allow_next_day_directional_override=True,
+            )
+        except TypeError:
+            return None
+        if not shadow_signal:
+            return None
+        return self._with_observation_metadata(shadow_signal, todays_high=todays_high)
+
     def evaluate_markets(self, markets, observed_highs, balance_cents, observation_mode=False):
         buy_signals = []
         paper_lock_signals = []
@@ -135,6 +209,7 @@ class StrategyRegistry:
         all_evaluated = []
         skip_counts = {}
         null_count = 0
+        strategy_statuses = self._get_strategy_statuses(observation_mode=observation_mode)
 
         for market in markets:
             city_code = market.get("_city_code", "")
@@ -171,12 +246,20 @@ class StrategyRegistry:
                 if signal.get("city_code") and signal.get("predicted_high") is not None:
                     all_evaluated.append(signal)
                 if observation_mode:
+                    shadow_signal = self._build_next_day_shadow_signal(
+                        market,
+                        signal,
+                        todays_high=todays_high,
+                        strategy_statuses=strategy_statuses,
+                    )
                     paper_challenger_candidates.extend(
                         self.challenger_engine.generate(
                             market,
                             signal,
                             todays_high=todays_high,
                             observation_mode=observation_mode,
+                            next_day_shadow_signal=shadow_signal,
+                            strategy_statuses=strategy_statuses,
                         )
                     )
 
@@ -252,6 +335,8 @@ def build_strategy_scorecards(hours=None, db=None):
                 "label": definition.get("label", strategy_id),
                 "enabled": bool(definition.get("enabled", True)),
                 "live_enabled": bool(definition.get("live_enabled", False)),
+                "paper_entry_enabled": bool(definition.get("paper_entry_enabled", True)),
+                "paper_only": bool(definition.get("paper_only", False)),
                 "paper_default": bool(definition.get("paper_default", True)),
                 "hours": hours,
                 "buy_decisions": 0,
@@ -271,7 +356,9 @@ def build_strategy_scorecards(hours=None, db=None):
                 "expectancy_cents": None,
                 "max_drawdown_cents": 0,
                 "promotion_gate": definition.get("promotion_gate", {}),
+                "paper_entry_blockers": [],
                 "promotion_blockers": [],
+                "eligible_for_paper_entries": False,
                 "eligible_for_live": False,
                 "last_updated_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -323,6 +410,25 @@ def build_strategy_scorecards(hours=None, db=None):
             elif card["gross_profit_cents"] > 0:
                 card["profit_factor"] = None
             card["max_drawdown_cents"] = _compute_drawdown_cents(resolved_profits.get(strategy_id, []))
+
+            paper_blockers = []
+            if not card["enabled"]:
+                paper_blockers.append("strategy_disabled")
+            if not card["paper_entry_enabled"]:
+                paper_blockers.append("paper_disabled_by_config")
+            if (
+                card["paper_only"]
+                and getattr(config, "PAPER_STRATEGY_AUTOKILL_ENABLED", False)
+                and card["paper_resolved"] >= int(getattr(config, "PAPER_STRATEGY_AUTOKILL_MIN_RESOLVED", 5) or 5)
+            ):
+                min_pf = float(getattr(config, "PAPER_STRATEGY_AUTOKILL_MIN_PROFIT_FACTOR", 1.0) or 1.0)
+                min_expectancy = float(getattr(config, "PAPER_STRATEGY_AUTOKILL_MIN_EXPECTANCY_CENTS", 0.0) or 0.0)
+                profit_factor = card["profit_factor"]
+                expectancy = float(card["expectancy_cents"] or 0.0)
+                if expectancy <= min_expectancy and (profit_factor is None or profit_factor < min_pf):
+                    paper_blockers.append("auto_killed_negative_paper_performance")
+            card["paper_entry_blockers"] = paper_blockers
+            card["eligible_for_paper_entries"] = len(paper_blockers) == 0
 
             gate = card["promotion_gate"]
             blockers = []
