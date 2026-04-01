@@ -871,6 +871,60 @@ class ObservationJournalRegressionTests(unittest.TestCase):
             self.assertEqual(history["recent_decisions"][0]["ticker"], "KXHIGHNY-TEST")
             journal.close()
 
+    def test_observation_journal_history_summary_keeps_decision_counts_when_mirrors_disabled(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+                patch.object(config, "OBSERVATION_ENABLE_RECENT_MIRRORS", False):
+            journal = ObservationJournal(
+                events_file=os.path.join(temp_dir, "observation_events.jsonl"),
+                decisions_file=os.path.join(temp_dir, "scan_decisions.jsonl"),
+                recent_events_file=os.path.join(temp_dir, "observation_recent_events.jsonl"),
+                recent_decisions_file=os.path.join(temp_dir, "observation_recent_decisions.jsonl"),
+                recent_cache_file=os.path.join(temp_dir, "observation_recent_cache.json"),
+                daily_summary_file=os.path.join(temp_dir, "observation_daily_summary.json"),
+                db_path=os.path.join(temp_dir, "bot_data.sqlite3"),
+            )
+
+            journal.log_scan_cycle(
+                cycle=16,
+                markets_scanned=8,
+                decisions=[
+                    {
+                        "ticker": "KXHIGHNY-TEST",
+                        "city_code": "NYC",
+                        "target_date": "2026-03-31",
+                        "signal": "buy",
+                        "side": "no",
+                        "strategy": "S4-NextDayNoPaper",
+                    },
+                    {
+                        "ticker": "KXHIGHSEA-TEST",
+                        "city_code": "SEA",
+                        "target_date": "2026-03-31",
+                        "signal": "skip",
+                        "side": "no",
+                        "strategy": "S1-Weather",
+                        "skip_reason": "no_edge",
+                    },
+                ],
+                signals_found=1,
+                trades_placed=0,
+                skip_counts={"no_edge": 1},
+                observation_mode=True,
+            )
+
+            history = journal.get_cached_history(
+                hours=24,
+                event_limit=10,
+                decision_limit=10,
+                include_decisions=False,
+            )
+
+            self.assertEqual(history["summary"]["decision_rows"], 2)
+            self.assertEqual(history["summary"]["buy_decisions"], 1)
+            self.assertEqual(history["summary"]["skip_decisions"], 1)
+            self.assertEqual(history["recent_decisions"], [])
+            journal.close()
+
     def test_observation_journal_startup_housekeeping_removes_disabled_artifacts(self):
         with tempfile.TemporaryDirectory() as temp_dir, \
                 patch.object(config, "OBSERVATION_ENABLE_RECENT_MIRRORS", False), \

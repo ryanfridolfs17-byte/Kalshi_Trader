@@ -378,15 +378,18 @@ class ObservationJournal:
         event_limit = max(1, min(_as_int(event_limit), 1000))
         decision_limit = max(1, min(_as_int(decision_limit), 5000))
         if not self.enable_recent_mirrors:
-            return self.get_recent_history(
+            payload = self.get_recent_history(
                 hours=hours,
                 event_limit=event_limit,
                 decision_limit=decision_limit,
-                include_decisions=include_decisions,
+                include_decisions=True,
                 prefer_db=False,
                 fast_mode=True,
                 cached_only=False,
             )
+            if not include_decisions:
+                payload["recent_decisions"] = []
+            return payload
 
         cache = self._read_recent_cache()
         cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
