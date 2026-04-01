@@ -74,6 +74,7 @@ class ObservationJournal:
         self.recent_decisions_file = recent_decisions_file or config.OBSERVATION_RECENT_DECISIONS_FILE
         self.recent_cache_file = recent_cache_file or config.OBSERVATION_RECENT_CACHE_FILE
         self.daily_summary_file = daily_summary_file or config.OBSERVATION_DAILY_SUMMARY_FILE
+        self.db_path = db_path or config.BOT_DB_FILE
         self.enable_recent_mirrors = bool(getattr(config, "OBSERVATION_ENABLE_RECENT_MIRRORS", True))
         self.max_events_file_bytes = max(
             512 * 1024,
@@ -84,7 +85,7 @@ class ObservationJournal:
             _as_int(getattr(config, "OBSERVATION_MAX_DECISIONS_FILE_BYTES", 96 * 1024 * 1024) or 0),
         )
         self.enable_sqlite = bool(getattr(config, "OBSERVATION_ENABLE_SQLITE", True))
-        self.db = BotDatabase(db_path=db_path or config.BOT_DB_FILE) if self.enable_sqlite else None
+        self.db = BotDatabase(db_path=self.db_path) if self.enable_sqlite else None
         self.retention_days = max(
             7,
             _as_int(getattr(config, "OBSERVATION_SUMMARY_RETENTION_DAYS", 30) or 30),
@@ -97,6 +98,7 @@ class ObservationJournal:
             100,
             _as_int(getattr(config, "OBSERVATION_RECENT_DECISION_LIMIT", 6000) or 6000),
         )
+        self._startup_housekeeping()
 
     def close(self):
         try:
@@ -254,6 +256,32 @@ class ObservationJournal:
         floor = 512 * 1024 if "decisions" in str(path) else 256 * 1024
         ceiling = 16 * 1024 * 1024 if "decisions" in str(path) else 4 * 1024 * 1024
         return min(max(max_rows * per_row, floor), ceiling)
+
+    def _startup_housekeeping(self):
+        self._maybe_trim_canonical_history(
+            self.events_file,
+            max_bytes=self.max_events_file_bytes,
+            max_rows=max(self.recent_event_limit * 8, 5000),
+        )
+        self._maybe_trim_canonical_history(
+            self.decisions_file,
+            max_bytes=self.max_decisions_file_bytes,
+            max_rows=max(self.recent_decision_limit * 12, 50000),
+        )
+        if not self.enable_recent_mirrors:
+            self._delete_file_if_present(self.recent_events_file)
+            self._delete_file_if_present(self.recent_decisions_file)
+            self._delete_file_if_present(self.recent_cache_file)
+        if not self.enable_sqlite:
+            self._delete_file_if_present(self.db_path)
+
+    @staticmethod
+    def _delete_file_if_present(path):
+        try:
+            if path and os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
 
     def get_recent_history(
         self,

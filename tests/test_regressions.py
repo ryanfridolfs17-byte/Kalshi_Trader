@@ -871,6 +871,34 @@ class ObservationJournalRegressionTests(unittest.TestCase):
             self.assertEqual(history["recent_decisions"][0]["ticker"], "KXHIGHNY-TEST")
             journal.close()
 
+    def test_observation_journal_startup_housekeeping_removes_disabled_artifacts(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+                patch.object(config, "OBSERVATION_ENABLE_RECENT_MIRRORS", False), \
+                patch.object(config, "OBSERVATION_ENABLE_SQLITE", False):
+            recent_events = os.path.join(temp_dir, "observation_recent_events.jsonl")
+            recent_decisions = os.path.join(temp_dir, "observation_recent_decisions.jsonl")
+            recent_cache = os.path.join(temp_dir, "observation_recent_cache.json")
+            db_path = os.path.join(temp_dir, "bot_data.sqlite3")
+            for path in (recent_events, recent_decisions, recent_cache, db_path):
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write("stale")
+
+            journal = ObservationJournal(
+                events_file=os.path.join(temp_dir, "observation_events.jsonl"),
+                decisions_file=os.path.join(temp_dir, "scan_decisions.jsonl"),
+                recent_events_file=recent_events,
+                recent_decisions_file=recent_decisions,
+                recent_cache_file=recent_cache,
+                daily_summary_file=os.path.join(temp_dir, "observation_daily_summary.json"),
+                db_path=db_path,
+            )
+
+            self.assertFalse(os.path.exists(recent_events))
+            self.assertFalse(os.path.exists(recent_decisions))
+            self.assertFalse(os.path.exists(recent_cache))
+            self.assertFalse(os.path.exists(db_path))
+            journal.close()
+
     def test_observation_journal_uses_database_when_jsonl_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             events_path = os.path.join(temp_dir, "observation_events.jsonl")
