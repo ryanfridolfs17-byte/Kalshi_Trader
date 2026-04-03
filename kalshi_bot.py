@@ -124,8 +124,8 @@ def _capture_cycle_learning(reviewer, decisions, executed_signals=None):
         reviewer.capture_scan_snapshot(decisions)
         for row in executed_signals or []:
             reviewer.capture_forecast_snapshot(row)
-    except Exception:
-        pass
+    except Exception as e:
+        print("  [ERROR] capture_cycle_learning: %s" % e)
 
 
 def _log_cycle_audit(
@@ -169,8 +169,8 @@ def _log_cycle_audit(
             paper_result=paper_summary or {},
             settlement_lock_candidates=len(paper_lock_signals or []),
         )
-    except Exception:
-        pass
+    except Exception as e:
+        print("  [ERROR] log_cycle_audit: %s" % e)
 
 
 def _reconcile_positions(client, risk):
@@ -348,8 +348,8 @@ def main(shutdown_event=None):
             dashboard.set_kalshi_client(client)
         if hasattr(dashboard, "set_trade_reviewer"):
             dashboard.set_trade_reviewer(reviewer)
-    except Exception:
-        pass
+    except Exception as e:
+        print("  [ERROR] dashboard wiring: %s" % e)
 
     # Reconcile position entry prices with actual Kalshi fill data
     _reconcile_position_prices(client, risk)
@@ -559,8 +559,8 @@ def main(shutdown_event=None):
                     print("  [BUCKET] %s: %dc total (%+dc deviation, %d buckets)" % (
                         inc["event_ticker"], inc["total_yes_cents"],
                         inc["deviation_cents"], inc["num_buckets"]))
-            except Exception:
-                pass
+            except Exception as e:
+                print("  [ERROR] bucket inconsistency detection: %s" % e)
 
             max_per_cycle = 3  # Prevent concentrated losses (data: 6 trades in 22min, all lost)
             market_price_map = _build_market_price_map(weather_markets)
@@ -618,8 +618,8 @@ def main(shutdown_event=None):
                 interval = config.SCAN_INTERVAL
                 try:
                     reviewer.check_and_run()
-                except Exception:
-                    pass
+                except Exception as e:
+                    print("  [ERROR] reviewer.check_and_run (no-signals): %s" % e)
                 if config.PEAK_SCAN_START_ET <= hour_et <= config.PEAK_SCAN_END_ET:
                     interval = config.PEAK_SCAN_INTERVAL
                 _sleep = max(10, interval - (time.time() - cycle_start))
@@ -700,8 +700,8 @@ def main(shutdown_event=None):
                 interval = config.SCAN_INTERVAL
                 try:
                     reviewer.check_and_run()
-                except Exception:
-                    pass
+                except Exception as e:
+                    print("  [ERROR] reviewer.check_and_run (execution-filtered): %s" % e)
                 if config.PEAK_SCAN_START_ET <= hour_et <= config.PEAK_SCAN_END_ET:
                     interval = config.PEAK_SCAN_INTERVAL
                 _sleep = max(10, interval - (time.time() - cycle_start))
@@ -926,8 +926,8 @@ def main(shutdown_event=None):
             print("\n  [BOT] Shutting down gracefully...")
             try:
                 maker.cancel_all()
-            except Exception:
-                pass
+            except Exception as e:
+                print("  [ERROR] shutdown cancel_all: %s" % e)
             break
         except Exception as e:
             print("  [BOT] ERROR in cycle %d: %s" % (cycle, e))
@@ -1050,8 +1050,8 @@ def _load_trade_log():
         if os.path.exists(config.TRADE_LOG_FILE):
             with open(config.TRADE_LOG_FILE, "r") as f:
                 return json.load(f)
-    except Exception:
-        pass
+    except Exception as e:
+        print("  [ERROR] load_trade_log: %s" % e)
     return []
 
 
@@ -1061,8 +1061,8 @@ def _fetch_observed_highs(markets, intel=None):
     if intel and getattr(config, "METAR_ENABLED", True):
         try:
             intel.fetch_metar_batch()
-        except Exception:
-            pass
+        except Exception as e:
+            print("  [ERROR] fetch_metar_batch: %s" % e)
 
     cities_seen = set()
     obs_highs = {}
@@ -1305,8 +1305,8 @@ def _write_bot_status(cycle, risk, intel, maker, signals_count, trades_count, ne
             "runtime_fingerprint": runtime_fingerprint,
         }
         config.atomic_json_save(config.BOT_STATUS_FILE, status)
-    except Exception:
-        pass
+    except Exception as e:
+        print("  [ERROR] write_bot_status: %s" % e)
 
 
 def _save_scan_log(markets, signals, trades, skip_counts=None,
@@ -1336,8 +1336,8 @@ def _save_scan_log(markets, signals, trades, skip_counts=None,
             "s3_eval_stats": s3_eval_stats or {},
         }
         config.atomic_json_save(config.SCAN_LOG_FILE, log)
-    except Exception:
-        pass
+    except Exception as e:
+        print("  [ERROR] save_scan_log: %s" % e)
 
 
 if __name__ == "__main__":

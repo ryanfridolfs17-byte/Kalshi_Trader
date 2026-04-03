@@ -1801,6 +1801,9 @@ class TradeReviewer:
         return {}
 
     def _save_state(self):
+        # Single-writer assumption: TradeReviewer is driven serially from the bot loop
+        # (check_and_run / _run_incremental_review / _morning_retry). If this ever
+        # moves to background threads, protect this path with a threading.Lock.
         try:
             config.atomic_json_save(config.LEARNING_STATE_FILE, self.state)
         except Exception as e:

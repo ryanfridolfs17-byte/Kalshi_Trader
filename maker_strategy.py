@@ -275,7 +275,7 @@ class MakerStrategy:
 
                 print("  [MAKER] Placed: %s %s %dc x%d (order %s)" % (
                     side.upper(), ticker, limit_price, contracts, order_id[:8]))
-                self._track_order_side(side)
+                self._track_order_side(side, is_taker=False)
                 return order
         except Exception as e:
             print("  [MAKER] Order failed: %s" % e)
@@ -363,6 +363,7 @@ class MakerStrategy:
                         "predicted_high": signal.get("predicted_high"),
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     })
+                self._track_order_side(side, is_taker=True)
                 return order
         except Exception as e:
             print("  [MAKER] Taker order failed: %s" % e)
@@ -596,7 +597,7 @@ class MakerStrategy:
         stale_limit = timedelta(minutes=threshold)
         stale = []
 
-        for order_id, info in self.open_orders.items():
+        for order_id, info in list(self.open_orders.items()):
             placed = info.get("placed_at", "")
             try:
                 placed_dt = datetime.fromisoformat(placed.replace("Z", "+00:00"))
@@ -624,10 +625,13 @@ class MakerStrategy:
         self._fill_tracking.setdefault(key, []).append(datetime.now(timezone.utc).isoformat())
         self._save_fill_tracking()
 
-    def _track_order_side(self, side):
+    def _track_order_side(self, side, is_taker=False):
         """Track which side we placed orders on."""
         key = "yes_orders" if side == "yes" else "no_orders"
         self._fill_tracking.setdefault(key, []).append(datetime.now(timezone.utc).isoformat())
+        if is_taker:
+            taker_key = "yes_taker" if side == "yes" else "no_taker"
+            self._fill_tracking.setdefault(taker_key, []).append(datetime.now(timezone.utc).isoformat())
         self._save_fill_tracking()
 
     def get_adverse_selection_info(self):
@@ -638,8 +642,9 @@ class MakerStrategy:
         for side in ("yes", "no"):
             fills = [t for t in self._fill_tracking.get("%s_fills" % side, []) if t > cutoff]
             orders = [t for t in self._fill_tracking.get("%s_orders" % side, []) if t > cutoff]
-            fill_count = len(fills)
-            order_count = len(orders)
+            taker_count = len([t for t in self._fill_tracking.get("%s_taker" % side, []) if t > cutoff])
+            fill_count = max(0, len(fills) - taker_count)
+            order_count = max(0, len(orders) - taker_count)
             fill_rate = min(1.0, fill_count / order_count) if order_count > 0 else 0.0
             result[side] = {"fills": fill_count, "orders": order_count, "fill_rate": fill_rate}
             if order_count >= 3:

@@ -70,13 +70,14 @@ class ObservationPaperTrader:
             cycle=cycle,
             opened_at=now_iso,
         )
+        effective_max_per_cycle = max(0, int(max_per_cycle or 0) - len(filled_pending))
         placed_this_cycle = []
         executed = []
         queued = []
         blocked_signals = []
 
         for signal in signals:
-            if len(placed_this_cycle) >= max_per_cycle:
+            if len(placed_this_cycle) >= effective_max_per_cycle:
                 blocked_reasons["per_cycle_limit"] += 1
                 blocked_signals.append(self._build_blocked_signal(signal, "per_cycle_limit"))
                 continue
@@ -186,6 +187,8 @@ class ObservationPaperTrader:
                     price_cents=int(pos.get("entry_price_cents", 0) or 0),
                     contracts=int(pos.get("contracts", 0) or 0),
                 )
+                # Note: exit fee = 0 at settlement because min(0,100) = min(100,0) = 0.
+                # If paper exits before settlement are added, exit fee must be computed.
                 net = gross - int(pos.get("estimated_entry_fee_cents", 0) or 0)
                 resolved = dict(pos)
                 resolved.update({
@@ -385,6 +388,7 @@ class ObservationPaperTrader:
             limit_price = int(order.get("limit_price_cents", 0) or 0)
             if current_price > limit_price:
                 continue
+            fill_price = min(limit_price, current_price)
 
             fill_signal = {
                 "signal": "buy",
@@ -405,14 +409,14 @@ class ObservationPaperTrader:
                 "limit_price_cents": order.get("limit_price_cents", 0),
                 "limit_price": order.get("limit_price_cents", 0),
                 "risk_price_cents": order.get("limit_price_cents", 0),
-                "current_price_cents": current_price,
+                "current_price_cents": fill_price,
                 "requested_contracts": order.get("contracts", 0),
                 "execution_style": order.get("execution_style", "maker"),
             }
             position = self._build_position(
                 signal=fill_signal,
                 cycle=order.get("cycle", cycle),
-                entry_price_cents=current_price,
+                entry_price_cents=fill_price,
                 contracts=int(order.get("contracts", 0) or 0),
                 opened_at=opened_at,
             )

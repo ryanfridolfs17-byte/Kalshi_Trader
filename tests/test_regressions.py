@@ -18,6 +18,7 @@ import sync_local
 from bot_db import BotDatabase
 from execution_models import build_entry_order
 from kalshi_bot import _finalize_observation_decisions, _prepare_entry_signal
+from maker_strategy import MakerStrategy
 from observation_journal import ObservationJournal
 from observation_paper import ObservationPaperTrader
 from paper_challengers import PaperChallengerEngine
@@ -151,6 +152,38 @@ class StrategyRegressionTests(unittest.TestCase):
         self.assertEqual(signal["side"], "yes")
         self.assertEqual(signal["price_cents"], 20)
         self.assertGreater(signal["suggested_contracts"], 0)
+
+    @patch("strategy.datetime", FixedDateTime)
+    @patch.object(config, "ALLOW_YES_SIDE_TRADES", True)
+    @patch.object(config, "LONGSHOT_FLOOR_CENTS", 1)
+    @patch.object(Strategy, "_get_edge_threshold", return_value=0.0)
+    def test_weather_strategy_clamps_bucket_probability_bounds(self, _mock_threshold):
+        strategy = self._build_strategy(
+            probability=1.01,
+            distribution={
+                "forecasted_high_mean": 55.0,
+                "raw_forecast_mean": 55.0,
+                "model_spread": 1.0,
+                "std_dev": 2.0,
+                "total_members": 100,
+                "model_means": {"gfs_ensemble": 55.0},
+            },
+            verdict="CONFIRM",
+        )
+        market = {
+            "ticker": "KXHIGHNY-26MAR27-B50.5",
+            "yes_ask": 20,
+            "no_ask": 82,
+            "last_price": 20,
+            "volume": 100,
+            "open_interest": 50,
+            "volume_24h": 100,
+        }
+
+        signal = strategy.evaluate_market(market)
+
+        self.assertEqual(signal["signal"], "buy")
+        self.assertAlmostEqual(signal["our_prob"], 0.9999, places=4)
 
     @patch("strategy.datetime", FixedDateTime)
     @patch.object(Strategy, "_get_edge_threshold", return_value=0.0)
@@ -421,6 +454,94 @@ class ExecutionParityRegressionTests(unittest.TestCase):
                 self.assertEqual(result["executed"][0]["entry_price_cents"], 25)
                 trader.journal.close()
 
+    def test_observation_paper_counts_filled_pending_against_cycle_limit(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+            paper_path = os.path.join(temp_dir, "paper_trades.json")
+            events_path = os.path.join(temp_dir, "observation_events.jsonl")
+            decisions_path = os.path.join(temp_dir, "scan_decisions.jsonl")
+            recent_events_path = os.path.join(temp_dir, "observation_recent_events.jsonl")
+            recent_decisions_path = os.path.join(temp_dir, "observation_recent_decisions.jsonl")
+            recent_cache_path = os.path.join(temp_dir, "observation_recent_cache.json")
+            summary_path = os.path.join(temp_dir, "observation_daily_summary.json")
+            db_path = os.path.join(temp_dir, "bot_data.sqlite3")
+            with patch.object(config, "PAPER_TRADES_FILE", paper_path), \
+                    patch.object(config, "OBSERVATION_EVENTS_FILE", events_path), \
+                    patch.object(config, "SCAN_DECISIONS_FILE", decisions_path), \
+                    patch.object(config, "OBSERVATION_RECENT_EVENTS_FILE", recent_events_path), \
+                    patch.object(config, "OBSERVATION_RECENT_DECISIONS_FILE", recent_decisions_path), \
+                    patch.object(config, "OBSERVATION_RECENT_CACHE_FILE", recent_cache_path), \
+                    patch.object(config, "OBSERVATION_DAILY_SUMMARY_FILE", summary_path), \
+                    patch.object(config, "BOT_DB_FILE", db_path):
+                trader = ObservationPaperTrader(kalshi_client=None)
+                trader.state = {
+                    "active": {},
+                    "pending_orders": {
+                        "paper_old_1": {
+                            "order_id": "paper_old_1",
+                            "ticker": "KXHIGHNY-PENDING",
+                            "signal": "buy",
+                            "side": "no",
+                            "contracts": 1,
+                            "limit_price_cents": 30,
+                            "current_price_cents": 35,
+                            "reserved_cost_cents": 30,
+                            "city_code": "NYC",
+                            "target_date": today,
+                            "strategy": "S1-Weather",
+                            "confirmation_verdict": "CONFIRM",
+                            "placed_at": datetime.now(timezone.utc).isoformat(),
+                            "cycle": 1,
+                            "execution_style": "maker",
+                            "execution_status": "paper_queued",
+                            "status": "resting",
+                        },
+                    },
+                    "history": [],
+                    "summary": {},
+                    "last_reconciled_at": "",
+                    "last_trade_time": None,
+                    "daily_date": today,
+                    "trade_count_today": 0,
+                    "daily_pnl_cents": 0,
+                    "total_exposure_cents": 0,
+                    "ticker_entry_dates": {},
+                    "cycle_log": [],
+                }
+
+                result = trader.record_observation_cycle(
+                    signals=[{
+                        "ticker": "KXHIGHNY-NEW",
+                        "city_code": "NYC",
+                        "side": "no",
+                        "suggested_contracts": 1,
+                        "price_cents": 35,
+                        "current_price_cents": 35,
+                        "risk_price_cents": 30,
+                        "limit_price_cents": 30,
+                        "execution_style": "maker",
+                        "edge": 0.08,
+                        "fee_adjusted_edge": 0.05,
+                        "strategy": "S1-Weather",
+                        "confirmation_verdict": "CONFIRM",
+                        "target_date": today,
+                    }],
+                    cycle=2,
+                    balance_cents=10000,
+                    market_prices={
+                        "KXHIGHNY-PENDING": {"no": 25},
+                        "KXHIGHNY-NEW": {"no": 25},
+                    },
+                    live_risk=None,
+                    max_per_cycle=1,
+                )
+
+                self.assertEqual(len(result["filled_pending"]), 1)
+                self.assertEqual(result["executed"], [])
+                self.assertEqual(result["queued"], [])
+                self.assertEqual(result["blocked_reasons"]["per_cycle_limit"], 1)
+                trader.journal.close()
+
     def test_observation_paper_shadow_risk_merges_live_exposure(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             paper_path = os.path.join(temp_dir, "paper_trades.json")
@@ -478,6 +599,24 @@ class ExecutionParityRegressionTests(unittest.TestCase):
 
 
 class ObservationJournalRegressionTests(unittest.TestCase):
+
+    def test_maker_strategy_tracks_taker_orders_separately(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fill_tracking_path = os.path.join(temp_dir, "fill_tracking.json")
+            maker_orders_path = os.path.join(temp_dir, "maker_orders.json")
+            with patch.object(config, "FILL_TRACKING_FILE", fill_tracking_path), \
+                    patch.object(config, "MAKER_ORDERS_FILE", maker_orders_path):
+                maker = MakerStrategy(kalshi_client=None, risk_manager=None)
+                maker._track_order_side("no", is_taker=True)
+                maker._track_order_side("no", is_taker=False)
+                maker._track_fill_side("no")
+                maker._track_fill_side("no")
+
+                info = maker.get_adverse_selection_info()
+
+                self.assertEqual(len(maker._fill_tracking["no_taker"]), 1)
+                self.assertEqual(info["no"]["orders"], 1)
+                self.assertEqual(info["no"]["fills"], 1)
 
     def test_observation_journal_writes_recent_history_and_daily_summary(self):
         with tempfile.TemporaryDirectory() as temp_dir:

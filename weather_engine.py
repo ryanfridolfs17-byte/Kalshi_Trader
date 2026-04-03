@@ -37,6 +37,7 @@ from zoneinfo import ZoneInfo
 from collections import defaultdict
 import json
 import time
+import threading
 import config
 
 # ─────────────────────────────────────────────────────────
@@ -251,22 +252,24 @@ class WeatherEngine:
         self.last_fetch_time = None
         self.last_api_error = None  # Track last Open-Meteo error for diagnostics
         self.model_fetch_stats = {}  # {model: {"success": 0, "failure": 0, "last_error": "", "last_success_at": None}}
+        self._stats_lock = threading.Lock()
 
     def get_model_health(self):
         """Return per-model availability stats."""
         models = ["gfs_seamless", "ecmwf_ifs025", "icon_seamless_eps", "gem_global"]
         result = {}
-        for model in models:
-            stats = self.model_fetch_stats.get(model, {"success": 0, "failure": 0, "last_error": "", "last_success_at": None})
-            total = stats["success"] + stats["failure"]
-            result[model] = {
-                "success": stats["success"],
-                "failure": stats["failure"],
-                "total": total,
-                "availability_pct": round(100.0 * stats["success"] / total, 1) if total > 0 else 0.0,
-                "last_error": stats.get("last_error", ""),
-                "last_success_at": stats.get("last_success_at"),
-            }
+        with self._stats_lock:
+            for model in models:
+                stats = self.model_fetch_stats.get(model, {"success": 0, "failure": 0, "last_error": "", "last_success_at": None})
+                total = stats["success"] + stats["failure"]
+                result[model] = {
+                    "success": stats["success"],
+                    "failure": stats["failure"],
+                    "total": total,
+                    "availability_pct": round(100.0 * stats["success"] / total, 1) if total > 0 else 0.0,
+                    "last_error": stats.get("last_error", ""),
+                    "last_success_at": stats.get("last_success_at"),
+                }
         return result
 
     # ═══════════════════════════════════════════════════════
@@ -638,9 +641,10 @@ class WeatherEngine:
                     pass
                 print("  [WEATHER] %s" % err_msg)
                 self.last_api_error = err_msg
-                self.model_fetch_stats.setdefault(model, {"success": 0, "failure": 0, "last_error": "", "last_success_at": None})
-                self.model_fetch_stats[model]["failure"] += 1
-                self.model_fetch_stats[model]["last_error"] = err_msg
+                with self._stats_lock:
+                    self.model_fetch_stats.setdefault(model, {"success": 0, "failure": 0, "last_error": "", "last_success_at": None})
+                    self.model_fetch_stats[model]["failure"] += 1
+                    self.model_fetch_stats[model]["last_error"] = err_msg
                 return None
 
             data = response.json()
@@ -688,23 +692,25 @@ class WeatherEngine:
             import math
             member_highs = [h for h in member_highs
                            if h is not None and not math.isnan(h) and not math.isinf(h)]
-            self.model_fetch_stats.setdefault(model, {"success": 0, "failure": 0, "last_error": "", "last_success_at": None})
-            if member_highs:
-                self.model_fetch_stats[model]["success"] += 1
-                self.model_fetch_stats[model]["last_success_at"] = datetime.now(timezone.utc).isoformat()
-                return member_highs
-            else:
-                self.model_fetch_stats[model]["failure"] += 1
-                self.model_fetch_stats[model]["last_error"] = "%s returned empty data after filtering for %s" % (model, city.get("name", "?"))
-                return None
+            with self._stats_lock:
+                self.model_fetch_stats.setdefault(model, {"success": 0, "failure": 0, "last_error": "", "last_success_at": None})
+                if member_highs:
+                    self.model_fetch_stats[model]["success"] += 1
+                    self.model_fetch_stats[model]["last_success_at"] = datetime.now(timezone.utc).isoformat()
+                    return member_highs
+                else:
+                    self.model_fetch_stats[model]["failure"] += 1
+                    self.model_fetch_stats[model]["last_error"] = "%s returned empty data after filtering for %s" % (model, city.get("name", "?"))
+                    return None
 
         except Exception as e:
             err_msg = "%s fetch failed for %s: %s" % (model, city.get("name", "?"), e)
             print("  [WEATHER] %s" % err_msg)
             self.last_api_error = err_msg
-            self.model_fetch_stats.setdefault(model, {"success": 0, "failure": 0, "last_error": "", "last_success_at": None})
-            self.model_fetch_stats[model]["failure"] += 1
-            self.model_fetch_stats[model]["last_error"] = err_msg
+            with self._stats_lock:
+                self.model_fetch_stats.setdefault(model, {"success": 0, "failure": 0, "last_error": "", "last_success_at": None})
+                self.model_fetch_stats[model]["failure"] += 1
+                self.model_fetch_stats[model]["last_error"] = err_msg
             return None
 
     def _fetch_cloud_cover(self, city_code, target_date):

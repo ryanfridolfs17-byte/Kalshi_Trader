@@ -187,6 +187,7 @@ class Strategy:
                               predicted_high=distribution.get("forecasted_high_mean"),
                               model_spread=distribution.get("model_spread"),
                               model_means=distribution.get("model_means", {}))
+        our_prob = max(0.0001, min(0.9999, our_prob))
 
         yes_price = market.get("yes_ask", 0) or ref_price
         no_price = market.get("no_ask", 0) or max(1, 100 - yes_price)
