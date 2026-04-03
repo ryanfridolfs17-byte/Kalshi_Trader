@@ -595,6 +595,7 @@ def main(shutdown_event=None):
                 else:
                     _capture_cycle_learning(reviewer, all_decisions, [])
                 _write_bot_status(cycle, risk, intel, maker, 0, 0)
+                paper_locks.get_eval_stats()  # reset to prevent cross-cycle leak
                 _save_scan_log(weather_markets, [], 0,
                                skip_counts=_skip_counts, null_count=_null_count,
                                evaluated_count=len(all_evaluated),
@@ -676,6 +677,7 @@ def main(shutdown_event=None):
                 else:
                     _capture_cycle_learning(reviewer, logged_decisions, [])
                 _write_bot_status(cycle, risk, intel, maker, 0, 0)
+                paper_locks.get_eval_stats()  # reset to prevent cross-cycle leak
                 _save_scan_log(weather_markets, [], 0,
                                skip_counts=_skip_counts, null_count=_null_count,
                                evaluated_count=len(all_evaluated),
@@ -775,10 +777,13 @@ def main(shutdown_event=None):
                 print("  [SAFETY] Observation mode active - paper trading only, no live entries")
                 _write_bot_status(cycle, risk, intel, maker,
                                 len(buy_signals), 0, next_scan_seconds=scan_interval if 'scan_interval' in locals() else config.SCAN_INTERVAL)
+                paper_locks.print_eval_summary()
                 _save_scan_log(weather_markets, buy_signals, 0,
                               skip_counts=_skip_counts, null_count=_null_count,
                               evaluated_count=len(all_evaluated),
-                              weather_error=strategy.weather.last_api_error)
+                              weather_error=strategy.weather.last_api_error,
+                              model_health=strategy.weather.get_model_health(),
+                              s3_eval_stats=paper_locks.get_eval_stats())
                 _log_cycle_audit(
                     journal=journal,
                     cycle=cycle,
@@ -864,10 +869,13 @@ def main(shutdown_event=None):
             scan_interval = config.PEAK_SCAN_INTERVAL if config.PEAK_SCAN_START_ET <= hour_et <= config.PEAK_SCAN_END_ET else config.SCAN_INTERVAL
             _write_bot_status(cycle, risk, intel, maker,
                             len(buy_signals), trades_this_cycle, next_scan_seconds=scan_interval)
+            paper_locks.print_eval_summary()
             _save_scan_log(weather_markets, buy_signals, trades_this_cycle,
                           skip_counts=_skip_counts, null_count=_null_count,
                           evaluated_count=len(all_evaluated),
-                          weather_error=strategy.weather.last_api_error)
+                          weather_error=strategy.weather.last_api_error,
+                          model_health=strategy.weather.get_model_health(),
+                          s3_eval_stats=paper_locks.get_eval_stats())
             _log_cycle_audit(
                 journal=journal,
                 cycle=cycle,
@@ -1302,7 +1310,8 @@ def _write_bot_status(cycle, risk, intel, maker, signals_count, trades_count, ne
 
 
 def _save_scan_log(markets, signals, trades, skip_counts=None,
-                    null_count=0, evaluated_count=0, weather_error=None):
+                    null_count=0, evaluated_count=0, weather_error=None,
+                    model_health=None, s3_eval_stats=None):
     """Write scan_log.json."""
     try:
         log = {
@@ -1323,6 +1332,8 @@ def _save_scan_log(markets, signals, trades, skip_counts=None,
             "diag_evaluated": evaluated_count,
             "diag_skips": skip_counts or {},
             "weather_api_error": weather_error,
+            "model_health": model_health or {},
+            "s3_eval_stats": s3_eval_stats or {},
         }
         config.atomic_json_save(config.SCAN_LOG_FILE, log)
     except Exception:

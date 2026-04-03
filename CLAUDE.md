@@ -366,3 +366,32 @@ Based on comprehensive trade history analysis (89 positions, 200 fills, 104 sett
 - **Bayesian obs update**: `update_distribution_with_observation()` shifts ensemble based on NWS observations, weight scaling with hour.
 - **Cloud cover bias**: `_fetch_cloud_cover()` gets cloud/precip data from Open-Meteo. High overcast = negative temp bias.
 - **Portfolio rebalancing**: `_check_rebalancing()` runs every 15 cycles. Only exits weakest position if edge is negative (actively losing EV). Positive-edge positions held even at max capacity.
+
+### Paper Challenger Strategies (v5.1 — April 2026)
+
+| Strategy | Type | Trigger | Key Gates |
+|----------|------|---------|-----------|
+| S4-NextDayNoPaper | paper-only, DISABLED | S1 skip `next_day_directional_blocked` + shadow buy | NO, between, 35-80c, fee_adj >= 5% |
+| S5-SoftSettlementLockPaper | paper-only | Observed high > cap + 0.5F buffer | NO, between, same-day, after 10AM local, <=85c, payout >= 8c |
+| S6-TightNextDayNoPaper | paper-only | S1 skip `next_day_directional_blocked` + shadow buy | NO, between, 48-66c, edge >= 12%, fee_adj >= 8%, CONFIRM only |
+| S7-AfternoonNOSweetSpot | paper-only | S1 skip (close but blocked) | NO, between, same-day, after 2PM local, 35-60c, edge >= 6%, fee_adj >= 3%, excludes DAL/AUS/PHX/DEN/DC/CHI |
+
+- **S5 timezone fix**: Uses city's actual timezone from `CITIES` dict (was hardcoded ET, broke West Coast).
+- **S5 soft buffer**: `PAPER_CHALLENGER_SOFT_LOCK_BUFFER_F=0.5` (observed high must exceed cap by 0.5F, not 0F).
+- **S7 design**: Targets the historically profitable afternoon NO profile. Reads enriched skip signals directly (no shadow). Triggers on `before_noon_directional`, `edge_below_threshold`, `no_side_guard`, `rounding_buffer`, `fee_adj_edge_below_threshold`.
+- **CASE 1 / S3 dedup**: `settlement_lock_tickers` set in `strategy_registry.evaluate_markets()` prevents duplicate signals. S3 evaluates first; if S3 claims a ticker, weather strategy is skipped for that ticker.
+- **S3 diagnostic logging**: `[S3-EVAL]` summary printed per cycle with rejection reason counts. `get_eval_stats()` exposes stats in scan_log.json and `/api/observation`.
+- **Model health tracking**: `weather_engine.model_fetch_stats` tracks per-model success/failure counts. `get_model_health()` returns availability percentages. Exposed in scan_log.json and `/api/observation` as `model_health`.
+- **Thin ensemble warning**: Logs `[WEATHER] WARN: thin ensemble` when total members < 60 (less than half of 143).
+
+### New Config Parameters (v5.1)
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| `PAPER_CHALLENGER_SOFT_LOCK_BUFFER_F` | 0.5 | S5: observed high must exceed cap by this amount |
+| `PAPER_CHALLENGER_SOFT_LOCK_MIN_LOCAL_HOUR` | 10 | S5: lowered from 12 for paper learning |
+| `PAPER_CHALLENGER_ALLOW_AFTERNOON_NO_SWEET_SPOT` | True | S7 master enable |
+| `PAPER_CHALLENGER_S7_MIN_PRICE_CENTS` | 35 | S7 min NO price |
+| `PAPER_CHALLENGER_S7_MAX_PRICE_CENTS` | 60 | S7 max NO price |
+| `PAPER_CHALLENGER_S7_MIN_LOCAL_HOUR` | 14 | S7: after 2 PM local |
+| `PAPER_CHALLENGER_S7_MIN_EDGE` | 0.06 | S7 raw edge minimum |
+| `PAPER_CHALLENGER_S7_MIN_FEE_ADJ_EDGE` | 0.03 | S7 fee-adjusted edge minimum |

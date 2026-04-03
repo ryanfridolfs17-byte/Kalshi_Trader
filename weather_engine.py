@@ -250,6 +250,24 @@ class WeatherEngine:
         self._cloud_cache = {}  # Independent cloud cover cache (30 min TTL)
         self.last_fetch_time = None
         self.last_api_error = None  # Track last Open-Meteo error for diagnostics
+        self.model_fetch_stats = {}  # {model: {"success": 0, "failure": 0, "last_error": "", "last_success_at": None}}
+
+    def get_model_health(self):
+        """Return per-model availability stats."""
+        models = ["gfs_seamless", "ecmwf_ifs025", "icon_seamless_eps", "gem_global"]
+        result = {}
+        for model in models:
+            stats = self.model_fetch_stats.get(model, {"success": 0, "failure": 0, "last_error": "", "last_success_at": None})
+            total = stats["success"] + stats["failure"]
+            result[model] = {
+                "success": stats["success"],
+                "failure": stats["failure"],
+                "total": total,
+                "availability_pct": round(100.0 * stats["success"] / total, 1) if total > 0 else 0.0,
+                "last_error": stats.get("last_error", ""),
+                "last_success_at": stats.get("last_success_at"),
+            }
+        return result
 
     # ═══════════════════════════════════════════════════════
     # MAIN ENTRY: Get probability distribution for a city
@@ -336,6 +354,10 @@ class WeatherEngine:
         if gem_highs:
             sources_used.append("gem_ensemble")
             model_family_highs["GEM"] = gem_highs
+
+        total_members = sum(len(highs) for highs in model_family_highs.values() if highs)
+        if total_members < 60:
+            print(f"  [WEATHER] WARN: thin ensemble for {city_code} ({total_members} members)")
 
         if not model_family_highs:
             print(f"  [WEATHER] WARN: No ensemble data for {city_code} on {target_date}")
@@ -616,6 +638,9 @@ class WeatherEngine:
                     pass
                 print("  [WEATHER] %s" % err_msg)
                 self.last_api_error = err_msg
+                self.model_fetch_stats.setdefault(model, {"success": 0, "failure": 0, "last_error": "", "last_success_at": None})
+                self.model_fetch_stats[model]["failure"] += 1
+                self.model_fetch_stats[model]["last_error"] = err_msg
                 return None
 
             data = response.json()
@@ -663,12 +688,23 @@ class WeatherEngine:
             import math
             member_highs = [h for h in member_highs
                            if h is not None and not math.isnan(h) and not math.isinf(h)]
-            return member_highs if member_highs else None
+            self.model_fetch_stats.setdefault(model, {"success": 0, "failure": 0, "last_error": "", "last_success_at": None})
+            if member_highs:
+                self.model_fetch_stats[model]["success"] += 1
+                self.model_fetch_stats[model]["last_success_at"] = datetime.now(timezone.utc).isoformat()
+                return member_highs
+            else:
+                self.model_fetch_stats[model]["failure"] += 1
+                self.model_fetch_stats[model]["last_error"] = "%s returned empty data after filtering for %s" % (model, city.get("name", "?"))
+                return None
 
         except Exception as e:
             err_msg = "%s fetch failed for %s: %s" % (model, city.get("name", "?"), e)
             print("  [WEATHER] %s" % err_msg)
             self.last_api_error = err_msg
+            self.model_fetch_stats.setdefault(model, {"success": 0, "failure": 0, "last_error": "", "last_success_at": None})
+            self.model_fetch_stats[model]["failure"] += 1
+            self.model_fetch_stats[model]["last_error"] = err_msg
             return None
 
     def _fetch_cloud_cover(self, city_code, target_date):

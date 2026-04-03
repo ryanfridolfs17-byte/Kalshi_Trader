@@ -535,6 +535,8 @@ def _build_observation_response():
         "strategy_scorecards": strategy_scorecards,
         "learning_status": learning_status,
         "daily_summary": observation_daily,
+        "model_health": scan_log.get("model_health", {}),
+        "s3_eval_stats": scan_log.get("s3_eval_stats", {}),
     }
 
 

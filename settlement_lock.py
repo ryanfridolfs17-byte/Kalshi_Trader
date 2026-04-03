@@ -34,6 +34,28 @@ class SettlementLockPaper:
         self.weather = weather_engine or WeatherEngine()
         self.state = self._load_state()
         self._ensure_defaults()
+        self._eval_stats = {}  # Reset per get_eval_stats() call
+
+    def _record_eval(self, reason, ticker="", detail=""):
+        self._eval_stats.setdefault(reason, 0)
+        self._eval_stats[reason] += 1
+
+    def get_eval_stats(self):
+        """Return and reset per-cycle eval rejection stats."""
+        stats = dict(self._eval_stats)
+        self._eval_stats = {}
+        return stats
+
+    def print_eval_summary(self):
+        """Print a one-line summary of S3 evaluation stats for this cycle."""
+        stats = self._eval_stats
+        if not stats:
+            return
+        no_obs = stats.get("no_observation", 0)
+        interesting = {k: v for k, v in stats.items() if k != "no_observation"}
+        if interesting:
+            parts = [f"{k}={v}" for k, v in sorted(interesting.items())]
+            print(f"  [S3-EVAL] {', '.join(parts)} (no_obs={no_obs})")
 
     def _ensure_defaults(self):
         defaults = {
@@ -74,13 +96,16 @@ class SettlementLockPaper:
 
         side = candidate.get("lock_side", "")
         if side == "yes" and not getattr(config, "ALLOW_SETTLEMENT_LOCK_YES", False):
+            self._record_eval("yes_side_blocked", candidate.get("ticker", ""))
             return None
 
         price_cents = int(candidate.get("price_cents", 0) or 0)
         payout_cents = int(candidate.get("payout_cents", max(0, 100 - price_cents)) or 0)
         if price_cents <= 0 or payout_cents <= 0:
             return None
-        if price_cents > int(getattr(config, "SETTLEMENT_LOCK_MAX_PRICE_CENTS", 80) or 80):
+        max_price = int(getattr(config, "SETTLEMENT_LOCK_MAX_PRICE_CENTS", 80) or 80)
+        if price_cents > max_price:
+            self._record_eval("price_too_high", candidate.get("ticker", ""), f"price={price_cents}c max={max_price}c")
             return None
 
         city_code = candidate.get("city_code", "")
@@ -89,8 +114,11 @@ class SettlementLockPaper:
         tz_name = city_info.get("timezone", "America/New_York")
         local_now = datetime.now(ZoneInfo(tz_name))
         if target_date != local_now.strftime("%Y-%m-%d"):
+            self._record_eval("build_not_same_day", candidate.get("ticker", ""))
             return None
-        if local_now.hour < int(getattr(config, "SETTLEMENT_LOCK_MIN_LOCAL_HOUR", 10) or 10):
+        min_hour = int(getattr(config, "SETTLEMENT_LOCK_MIN_LOCAL_HOUR", 10) or 10)
+        if local_now.hour < min_hour:
+            self._record_eval("too_early", candidate.get("ticker", ""), f"hour={local_now.hour} min={min_hour}")
             return None
 
         win_prob = self._estimate_win_probability(candidate)
@@ -98,10 +126,12 @@ class SettlementLockPaper:
         edge = max(0.0, win_prob - side_market_prob)
         fee_adjusted_edge = self._calculate_fee_adjusted_edge(win_prob, side_market_prob)
         if fee_adjusted_edge <= 0:
+            self._record_eval("negative_edge", candidate.get("ticker", ""), f"fee_adj_edge={fee_adjusted_edge:.4f}")
             return None
 
         suggested_contracts = self._size_trade(candidate, balance_cents, win_prob)
         if suggested_contracts <= 0:
+            self._record_eval("sizing_zero", candidate.get("ticker", ""))
             return None
 
         temp_low = candidate.get("temp_low")
@@ -148,10 +178,12 @@ class SettlementLockPaper:
         Set *require_same_day* to False for historical replay.
         """
         if todays_high is None:
+            self._record_eval("no_observation")
             return None
 
         parsed = self.weather.parse_market_bucket(market)
         if not parsed:
+            self._record_eval("parse_failed")
             return None
 
         city_code = parsed["city_code"]
@@ -166,6 +198,7 @@ class SettlementLockPaper:
         if require_same_day:
             local_now = observed_at.astimezone(ZoneInfo(tz_name)) if observed_at else datetime.now(ZoneInfo(tz_name))
             if target_date != local_now.strftime("%Y-%m-%d"):
+                self._record_eval("not_same_day")
                 return None
 
         ticker = market.get("ticker", "")
@@ -198,11 +231,17 @@ class SettlementLockPaper:
             )
 
         if not lock_side or price_cents <= 0:
+            if not lock_side:
+                self._record_eval("no_lock_condition", ticker,
+                    f"high={todays_high:.1f}F cap={temp_high}F buf={hard_buffer}F gap={todays_high-temp_high:.1f}F")
+            elif price_cents <= 0:
+                self._record_eval("zero_price", ticker)
             return None
 
         payout_cents = 100 - price_cents
         min_payout = int(getattr(config, "SETTLEMENT_LOCK_MIN_PAYOUT_CENTS", 8) or 8)
         if payout_cents < min_payout:
+            self._record_eval("low_payout", ticker, f"payout={payout_cents}c min={min_payout}c price={price_cents}c")
             return None
 
         return {

@@ -94,6 +94,23 @@ def get_strategy_definitions():
                 "max_drawdown_cents": 250,
             },
         },
+        "S7-AfternoonNOSweetSpot": {
+            "label": "Paper Challenger: Afternoon NO Sweet Spot",
+            "enabled": bool(getattr(config, "ENABLE_OBSERVATION_CHALLENGER_STRATEGIES", False)),
+            "live_enabled": False,
+            "paper_entry_enabled": bool(
+                getattr(config, "ENABLE_OBSERVATION_CHALLENGER_STRATEGIES", False)
+                and getattr(config, "PAPER_CHALLENGER_ALLOW_AFTERNOON_NO_SWEET_SPOT", False)
+            ),
+            "paper_only": True,
+            "paper_default": True,
+            "promotion_gate": {
+                "min_resolved": 30,
+                "min_profit_factor": 1.10,
+                "min_fill_rate": 0.90,
+                "max_drawdown_cents": 300,
+            },
+        },
     }
 
 
@@ -223,6 +240,8 @@ class StrategyRegistry:
         null_count = 0
         strategy_statuses = self._get_strategy_statuses(observation_mode=observation_mode)
 
+        settlement_lock_tickers = set()
+
         for market in markets:
             city_code = market.get("_city_code", "")
             todays_high = (observed_highs or {}).get(city_code)
@@ -244,14 +263,22 @@ class StrategyRegistry:
                 ):
                     buy_signals.append(settlement_signal)
                     all_decisions.append(settlement_signal)
+                    settlement_lock_tickers.add(market.get("ticker", ""))
                     if settlement_signal.get("city_code") and settlement_signal.get("predicted_high") is not None:
                         all_evaluated.append(settlement_signal)
                 elif settlement_signal and not observation_mode:
                     skip_counts["settlement_lock_live_disabled"] = skip_counts.get("settlement_lock_live_disabled", 0) + 1
 
+            # Skip weather strategy for tickers already claimed by S3 (avoids
+            # duplicate CASE 1 signal and wasted ensemble fetch).
+            ticker = market.get("ticker", "")
+            if ticker and ticker in settlement_lock_tickers:
+                continue
+
             signal = self.weather_strategy.evaluate_market(market, todays_high=todays_high)
             signal = self._with_observation_metadata(signal, todays_high=todays_high)
-            if settlement_signal is None and signal and signal.get("signal") == "buy":
+            # Only suppress weather buy if S3 already claimed this ticker
+            if ticker not in settlement_lock_tickers and signal and signal.get("signal") == "buy":
                 buy_signals.append(signal)
             if signal:
                 all_decisions.append(signal)
