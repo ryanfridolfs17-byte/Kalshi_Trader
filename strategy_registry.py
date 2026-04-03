@@ -77,6 +77,23 @@ def get_strategy_definitions():
                 "max_drawdown_cents": 300,
             },
         },
+        "S6-TightNextDayNoPaper": {
+            "label": "Paper Challenger: Tight Next-Day NO",
+            "enabled": bool(getattr(config, "ENABLE_OBSERVATION_CHALLENGER_STRATEGIES", False)),
+            "live_enabled": False,
+            "paper_entry_enabled": bool(
+                getattr(config, "ENABLE_OBSERVATION_CHALLENGER_STRATEGIES", False)
+                and getattr(config, "PAPER_CHALLENGER_ALLOW_TIGHT_NEXT_DAY_NO", False)
+            ),
+            "paper_only": True,
+            "paper_default": True,
+            "promotion_gate": {
+                "min_resolved": 20,
+                "min_profit_factor": 1.05,
+                "min_fill_rate": 0.95,
+                "max_drawdown_cents": 250,
+            },
+        },
     }
 
 
@@ -181,11 +198,6 @@ class StrategyRegistry:
         if signal.get("side") != "no":
             return None
         if signal.get("strike_type") != "between":
-            return None
-        s4_status = (strategy_statuses or {}).get("S4-NextDayNoPaper", {}) or {}
-        if list(s4_status.get("paper_entry_blockers", []) or []):
-            return None
-        if s4_status and s4_status.get("paper_entry_enabled") is False:
             return None
         if not hasattr(self.weather_strategy, "evaluate_market"):
             return None

@@ -57,6 +57,14 @@ class PaperChallengerEngine:
         if next_day:
             challengers.append(next_day)
 
+        tight_next_day = self._build_tight_next_day_no_challenger(
+            weather_signal,
+            shadow_signal=next_day_shadow_signal,
+            strategy_statuses=strategy_statuses,
+        )
+        if tight_next_day:
+            challengers.append(tight_next_day)
+
         soft_lock = self._build_soft_settlement_lock(
             weather_signal,
             todays_high=todays_high,
@@ -117,6 +125,67 @@ class PaperChallengerEngine:
             "reasoning": (
                 "[S4] Paper-only challenger for next-day NO after full shadow pass. "
                 f"fee_adj_edge={fee_adj_edge:.3f}, price={price_cents}c."
+            ),
+        })
+        return challenger
+
+    def _build_tight_next_day_no_challenger(self, signal, shadow_signal=None, strategy_statuses=None):
+        if not getattr(config, "PAPER_CHALLENGER_ALLOW_TIGHT_NEXT_DAY_NO", False):
+            return None
+        if self._paper_strategy_blockers("S6-TightNextDayNoPaper", strategy_statuses):
+            return None
+        if not signal or signal.get("skip_reason") != "next_day_directional_blocked":
+            return None
+        if signal.get("side") != "no":
+            return None
+        if signal.get("strike_type") != "between":
+            return None
+        if not shadow_signal or shadow_signal.get("signal") != "buy":
+            return None
+        if shadow_signal.get("side") != "no":
+            return None
+        if shadow_signal.get("strike_type") != "between":
+            return None
+
+        price_cents = int(shadow_signal.get("price_cents", 0) or 0)
+        if price_cents < int(getattr(config, "PAPER_CHALLENGER_TIGHT_NEXT_DAY_MIN_PRICE_CENTS", 48) or 48):
+            return None
+        if price_cents > int(getattr(config, "PAPER_CHALLENGER_TIGHT_NEXT_DAY_MAX_PRICE_CENTS", 66) or 66):
+            return None
+
+        raw_edge = float(shadow_signal.get("edge", 0) or 0)
+        if raw_edge < float(getattr(config, "PAPER_CHALLENGER_TIGHT_NEXT_DAY_MIN_EDGE", 0.12) or 0.12):
+            return None
+
+        fee_adj_edge = float(shadow_signal.get("fee_adjusted_edge", 0) or 0)
+        if fee_adj_edge < float(getattr(config, "PAPER_CHALLENGER_TIGHT_NEXT_DAY_MIN_FEE_ADJ_EDGE", 0.08) or 0.08):
+            return None
+
+        if str(shadow_signal.get("confirmation_verdict", "") or "").upper() != "CONFIRM":
+            return None
+
+        challenger = dict(shadow_signal)
+        challenger.update({
+            "signal": "buy",
+            "strategy": "S6-TightNextDayNoPaper",
+            "execution_style": "taker",
+            "suggested_contracts": 1,
+            "contracts": 1,
+            "current_price_cents": price_cents,
+            "entry_price_cents": price_cents,
+            "limit_price_cents": price_cents,
+            "limit_price": price_cents,
+            "risk_price_cents": price_cents,
+            "skip_reason": None,
+            "execution_status": "",
+            "paper_only": True,
+            "paper_source_strategy": signal.get("strategy", ""),
+            "paper_source_skip_reason": signal.get("skip_reason", ""),
+            "paper_shadow_strategy": shadow_signal.get("strategy", ""),
+            "paper_shadow_mode": shadow_signal.get("shadow_mode", ""),
+            "reasoning": (
+                "[S6] Tight paper-only next-day NO after full shadow pass. "
+                f"fee_adj_edge={fee_adj_edge:.3f}, raw_edge={raw_edge:.3f}, price={price_cents}c."
             ),
         })
         return challenger

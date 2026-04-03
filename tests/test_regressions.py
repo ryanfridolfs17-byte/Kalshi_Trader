@@ -481,6 +481,8 @@ class ObservationJournalRegressionTests(unittest.TestCase):
 
     def test_observation_journal_writes_recent_history_and_daily_summary(self):
         with tempfile.TemporaryDirectory() as temp_dir:
+            today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+            resolved_at = datetime.now(timezone.utc).isoformat()
             journal = ObservationJournal(
                 events_file=os.path.join(temp_dir, "observation_events.jsonl"),
                 decisions_file=os.path.join(temp_dir, "scan_decisions.jsonl"),
@@ -498,7 +500,7 @@ class ObservationJournalRegressionTests(unittest.TestCase):
                     {
                         "ticker": "KXHIGHNY-TEST",
                         "city_code": "NYC",
-                        "target_date": "2026-03-30",
+                        "target_date": today,
                         "signal": "buy",
                         "side": "no",
                         "edge": 0.12,
@@ -510,7 +512,7 @@ class ObservationJournalRegressionTests(unittest.TestCase):
                     {
                         "ticker": "KXHIGHBOS-TEST",
                         "city_code": "BOS",
-                        "target_date": "2026-03-30",
+                        "target_date": today,
                         "signal": "skip",
                         "side": "yes",
                         "skip_reason": "yes_side_blocked",
@@ -544,7 +546,7 @@ class ObservationJournalRegressionTests(unittest.TestCase):
                     "net_profit_cents": 68,
                     "gross_profit_cents": 70,
                     "market_result": "no",
-                    "resolved_at": "2026-03-30T18:00:00+00:00",
+                    "resolved_at": resolved_at,
                 },
             )
 
@@ -1300,6 +1302,7 @@ class ObservationChallengerRegressionTests(unittest.TestCase):
 
         with patch.object(config, "ENABLE_OBSERVATION_CHALLENGER_STRATEGIES", True), \
                 patch.object(config, "PAPER_CHALLENGER_ALLOW_NEXT_DAY_NO", True), \
+                patch.object(config, "PAPER_CHALLENGER_ALLOW_TIGHT_NEXT_DAY_NO", False), \
                 patch.object(config, "PAPER_CHALLENGER_MIN_FEE_ADJ_EDGE", 0.05), \
                 patch.object(config, "PAPER_CHALLENGER_MIN_PRICE_CENTS", 35), \
                 patch.object(config, "PAPER_CHALLENGER_MAX_PRICE_CENTS", 80), \
@@ -1323,6 +1326,95 @@ class ObservationChallengerRegressionTests(unittest.TestCase):
                 observation_mode=False,
             )
             self.assertEqual(live_result["buy_signals"], [])
+
+    def test_registry_adds_tight_next_day_no_paper_challenger_in_observation_mode(self):
+        signal = {
+            "ticker": "KXHIGHNY-26APR04-B56.5",
+            "strategy": "S1-Weather",
+            "signal": "skip",
+            "side": "no",
+            "skip_reason": "next_day_directional_blocked",
+            "price_cents": 58,
+            "yes_price_cents": 42,
+            "no_price_cents": 58,
+            "edge": 0.20,
+            "fee_adjusted_edge": 0.15,
+            "our_prob": 0.22,
+            "market_prob": 0.58,
+            "target_date": "2026-04-04",
+            "city_code": "NYC",
+            "predicted_high": 54.1,
+            "strike_type": "between",
+            "floor_strike": 56,
+            "cap_strike": 57,
+        }
+        shadow_signal = dict(signal)
+        shadow_signal.update({
+            "signal": "buy",
+            "skip_reason": None,
+            "strategy": "S1-Weather",
+            "shadow_mode": "next_day_directional_override",
+            "confirmation_verdict": "CONFIRM",
+            "suggested_contracts": 2,
+        })
+        registry = StrategyRegistry(
+            weather_strategy=self.DummyWeatherStrategy(signal, shadow_signal=shadow_signal),
+            settlement_lock=self.DummySettlementLock(),
+        )
+        market = {"ticker": signal["ticker"], "_city_code": "NYC"}
+
+        with patch.object(config, "ENABLE_OBSERVATION_CHALLENGER_STRATEGIES", True), \
+                patch.object(config, "PAPER_CHALLENGER_ALLOW_NEXT_DAY_NO", False), \
+                patch.object(config, "PAPER_CHALLENGER_ALLOW_TIGHT_NEXT_DAY_NO", True), \
+                patch.object(config, "PAPER_CHALLENGER_TIGHT_NEXT_DAY_MIN_PRICE_CENTS", 48), \
+                patch.object(config, "PAPER_CHALLENGER_TIGHT_NEXT_DAY_MAX_PRICE_CENTS", 66), \
+                patch.object(config, "PAPER_CHALLENGER_TIGHT_NEXT_DAY_MIN_EDGE", 0.12), \
+                patch.object(config, "PAPER_CHALLENGER_TIGHT_NEXT_DAY_MIN_FEE_ADJ_EDGE", 0.08), \
+                patch.object(config, "PAPER_STRATEGY_STATUS_CACHE_SECONDS", 0):
+            result = registry.evaluate_markets(
+                [market],
+                observed_highs={},
+                balance_cents=10000,
+                observation_mode=True,
+            )
+
+        self.assertEqual(len(result["buy_signals"]), 1)
+        self.assertEqual(result["buy_signals"][0]["strategy"], "S6-TightNextDayNoPaper")
+        self.assertEqual(result["buy_signals"][0]["execution_style"], "taker")
+
+    def test_tight_next_day_challenger_respects_price_band(self):
+        engine = PaperChallengerEngine()
+        signal = {
+            "ticker": "KXHIGHNY-26APR04-B56.5",
+            "strategy": "S1-Weather",
+            "signal": "skip",
+            "side": "no",
+            "skip_reason": "next_day_directional_blocked",
+            "strike_type": "between",
+        }
+        shadow_signal = {
+            "ticker": "KXHIGHNY-26APR04-B56.5",
+            "strategy": "S1-Weather",
+            "signal": "buy",
+            "side": "no",
+            "strike_type": "between",
+            "price_cents": 72,
+            "edge": 0.25,
+            "fee_adjusted_edge": 0.20,
+            "confirmation_verdict": "CONFIRM",
+            "shadow_mode": "next_day_directional_override",
+        }
+        with patch.object(config, "PAPER_CHALLENGER_ALLOW_TIGHT_NEXT_DAY_NO", True), \
+                patch.object(config, "PAPER_CHALLENGER_TIGHT_NEXT_DAY_MIN_PRICE_CENTS", 48), \
+                patch.object(config, "PAPER_CHALLENGER_TIGHT_NEXT_DAY_MAX_PRICE_CENTS", 66), \
+                patch.object(config, "PAPER_CHALLENGER_TIGHT_NEXT_DAY_MIN_EDGE", 0.12), \
+                patch.object(config, "PAPER_CHALLENGER_TIGHT_NEXT_DAY_MIN_FEE_ADJ_EDGE", 0.08):
+            challenger = engine._build_tight_next_day_no_challenger(
+                signal,
+                shadow_signal=shadow_signal,
+                strategy_statuses=None,
+            )
+        self.assertIsNone(challenger)
 
     def test_registry_does_not_add_next_day_challenger_without_shadow_buy(self):
         signal = {
