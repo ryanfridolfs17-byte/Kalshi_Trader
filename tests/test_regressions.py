@@ -1754,6 +1754,8 @@ class ObservationDashboardRegressionTests(unittest.TestCase):
                 body = response.read().decode("utf-8")
             self.assertEqual(response.status, 200)
             self.assertIn("Observation Dashboard", body)
+            self.assertIn("window.__OBS_BOOTSTRAP__", body)
+            self.assertEqual(response.headers.get("Cache-Control"), "no-store, max-age=0")
         finally:
             server.server_close()
             thread.join(timeout=2)

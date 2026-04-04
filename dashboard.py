@@ -678,6 +678,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", os.environ.get("CORS_ORIGIN", "*"))
+        self.send_header("Cache-Control", "no-store, max-age=0")
+        self.send_header("Pragma", "no-cache")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -688,6 +690,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 body = f.read().encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store, max-age=0")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except FileNotFoundError:
+            self.send_error(404, "Dashboard HTML not found")
+
+    def _send_observation_dashboard(self):
+        try:
+            with open("observation_dashboard.html", "r", encoding="utf-8") as f:
+                html = f.read()
+            bootstrap = json.dumps(_build_observation_response()).replace("</", "<\\/")
+            injection = (
+                '<script>'
+                f'window.__OBS_BOOTSTRAP__ = {bootstrap};'
+                'window.__OBS_BOOTSTRAP_AT__ = Date.now();'
+                '</script>\n<script>'
+            )
+            if "<script>" in html:
+                html = html.replace("<script>", injection, 1)
+            body = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store, max-age=0")
+            self.send_header("Pragma", "no-cache")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -701,7 +729,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_html("dashboard.html")
 
         elif path in ("/observation", "/obs"):
-            self._send_html("observation_dashboard.html")
+            self._send_observation_dashboard()
 
         elif path == "/api/health":
             # Unauthenticated: minimal {status, timestamp}.

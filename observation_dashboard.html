@@ -317,6 +317,8 @@ tbody tr:hover { background: rgba(255, 255, 255, 0.04); }
     </div>
   </header>
 
+  <div id="runtimeStatusWrap"></div>
+
   <section class="kpi-grid">
     <article class="glass-card kpi-card"><div class="kpi-title">Paper P&amp;L</div><div id="kpiPnl" class="kpi-value neutral">$0.00</div><div id="kpiPnlSub" class="kpi-sub">Net realized paper performance</div></article>
     <article class="glass-card kpi-card"><div class="kpi-title">Active Trades</div><div id="kpiActive" class="kpi-value neutral">0</div><div id="kpiActiveSub" class="kpi-sub">Open paper positions</div></article>
@@ -464,17 +466,33 @@ tbody tr:hover { background: rgba(255, 255, 255, 0.04); }
 const REFRESH_MS = 60000;
 const TOKEN_KEY = "obs_dashboard_token";
 const TZ_ET = "America/New_York";
+function readStoredToken() {
+  try {
+    return localStorage.getItem(TOKEN_KEY) || "";
+  } catch (error) {
+    return "";
+  }
+}
+function writeStoredToken(value) {
+  try {
+    if (value) localStorage.setItem(TOKEN_KEY, value);
+    else localStorage.removeItem(TOKEN_KEY);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
 const state = {
   activeTab: "trades",
-  token: localStorage.getItem(TOKEN_KEY) || "",
-  observation: null,
+  token: readStoredToken(),
+  observation: window.__OBS_BOOTSTRAP__ || null,
   scanHistory: null,
   passesHistory: null,
   learning: null,
   learningUnauthorized: false,
   strategies: null,
   loadingMain: false,
-  lastUpdatedMs: null,
+  lastUpdatedMs: window.__OBS_BOOTSTRAP_AT__ || null,
   scanHistoryFetchedAt: 0,
   passesHistoryFetchedAt: 0,
   learningFetchedAt: 0,
@@ -484,6 +502,7 @@ const state = {
   refreshIntervalId: null,
   tickIntervalId: null,
   refreshing: false,
+  clientError: "",
 };
 
 const fmtDateShort = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: TZ_ET });
@@ -576,6 +595,20 @@ function setText(id, value, cls) {
 function loadingMarkup(message) { return '<div class="loading-state"><span class="spinner"></span><div style="margin-top:10px;">' + escapeHtml(message) + "</div></div>"; }
 function signInCard(message) {
   return '<div class="glass-card" style="padding:16px;background:rgba(255,255,255,0.04);"><div class="panel-title" style="font-size:16px;">Protected Learning Data</div><div class="panel-subtitle" style="margin-top:8px;">' + escapeHtml(message) + '</div><button class="button primary" type="button" style="margin-top:14px;" onclick="openAuthModal()">Sign In</button></div>';
+}
+function setClientError(message) {
+  state.clientError = String(message || "");
+  renderRuntimeStatus();
+}
+function renderRuntimeStatus() {
+  const wrap = document.getElementById("runtimeStatusWrap");
+  if (!wrap) return;
+  if (state.clientError) {
+    wrap.innerHTML = '<div class="banner error"><div class="banner-head">Dashboard Error</div><div class="panel-subtitle">' + escapeHtml(state.clientError) + '</div></div>';
+    return;
+  }
+  const source = state.observation ? "Live data loaded" : "Waiting for observation payload";
+  wrap.innerHTML = '<div class="banner success"><div class="banner-head">Dashboard Status</div><div class="panel-subtitle">' + escapeHtml(source) + '</div></div>';
 }
 function summaryMetric(label, value, cls = "") {
   return '<div class="metric-box"><div class="metric-label">' + escapeHtml(label) + '</div><div class="metric-value ' + cls + '">' + escapeHtml(value) + "</div></div>";
@@ -1056,6 +1089,7 @@ async function refreshObservation() {
   try {
     state.observation = await fetchJson("/api/observation");
     state.lastUpdatedMs = Date.now();
+    state.clientError = "";
     renderHeader();
     renderKpis();
     renderTradesTab();
@@ -1074,6 +1108,7 @@ async function refreshObservation() {
     }
   } catch (error) {
     console.error("Observation refresh failed", error);
+    setClientError(error?.message || "Observation refresh failed");
   } finally {
     state.refreshing = false;
     setLoading(false);
@@ -1163,10 +1198,10 @@ function bindUi() {
   document.getElementById("saveTokenButton").addEventListener("click", async () => {
     state.token = document.getElementById("tokenInput").value.trim();
     if (state.token) {
-      localStorage.setItem(TOKEN_KEY, state.token);
-      document.getElementById("authMessage").textContent = "Token saved locally. Protected panels will refresh now.";
+      const saved = writeStoredToken(state.token);
+      document.getElementById("authMessage").textContent = saved ? "Token saved locally. Protected panels will refresh now." : "Token could not be stored in this browser. Protected panels will work only for this tab.";
     } else {
-      localStorage.removeItem(TOKEN_KEY);
+      writeStoredToken("");
       document.getElementById("authMessage").textContent = "Token cleared.";
     }
     closeAuthModal();
@@ -1180,7 +1215,7 @@ function bindUi() {
     state.token = "";
     state.learning = null;
     state.learningUnauthorized = false;
-    localStorage.removeItem(TOKEN_KEY);
+    writeStoredToken("");
     document.getElementById("tokenInput").value = "";
     document.getElementById("authMessage").textContent = "Token cleared.";
     renderHeader();
@@ -1198,8 +1233,16 @@ function bindUi() {
 function tickUpdatedLabel() { renderHeader(); }
 
 async function initialize() {
+  window.addEventListener("error", (event) => {
+    setClientError(event?.message || "Unexpected dashboard error");
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    const reason = event?.reason;
+    setClientError(reason?.message || String(reason || "Unhandled dashboard error"));
+  });
   bindUi();
   renderHeader();
+  renderRuntimeStatus();
   renderTradesTab();
   renderSummaryTab();
   await refreshObservation();
