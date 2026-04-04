@@ -51,11 +51,21 @@ class SettlementLockPaper:
         stats = self._eval_stats
         if not stats:
             return
-        no_obs = stats.get("no_observation", 0)
-        interesting = {k: v for k, v in stats.items() if k != "no_observation"}
-        if interesting:
-            parts = [f"{k}={v}" for k, v in sorted(interesting.items())]
-            print(f"  [S3-EVAL] {', '.join(parts)} (no_obs={no_obs})")
+        no_obs = sum(
+            int(value or 0)
+            for key, value in stats.items()
+            if key == "no_observation" or str(key).startswith("no_observation_h")
+        )
+        interesting = {
+            key: value
+            for key, value in stats.items()
+            if key != "no_observation" and not str(key).startswith("no_observation_h")
+        }
+        parts = [f"{k}={v}" for k, v in sorted(interesting.items())]
+        if no_obs:
+            parts.append(f"no_obs={no_obs}")
+        if parts:
+            print(f"  [S3-EVAL] {', '.join(parts)}")
 
     def _ensure_defaults(self):
         defaults = {
@@ -179,6 +189,8 @@ class SettlementLockPaper:
         """
         if todays_high is None:
             self._record_eval("no_observation")
+            et_now = observed_at.astimezone(ZoneInfo("America/New_York")) if observed_at else datetime.now(ZoneInfo("America/New_York"))
+            self._record_eval(f"no_observation_h{et_now.hour:02d}")
             return None
 
         parsed = self.weather.parse_market_bucket(market)

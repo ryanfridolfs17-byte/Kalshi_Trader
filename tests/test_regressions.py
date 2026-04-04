@@ -21,6 +21,7 @@ from kalshi_bot import _finalize_observation_decisions, _prepare_entry_signal
 from maker_strategy import MakerStrategy
 from observation_journal import ObservationJournal
 from observation_paper import ObservationPaperTrader
+from settlement_lock import SettlementLockPaper
 from paper_challengers import PaperChallengerEngine
 from risk_manager_v2 import RiskManager
 from strategy import Strategy
@@ -1770,13 +1771,105 @@ class ObservationDashboardRegressionTests(unittest.TestCase):
         self.assertEqual(payload["scorecards"][0]["daily_pnl"], [])
 
     def test_observation_scan_detail_response_handles_sqlite_disabled(self):
-        with patch.object(config, "OBSERVATION_ENABLE_SQLITE", False):
+        with patch.object(config, "OBSERVATION_ENABLE_SQLITE", False), \
+                patch.object(dashboard._observation_journal, "fetch_decisions_by_cycle", return_value=[]):
             payload = dashboard._build_observation_scan_detail_response(cycle=7)
 
         self.assertEqual(payload["cycle"], 7)
         self.assertEqual(payload["count"], 0)
         self.assertEqual(payload["decisions"], [])
-        self.assertEqual(payload["error"], "SQLite not available")
+        self.assertEqual(payload["source"], "jsonl")
+
+    def test_observation_journal_fetch_decisions_by_cycle_reads_recent_jsonl_tail(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            decisions_path = os.path.join(temp_dir, "scan_decisions.jsonl")
+            journal = ObservationJournal(
+                events_file=os.path.join(temp_dir, "observation_events.jsonl"),
+                decisions_file=decisions_path,
+                recent_events_file=os.path.join(temp_dir, "observation_recent_events.jsonl"),
+                recent_decisions_file=os.path.join(temp_dir, "observation_recent_decisions.jsonl"),
+                recent_cache_file=os.path.join(temp_dir, "observation_recent_cache.json"),
+                daily_summary_file=os.path.join(temp_dir, "observation_daily_summary.json"),
+                db_path=os.path.join(temp_dir, "bot_data.sqlite3"),
+            )
+            now_ts = datetime.now(timezone.utc).isoformat()
+            with open(decisions_path, "w", encoding="utf-8") as handle:
+                for cycle in (10, 11, 12):
+                    for idx in range(3):
+                        handle.write(json.dumps({
+                            "timestamp": now_ts,
+                            "cycle": cycle,
+                            "ticker": f"KXHIGHNY-{cycle}-{idx}",
+                            "signal": "skip",
+                            "city_code": "NYC",
+                        }))
+                        handle.write("\n")
+
+            rows = journal.fetch_decisions_by_cycle(cycle=11, limit=5)
+            self.assertEqual(len(rows), 3)
+            self.assertTrue(all(row["cycle"] == 11 for row in rows))
+            self.assertEqual(rows[0]["ticker"], "KXHIGHNY-11-0")
+            journal.close()
+
+    def test_observation_scan_detail_response_falls_back_to_jsonl_when_sqlite_disabled(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            old_journal = dashboard._observation_journal
+            journal = ObservationJournal(
+                events_file=os.path.join(temp_dir, "observation_events.jsonl"),
+                decisions_file=os.path.join(temp_dir, "scan_decisions.jsonl"),
+                recent_events_file=os.path.join(temp_dir, "observation_recent_events.jsonl"),
+                recent_decisions_file=os.path.join(temp_dir, "observation_recent_decisions.jsonl"),
+                recent_cache_file=os.path.join(temp_dir, "observation_recent_cache.json"),
+                daily_summary_file=os.path.join(temp_dir, "observation_daily_summary.json"),
+                db_path=os.path.join(temp_dir, "bot_data.sqlite3"),
+            )
+            dashboard._observation_journal = journal
+            journal.log_scan_cycle(
+                cycle=77,
+                markets_scanned=3,
+                decisions=[{
+                    "ticker": "KXHIGHNY-TEST",
+                    "city_code": "NYC",
+                    "target_date": "2026-04-04",
+                    "signal": "buy",
+                    "side": "no",
+                    "strategy": "S7-AfternoonNOSweetSpot",
+                    "edge": 0.18,
+                    "fee_adjusted_edge": 0.14,
+                    "our_prob": 0.81,
+                    "market_prob": 0.63,
+                    "price_cents": 63,
+                    "confirmation_verdict": "CONFIRM",
+                    "execution_status": "paper_filled",
+                }],
+                signals_found=1,
+                trades_placed=0,
+                observation_mode=True,
+            )
+            try:
+                with patch.object(config, "OBSERVATION_ENABLE_SQLITE", False):
+                    payload = dashboard._build_observation_scan_detail_response(cycle=77)
+                self.assertEqual(payload["source"], "jsonl")
+                self.assertEqual(payload["count"], 1)
+                self.assertEqual(payload["decisions"][0]["ticker"], "KXHIGHNY-TEST")
+            finally:
+                dashboard._observation_journal = old_journal
+                journal.close()
+
+    def test_settlement_lock_tracks_no_observation_by_et_hour(self):
+        paper = SettlementLockPaper(weather_engine=DummyWeather({}, {}, 0.5))
+        observed_at = datetime(2026, 4, 4, 18, 0, tzinfo=timezone.utc)
+
+        result = paper.evaluate_market_snapshot(
+            market={"ticker": "KXHIGHNY-TEST"},
+            todays_high=None,
+            observed_at=observed_at,
+        )
+
+        self.assertIsNone(result)
+        stats = paper.get_eval_stats()
+        self.assertEqual(stats["no_observation"], 1)
+        self.assertEqual(stats["no_observation_h14"], 1)
 
     def test_observation_response_includes_strategy_scorecards(self):
         with tempfile.TemporaryDirectory() as temp_dir:

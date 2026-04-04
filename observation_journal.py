@@ -421,6 +421,37 @@ class ObservationJournal:
             "recent_decisions": recent_decisions if include_decisions else [],
         }
 
+    def fetch_decisions_by_cycle(self, cycle, limit=500):
+        cycle = _as_int(cycle)
+        limit = max(1, min(_as_int(limit), 500))
+        if cycle <= 0 or not os.path.exists(self.decisions_file):
+            return []
+        rows = []
+        scanned = 0
+        max_scanned = 10000
+        max_bytes = max(
+            16 * 1024 * 1024,
+            self._history_byte_budget(self.decisions_file, min(max(limit * 20, 5000), max_scanned)),
+        )
+        for raw_line in reversed(self._tail_lines(self.decisions_file, max_bytes=max_bytes)):
+            if scanned >= max_scanned:
+                break
+            scanned += 1
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if _as_int(row.get("cycle", 0)) != cycle:
+                continue
+            rows.append(row)
+            if len(rows) >= limit:
+                break
+        rows.reverse()
+        return rows
+
     def _summarize_recent(self, events, decisions):
         skip_reasons = Counter()
         blocked_reasons = Counter()

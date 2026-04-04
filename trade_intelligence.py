@@ -58,6 +58,7 @@ class TradeIntelligence:
         self.client = kalshi_client
         self.weather = weather_engine
         self._obs_cache = {}
+        self._obs_diag_logged = {}
         self.pnl_data = self._load_pnl()
 
     # =====================================================
@@ -1191,6 +1192,15 @@ class TradeIntelligence:
             if obs_local_date == local_date:
                 temps.append(obs["temp_f"])
 
+        if not temps and metar_data.get(station):
+            if self._should_emit_obs_diag(
+                f"metar_empty_{station}",
+                max_age_sec=getattr(config, "METAR_CACHE_TTL_SEC", 90),
+            ):
+                print(
+                    "  [METAR-EMPTY] %s: %d raw obs, 0 matched today (%s)"
+                    % (city_code, len(metar_data[station]), local_date)
+                )
         return max(temps) if temps else None
 
     def _get_metar_current_temp(self, station):
@@ -1288,7 +1298,8 @@ class TradeIntelligence:
         if not cities or city_code not in cities:
             return None
         cache_key = f"obs_{station}"
-        cached = self._get_cached(cache_key, max_age_sec=120)
+        obs_cache_ttl = 120
+        cached = self._get_cached(cache_key, max_age_sec=obs_cache_ttl)
         if cached is not None:
             return cached
 
@@ -1319,6 +1330,11 @@ class TradeIntelligence:
         elif nws_high is not None:
             result = nws_high
         else:
+            if self._should_emit_obs_diag(f"obs_miss_{station}", max_age_sec=obs_cache_ttl):
+                print(
+                    "  [OBS-MISS] %s: metar=None nws=None (station=%s)"
+                    % (city_code, station)
+                )
             return None
 
         self._set_cached(cache_key, result)
@@ -1571,6 +1587,19 @@ class TradeIntelligence:
             stale = [k for k, v in self._obs_cache.items() if v["fetched_at"] < cutoff]
             for k in stale:
                 del self._obs_cache[k]
+
+    def _should_emit_obs_diag(self, key, max_age_sec=120):
+        now = datetime.now(timezone.utc)
+        last_logged = self._obs_diag_logged.get(key)
+        if last_logged and (now - last_logged).total_seconds() < max_age_sec:
+            return False
+        self._obs_diag_logged[key] = now
+        if len(self._obs_diag_logged) > 200:
+            cutoff = now - timedelta(hours=6)
+            stale = [name for name, ts in self._obs_diag_logged.items() if ts < cutoff]
+            for name in stale:
+                del self._obs_diag_logged[name]
+        return True
 
     def _load_pnl(self):
         "Load P&L data from file."

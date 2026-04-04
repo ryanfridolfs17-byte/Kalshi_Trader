@@ -600,20 +600,15 @@ def _build_observation_strategies_response(hours=336):
 
 
 def _build_observation_scan_detail_response(cycle, max_rows=500):
-    """Return all recorded decision rows for a given scan cycle when SQLite is available."""
+    """Return all recorded decision rows for a given scan cycle."""
     cycle = int(cycle or 0)
     limit = max(1, min(int(max_rows or 500), 1000))
     if cycle <= 0:
         return {"error": "Invalid cycle", "cycle": cycle, "decisions": [], "count": 0}
-    if not bool(getattr(config, "OBSERVATION_ENABLE_SQLITE", True)):
-        return {"error": "SQLite not available", "cycle": cycle, "decisions": [], "count": 0}
 
-    db = None
-    try:
-        db = BotDatabase()
-        decisions = db.fetch_scan_decisions_by_cycle(cycle=cycle, limit=limit)
+    def _slim(rows):
         slim = []
-        for row in decisions:
+        for row in rows:
             slim.append({
                 "ticker": row.get("ticker", ""),
                 "signal": row.get("signal", ""),
@@ -630,9 +625,23 @@ def _build_observation_scan_detail_response(cycle, max_rows=500):
                 "target_date": row.get("target_date", ""),
                 "execution_status": row.get("execution_status", ""),
             })
-        return {"cycle": cycle, "decisions": slim, "count": len(slim)}
+        return slim
+
+    if not bool(getattr(config, "OBSERVATION_ENABLE_SQLITE", True)):
+        decisions = _observation_journal.fetch_decisions_by_cycle(cycle=cycle, limit=limit)
+        slim = _slim(decisions)
+        return {"cycle": cycle, "decisions": slim, "count": len(slim), "source": "jsonl"}
+
+    db = None
+    try:
+        db = BotDatabase()
+        decisions = db.fetch_scan_decisions_by_cycle(cycle=cycle, limit=limit)
+        slim = _slim(decisions)
+        return {"cycle": cycle, "decisions": slim, "count": len(slim), "source": "sqlite"}
     except Exception:
-        return {"error": "SQLite not available", "cycle": cycle, "decisions": [], "count": 0}
+        decisions = _observation_journal.fetch_decisions_by_cycle(cycle=cycle, limit=limit)
+        slim = _slim(decisions)
+        return {"cycle": cycle, "decisions": slim, "count": len(slim), "source": "jsonl"}
     finally:
         if db is not None:
             db.close()

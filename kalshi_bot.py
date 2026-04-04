@@ -1091,9 +1091,23 @@ def _fetch_observed_highs(markets, intel=None):
         except Exception:
             continue
 
-    if obs_highs:
-        print("  [OBS] Observed highs: %s" % ", ".join(
-            "%s=%dF" % (c, t) for c, t in sorted(obs_highs.items())))
+    checked_cities = sorted(city for city in cities_seen if city)
+    if checked_cities:
+        et_hour = datetime.now(ZoneInfo("America/New_York")).hour
+        observed_desc = ", ".join("%s=%dF" % (c, obs_highs[c]) for c in sorted(obs_highs)) if obs_highs else "none"
+        missing_cities = sorted(city for city in checked_cities if city not in obs_highs)
+        missing_desc = ", ".join(missing_cities) if missing_cities else "none"
+        print(
+            "  [OBS-DIAG] ET hour=%d | %d/%d cities with obs: %s | %d missing: %s"
+            % (
+                et_hour,
+                len(obs_highs),
+                len(checked_cities),
+                observed_desc,
+                len(missing_cities),
+                missing_desc,
+            )
+        )
 
     return obs_highs
 
