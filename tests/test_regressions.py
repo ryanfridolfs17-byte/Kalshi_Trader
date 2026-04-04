@@ -1772,6 +1772,25 @@ class ObservationDashboardRegressionTests(unittest.TestCase):
         self.assertEqual(payload["scorecards"][0]["strategy"], "S1-Weather")
         self.assertEqual(payload["scorecards"][0]["daily_pnl"], [])
 
+    def test_root_redirects_to_observation_dashboard(self):
+        server = dashboard.HTTPServer(("127.0.0.1", 0), dashboard.DashboardHandler)
+        thread = threading.Thread(target=server.handle_request, daemon=True)
+        thread.start()
+        try:
+            class NoRedirect(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, req, fp, code, msg, headers, newurl):
+                    return None
+            opener = urllib.request.build_opener(NoRedirect)
+            try:
+                opener.open(f"http://127.0.0.1:{server.server_port}/", timeout=10)
+                self.fail("Expected redirect response")
+            except urllib.error.HTTPError as response:
+                self.assertEqual(response.code, 302)
+                self.assertEqual(response.headers.get("Location"), "/observation")
+        finally:
+            server.server_close()
+            thread.join(timeout=2)
+
     def test_observation_scan_detail_response_handles_sqlite_disabled(self):
         with patch.object(config, "OBSERVATION_ENABLE_SQLITE", False), \
                 patch.object(dashboard._observation_journal, "fetch_decisions_by_cycle", return_value=[]):

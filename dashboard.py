@@ -698,6 +698,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except FileNotFoundError:
             self.send_error(404, "Dashboard HTML not found")
 
+    def _send_redirect(self, location, status=302):
+        self.send_response(status)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def _send_observation_dashboard(self):
         try:
             with open("observation_dashboard.html", "r", encoding="utf-8") as f:
@@ -725,7 +733,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
 
-        if path == "/" or path == "/dashboard":
+        if path == "/":
+            self._send_redirect("/observation")
+
+        elif path == "/dashboard":
             self._send_html("dashboard.html")
 
         elif path in ("/observation", "/obs"):
