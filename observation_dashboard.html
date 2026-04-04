@@ -421,6 +421,10 @@ tbody tr:hover { background: rgba(255, 255, 255, 0.04); }
         <div class="panel-header"><div><h2 class="panel-title">Daily Cards</h2><p class="panel-subtitle">Latest 7 observation days with scanning, paper, and error stats.</p></div></div>
         <div id="dailyCardsWrap" class="daily-card-grid"></div>
       </article>
+      <article class="glass-card panel span-12">
+        <div class="panel-header"><div><h2 class="panel-title">City Performance</h2><p class="panel-subtitle">Latest day paper performance by city, with strategy breakdown.</p></div></div>
+        <div id="cityPerformanceWrap" class="loading-state">Loading city performance...</div>
+      </article>
       <article class="glass-card panel span-6">
         <div class="panel-header"><div><h2 class="panel-title">Model Health</h2><p class="panel-subtitle">Weather model fetch availability and most recent failures.</p></div></div>
         <div id="modelHealthWrap" class="health-card-grid"></div>
@@ -476,6 +480,10 @@ const state = {
   learningFetchedAt: 0,
   strategiesFetchedAt: 0,
   charts: {},
+  chartDataCache: {},
+  refreshIntervalId: null,
+  tickIntervalId: null,
+  refreshing: false,
 };
 
 const fmtDateShort = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: TZ_ET });
@@ -686,6 +694,13 @@ function baseChartOptions(extra = {}) {
 function renderChart(id, config) {
   const canvas = document.getElementById(id);
   if (!canvas || typeof Chart === "undefined") return;
+  const dataKey = JSON.stringify(config?.data || null);
+  if (config) {
+    if (state.chartDataCache[id] === dataKey) return;
+    state.chartDataCache[id] = dataKey;
+  } else {
+    delete state.chartDataCache[id];
+  }
   if (state.charts[id]) { state.charts[id].destroy(); delete state.charts[id]; }
   const shell = canvas.parentElement;
   const extra = shell.querySelector(".empty-state");
@@ -776,7 +791,7 @@ function renderScansTab() {
     renderChart("skipReasonsChart", null);
     return;
   }
-  const recentEvents = (state.scanHistory.recent_events || []).filter((event) => event.event_type === "scan_cycle").slice(-20).reverse();
+  const recentEvents = (state.scanHistory?.recent_events || []).filter((event) => event.event_type === "scan_cycle").slice(-20).reverse();
   if (!recentEvents.length) {
     document.getElementById("scanFeedWrap").innerHTML = '<div class="empty-state">No scan cycles available yet.</div>';
   } else {
@@ -788,7 +803,7 @@ function renderScansTab() {
     }).join("");
     document.getElementById("scanFeedWrap").innerHTML = '<div class="table-wrap"><table><thead><tr><th>Time</th><th>Markets</th><th>Signals</th><th>Paper Entries</th><th>Weather Error</th></tr></thead><tbody>' + rows + "</tbody></table></div>";
   }
-  const topSkipRows = Object.entries(state.scanHistory.summary?.skip_reasons || {}).sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0)).slice(0, 10);
+  const topSkipRows = Object.entries(state.scanHistory?.summary?.skip_reasons || {}).sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0)).slice(0, 10);
   renderChart("skipReasonsChart", topSkipRows.length ? {
     type: "bar",
     data: { labels: topSkipRows.map(([reason]) => truncate(reason, 26)), datasets: [{ label: "Skip Count", data: topSkipRows.map(([, count]) => Number(count || 0)), backgroundColor: "rgba(96,165,250,0.8)", borderColor: "rgba(96,165,250,1)", borderWidth: 1, borderRadius: 8 }] },
@@ -920,7 +935,7 @@ function renderScanReconciliation() {
     { label: "Predicted High", render: (row) => row.predicted_high ?? "-" },
     { label: "Actual High", render: (row) => row.actual_high ?? "-" },
   ], details, "No missed opportunity detail rows.") : '<div class="empty-state">No missed opportunity detail rows.</div>';
-  wrap.innerHTML = '<div class="recon-kpis">' + reconCard("Correct Skips", recon.correct_skips, "badge-green") + reconCard("Missed Opportunities", recon.missed_opportunities, "badge-amber") + reconCard("Correct Trades", recon.correct_trades, "badge-green") + reconCard("Bad Trades", recon.bad_trades, "badge-red") + '</div><div style="margin-top:16px;"><div class="panel-title" style="font-size:16px;margin-bottom:10px;">Missed Opportunities</div>' + table + "</div>";
+  wrap.innerHTML = '<div class="recon-kpis">' + reconCard("Correct Skips", Number(recon.correct_skips || 0), "badge-green") + reconCard("Missed Opportunities", Number(recon.missed_opportunities || 0), "badge-amber") + reconCard("Correct Trades", Number(recon.correct_trades || 0), "badge-green") + reconCard("Bad Trades", Number(recon.bad_trades || 0), "badge-red") + '</div><div style="margin-top:16px;"><div class="panel-title" style="font-size:16px;margin-bottom:10px;">Missed Opportunities</div>' + table + "</div>";
 }
 
 function renderPassesTab() {
@@ -969,6 +984,36 @@ function renderWeeklyRollup(days) {
   ].join("");
 }
 
+function renderCityPerformance(days) {
+  const wrap = document.getElementById("cityPerformanceWrap");
+  if (!days.length) {
+    wrap.innerHTML = '<div class="empty-state">City performance will appear after resolved paper trades.</div>';
+    return;
+  }
+  const latest = days[days.length - 1] || {};
+  const cityPnl = latest.city_pnl || {};
+  const strategyCityPnl = latest.strategy_city_pnl || {};
+  const rows = Object.entries(cityPnl).map(([city, stats]) => {
+    const strategySummary = Object.entries(strategyCityPnl[city] || {})
+      .sort((a, b) => Number((b[1] || {}).pnl_cents || 0) - Number((a[1] || {}).pnl_cents || 0))
+      .map(([strategy, detail]) => strategy + " " + formatCents((detail || {}).pnl_cents || 0))
+      .join(", ");
+    return {
+      city,
+      wins: Number(stats.wins || 0),
+      losses: Number(stats.losses || 0),
+      pnl_cents: Number(stats.pnl_cents || 0),
+      strategies: strategySummary,
+    };
+  }).sort((a, b) => Number(b.pnl_cents || 0) - Number(a.pnl_cents || 0));
+  wrap.innerHTML = rows.length ? tableHtml([
+    { label: "City", render: (row) => strong(row.city) },
+    { label: "W/L", render: (row) => formatNumber(row.wins) + "W / " + formatNumber(row.losses) + "L" },
+    { label: "P&L", render: (row) => '<span class="' + classForSigned(row.pnl_cents) + '">' + formatCents(row.pnl_cents) + "</span>" },
+    { label: "Strategies", render: (row) => row.strategies ? escapeHtml(row.strategies) : '<span class="muted">-</span>' },
+  ], rows, "No resolved paper trades yet for the latest day.") : '<div class="empty-state">No resolved paper trades yet for the latest day.</div>';
+}
+
 function renderModelHealth() {
   const wrap = document.getElementById("modelHealthWrap");
   const entries = Object.entries(state.observation?.model_health || {});
@@ -998,12 +1043,15 @@ function renderSummaryTab() {
   const days = sortedDailySummary(7);
   renderDailyCards(days);
   renderWeeklyRollup(days);
+  renderCityPerformance(days);
   renderModelHealth();
   renderS3Diagnostics();
   renderPaperPnlChart(days);
 }
 
 async function refreshObservation() {
+  if (state.refreshing) return;
+  state.refreshing = true;
   setLoading(true);
   try {
     state.observation = await fetchJson("/api/observation");
@@ -1027,6 +1075,7 @@ async function refreshObservation() {
   } catch (error) {
     console.error("Observation refresh failed", error);
   } finally {
+    state.refreshing = false;
     setLoading(false);
     renderHeader();
   }
@@ -1034,7 +1083,12 @@ async function refreshObservation() {
 
 async function loadScansHistory(force) {
   if (!force && state.scanHistory && Date.now() - state.scanHistoryFetchedAt < REFRESH_MS) return;
-  state.scanHistory = await fetchJson("/api/observation/history?hours=24&events=50");
+  try {
+    state.scanHistory = await fetchJson("/api/observation/history?hours=24&events=50");
+  } catch (error) {
+    console.warn("Scans history fetch failed", error);
+    state.scanHistory = { recent_events: [], summary: { skip_reasons: {}, paper_blocked_reasons: {} } };
+  }
   state.scanHistoryFetchedAt = Date.now();
 }
 
@@ -1051,7 +1105,12 @@ async function loadStrategies(force) {
 
 async function loadPasses(force) {
   if (force || !state.passesHistory || Date.now() - state.passesHistoryFetchedAt >= REFRESH_MS) {
-    state.passesHistory = await fetchJson("/api/observation/history?hours=168&events=500");
+    try {
+      state.passesHistory = await fetchJson("/api/observation/history?hours=168&events=500");
+    } catch (error) {
+      console.warn("Passes history fetch failed", error);
+      state.passesHistory = { recent_events: [], summary: { skip_reasons: {}, paper_blocked_reasons: {} } };
+    }
     state.passesHistoryFetchedAt = Date.now();
   }
   if (!state.token) {
@@ -1068,9 +1127,11 @@ async function loadPasses(force) {
     if (error.unauthorized) {
       state.learningUnauthorized = true;
       state.learning = null;
+      state.learningFetchedAt = Date.now();
       return;
     }
     console.warn("Learning fetch failed", error);
+    state.learningFetchedAt = Date.now();
   }
 }
 
@@ -1142,8 +1203,10 @@ async function initialize() {
   renderTradesTab();
   renderSummaryTab();
   await refreshObservation();
-  setInterval(refreshObservation, REFRESH_MS);
-  setInterval(tickUpdatedLabel, 1000);
+  if (state.refreshIntervalId) clearInterval(state.refreshIntervalId);
+  if (state.tickIntervalId) clearInterval(state.tickIntervalId);
+  state.refreshIntervalId = setInterval(refreshObservation, REFRESH_MS);
+  state.tickIntervalId = setInterval(tickUpdatedLabel, 1000);
 }
 
 initialize();

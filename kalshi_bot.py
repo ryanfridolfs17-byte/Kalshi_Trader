@@ -595,11 +595,15 @@ def main(shutdown_event=None):
                 else:
                     _capture_cycle_learning(reviewer, all_decisions, [])
                 _write_bot_status(cycle, risk, intel, maker, 0, 0)
-                paper_locks.get_eval_stats()  # reset to prevent cross-cycle leak
+                paper_locks.print_eval_summary()
+                model_health = strategy.weather.get_model_health()
+                s3_eval_stats = paper_locks.get_eval_stats()
                 _save_scan_log(weather_markets, [], 0,
                                skip_counts=_skip_counts, null_count=_null_count,
                                evaluated_count=len(all_evaluated),
-                               weather_error=strategy.weather.last_api_error)
+                               weather_error=strategy.weather.last_api_error,
+                               model_health=model_health,
+                               s3_eval_stats=s3_eval_stats)
                 _log_cycle_audit(
                     journal=journal,
                     cycle=cycle,
@@ -677,11 +681,15 @@ def main(shutdown_event=None):
                 else:
                     _capture_cycle_learning(reviewer, logged_decisions, [])
                 _write_bot_status(cycle, risk, intel, maker, 0, 0)
-                paper_locks.get_eval_stats()  # reset to prevent cross-cycle leak
+                paper_locks.print_eval_summary()
+                model_health = strategy.weather.get_model_health()
+                s3_eval_stats = paper_locks.get_eval_stats()
                 _save_scan_log(weather_markets, [], 0,
                                skip_counts=_skip_counts, null_count=_null_count,
                                evaluated_count=len(all_evaluated),
-                               weather_error=strategy.weather.last_api_error)
+                               weather_error=strategy.weather.last_api_error,
+                               model_health=model_health,
+                               s3_eval_stats=s3_eval_stats)
                 _log_cycle_audit(
                     journal=journal,
                     cycle=cycle,

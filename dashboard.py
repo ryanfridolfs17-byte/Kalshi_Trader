@@ -82,6 +82,14 @@ def _write_json(path, data):
         pass
 
 
+def _bounded_int(raw_value, default, minimum, maximum):
+    try:
+        value = int(raw_value)
+    except Exception:
+        value = default
+    return max(minimum, min(value, maximum))
+
+
 def _default_risk_state():
     return {
         "positions": {},
@@ -479,7 +487,7 @@ def _build_observation_response():
             "markets_scanned": scan_log.get("markets_scanned", 0),
             "signals_found": scan_log.get("signals_found", 0),
             "trades_placed": scan_log.get("trades_placed", 0),
-            "top_signals": scan_log.get("top_signals", []),
+            "top_signals": (scan_log.get("top_signals", []) or [])[:10],
             "diag_skips": scan_log.get("diag_skips", {}),
             "weather_api_error": scan_log.get("weather_api_error"),
         },
@@ -698,18 +706,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path == "/api/observation/strategies":
             parsed = urlparse(self.path)
             qs = parse_qs(parsed.query)
-            try:
-                hours = int(qs.get("hours", ["336"])[0])
-            except Exception:
-                hours = 336
+            hours = _bounded_int(qs.get("hours", ["336"])[0], default=336, minimum=1, maximum=24 * 30)
             self._send_json(_build_observation_strategies_response(hours=hours))
 
         elif path == "/api/observation/history":
             parsed = urlparse(self.path)
             qs = parse_qs(parsed.query)
             try:
-                hours = int(qs.get("hours", ["72"])[0])
-                events = int(qs.get("events", ["200"])[0])
+                hours = _bounded_int(qs.get("hours", ["72"])[0], default=72, minimum=1, maximum=168)
+                events = _bounded_int(qs.get("events", ["200"])[0], default=200, minimum=1, maximum=500)
                 self._send_json(
                     _observation_journal.get_cached_history(
                         hours=hours,
@@ -726,9 +731,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             parsed = urlparse(self.path)
             qs = parse_qs(parsed.query)
             try:
-                hours = int(qs.get("hours", ["72"])[0])
-                events = int(qs.get("events", ["300"])[0])
-                decisions = int(qs.get("decisions", ["1000"])[0])
+                hours = _bounded_int(qs.get("hours", ["72"])[0], default=72, minimum=1, maximum=720)
+                events = _bounded_int(qs.get("events", ["300"])[0], default=300, minimum=1, maximum=1000)
+                decisions = _bounded_int(qs.get("decisions", ["1000"])[0], default=1000, minimum=1, maximum=5000)
                 self._send_json(
                     _observation_journal.get_cached_history(
                         hours=hours,

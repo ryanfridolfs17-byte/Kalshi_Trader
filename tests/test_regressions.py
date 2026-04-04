@@ -1900,6 +1900,73 @@ class ObservationDashboardRegressionTests(unittest.TestCase):
                 dashboard._observation_journal = old_journal
                 journal.close()
 
+    def test_observation_history_endpoint_clamps_query_bounds(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            old_journal = dashboard._observation_journal
+            journal = ObservationJournal(
+                events_file=os.path.join(temp_dir, "observation_events.jsonl"),
+                decisions_file=os.path.join(temp_dir, "scan_decisions.jsonl"),
+                recent_events_file=os.path.join(temp_dir, "observation_recent_events.jsonl"),
+                recent_decisions_file=os.path.join(temp_dir, "observation_recent_decisions.jsonl"),
+                recent_cache_file=os.path.join(temp_dir, "observation_recent_cache.json"),
+                daily_summary_file=os.path.join(temp_dir, "observation_daily_summary.json"),
+                db_path=os.path.join(temp_dir, "bot_data.sqlite3"),
+            )
+            dashboard._observation_journal = journal
+            captured = {}
+
+            def fake_history(**kwargs):
+                captured.update(kwargs)
+                return {"summary": {}, "recent_events": []}
+
+            with patch.object(dashboard._observation_journal, "get_cached_history", side_effect=fake_history):
+                server = dashboard.HTTPServer(("127.0.0.1", 0), dashboard.DashboardHandler)
+                thread = threading.Thread(target=server.handle_request, daemon=True)
+                thread.start()
+                try:
+                    with urllib.request.urlopen(
+                        f"http://127.0.0.1:{server.server_port}/api/observation/history?hours=9999&events=9999",
+                        timeout=10,
+                    ) as response:
+                        payload = json.loads(response.read().decode("utf-8"))
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(payload["summary"], {})
+                    self.assertEqual(captured["hours"], 168)
+                    self.assertEqual(captured["event_limit"], 500)
+                    self.assertFalse(captured["include_decisions"])
+                finally:
+                    server.server_close()
+                    thread.join(timeout=2)
+                    dashboard._observation_journal = old_journal
+                    journal.close()
+
+    def test_observation_journal_tracks_city_pnl_for_resolved_paper_trades(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            journal = ObservationJournal(
+                events_file=os.path.join(temp_dir, "observation_events.jsonl"),
+                decisions_file=os.path.join(temp_dir, "scan_decisions.jsonl"),
+                recent_events_file=os.path.join(temp_dir, "observation_recent_events.jsonl"),
+                recent_decisions_file=os.path.join(temp_dir, "observation_recent_decisions.jsonl"),
+                recent_cache_file=os.path.join(temp_dir, "observation_recent_cache.json"),
+                daily_summary_file=os.path.join(temp_dir, "observation_daily_summary.json"),
+                db_path=os.path.join(temp_dir, "bot_data.sqlite3"),
+            )
+            journal.log_paper_event("paper_trade_resolved", {
+                "ticker": "KXHIGHNY-TEST",
+                "city_code": "NYC",
+                "strategy": "S7-AfternoonNOSweetSpot",
+                "status": "win",
+                "net_profit_cents": 55,
+                "target_date": "2026-04-04",
+                "resolved_at": "2026-04-04T18:00:00+00:00",
+            })
+            day = journal.load_daily_summary(days=1)[0]
+            self.assertEqual(day["paper_net_profit_cents"], 55)
+            self.assertEqual(day["city_pnl"]["NYC"]["wins"], 1)
+            self.assertEqual(day["city_pnl"]["NYC"]["pnl_cents"], 55)
+            self.assertEqual(day["strategy_city_pnl"]["NYC"]["S7-AfternoonNOSweetSpot"]["wins"], 1)
+            journal.close()
+
 
 class ObservationBackfillRegressionTests(unittest.TestCase):
 

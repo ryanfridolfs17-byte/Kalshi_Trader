@@ -202,6 +202,7 @@ class ObservationJournal:
             "timestamp": timestamp or payload.get("resolved_at") or payload.get("placed_at") or payload.get("opened_at") or _utc_now_iso(),
             "event_type": event_type,
             "ticker": payload.get("ticker", ""),
+            "city_code": payload.get("city_code", ""),
             "side": payload.get("side", ""),
             "contracts": _as_int(payload.get("contracts", 0)),
             "strategy": payload.get("strategy", ""),
@@ -562,6 +563,8 @@ class ObservationJournal:
             "paper_wins": 0,
             "paper_losses": 0,
             "paper_net_profit_cents": 0,
+            "city_pnl": {},
+            "strategy_city_pnl": {},
             "settlement_lock_candidates": 0,
             "skip_reasons": {},
             "paper_blocked_reasons": {},
@@ -607,11 +610,35 @@ class ObservationJournal:
 
         if paper_event and paper_event.get("event_type") == "paper_trade_resolved":
             row["paper_resolved"] += 1
-            row["paper_net_profit_cents"] += _as_int(paper_event.get("net_profit_cents", 0))
+            net_profit_cents = _as_int(paper_event.get("net_profit_cents", 0))
+            row["paper_net_profit_cents"] += net_profit_cents
             if paper_event.get("status") == "win":
                 row["paper_wins"] += 1
             elif paper_event.get("status") == "loss":
                 row["paper_losses"] += 1
+            city_code = str(paper_event.get("city_code", "") or "unknown")
+            strategy = str(paper_event.get("strategy", "") or "unknown")
+            city_entry = row.setdefault("city_pnl", {}).setdefault(city_code, {
+                "wins": 0,
+                "losses": 0,
+                "pnl_cents": 0,
+            })
+            city_entry["pnl_cents"] += net_profit_cents
+            if paper_event.get("status") == "win":
+                city_entry["wins"] += 1
+            elif paper_event.get("status") == "loss":
+                city_entry["losses"] += 1
+
+            strategy_city = row.setdefault("strategy_city_pnl", {}).setdefault(city_code, {}).setdefault(strategy, {
+                "wins": 0,
+                "losses": 0,
+                "pnl_cents": 0,
+            })
+            strategy_city["pnl_cents"] += net_profit_cents
+            if paper_event.get("status") == "win":
+                strategy_city["wins"] += 1
+            elif paper_event.get("status") == "loss":
+                strategy_city["losses"] += 1
 
         days[day_str] = row
         summary["updated_at"] = _utc_now_iso()
