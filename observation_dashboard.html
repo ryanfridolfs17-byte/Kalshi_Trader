@@ -553,6 +553,12 @@ function formatDateTime(value) {
   if (!value) return "-";
   try { return fmtDateTime.format(new Date(value)) + " ET"; } catch (error) { return String(value); }
 }
+function ageSecondsFromTimestamp(value) {
+  if (!value) return null;
+  const ts = new Date(value).getTime();
+  if (!Number.isFinite(ts)) return null;
+  return Math.max(0, Math.floor((Date.now() - ts) / 1000));
+}
 function formatRelative(ms) {
   if (!ms) return "Waiting...";
   const seconds = Math.max(0, Math.floor((Date.now() - ms) / 1000));
@@ -607,8 +613,20 @@ function renderRuntimeStatus() {
     wrap.innerHTML = '<div class="banner error"><div class="banner-head">Dashboard Error</div><div class="panel-subtitle">' + escapeHtml(state.clientError) + '</div></div>';
     return;
   }
-  const source = state.observation ? "Live data loaded" : "Waiting for observation payload";
-  wrap.innerHTML = '<div class="banner success"><div class="banner-head">Dashboard Status</div><div class="panel-subtitle">' + escapeHtml(source) + '</div></div>';
+  const obs = state.observation;
+  if (!obs) {
+    wrap.innerHTML = '<div class="banner success"><div class="banner-head">Dashboard Status</div><div class="panel-subtitle">Waiting for observation payload.</div></div>';
+    return;
+  }
+  const actualScanAge = ageSecondsFromTimestamp(obs.last_scan);
+  const reportedScanAge = Number(obs.last_scan_age_seconds || 0);
+  const scanAge = actualScanAge === null ? reportedScanAge : actualScanAge;
+  const sha = obs.runtime_fingerprint?.railway_git_commit_sha ? String(obs.runtime_fingerprint.railway_git_commit_sha).slice(0, 7) : "unknown";
+  const refreshAge = formatRelative(state.lastUpdatedMs);
+  const source = obs.status === "observation"
+    ? "Observation mode active"
+    : String(obs.status || "Unknown status");
+  wrap.innerHTML = '<div class="banner success"><div class="banner-head">Dashboard Status</div><div class="panel-subtitle">' + escapeHtml(source) + ' | build ' + escapeHtml(sha) + ' | last scan ' + escapeHtml(String(scanAge)) + 's ago | page updated ' + escapeHtml(refreshAge) + '</div></div>';
 }
 function summaryMetric(label, value, cls = "") {
   return '<div class="metric-box"><div class="metric-label">' + escapeHtml(label) + '</div><div class="metric-value ' + cls + '">' + escapeHtml(value) + "</div></div>";
@@ -650,9 +668,12 @@ function renderHeader() {
     cycle.textContent = "-";
     return;
   }
-  const age = Number(obs.last_scan_age_seconds || 0);
-  pill.className = obs.status === "observation" && age < 180 ? "status-pill live" : "status-pill";
-  text.textContent = obs.status === "observation" && age < 180 ? "Observation Healthy" : "Scan Stale";
+  const actualAge = ageSecondsFromTimestamp(obs.last_scan);
+  const reportedAge = Number(obs.last_scan_age_seconds || 0);
+  const age = actualAge === null ? reportedAge : actualAge;
+  const healthy = obs.status === "observation" && age < 180;
+  pill.className = healthy ? "status-pill live" : "status-pill";
+  text.textContent = healthy ? "Observation Healthy" : (obs.status === "observation" ? "Observation Delayed" : "Offline");
   lastScan.textContent = formatDateTime(obs.last_scan);
   const events = state.scanHistory?.recent_events || [];
   const scans = events.filter((event) => event.event_type === "scan_cycle");
