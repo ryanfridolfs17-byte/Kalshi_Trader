@@ -1,0 +1,1152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Observation Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+:root {
+  --bg-start: #0f0c29;
+  --bg-mid: #1a1a3e;
+  --bg-end: #24243e;
+  --glass: rgba(255, 255, 255, 0.07);
+  --glass-strong: rgba(255, 255, 255, 0.1);
+  --glass-hover: rgba(255, 255, 255, 0.14);
+  --border: rgba(255, 255, 255, 0.12);
+  --text-primary: #f0f0f5;
+  --text-secondary: rgba(255, 255, 255, 0.6);
+  --accent-green: #34d399;
+  --accent-red: #f87171;
+  --accent-blue: #60a5fa;
+  --accent-amber: #fbbf24;
+  --accent-purple: #8b5cf6;
+  --blur: 16px;
+  --shadow: 0 18px 48px rgba(0, 0, 0, 0.26);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; font-family: "Segoe UI", Arial, sans-serif; color: var(--text-primary); }
+body { background: linear-gradient(135deg, var(--bg-start) 0%, var(--bg-mid) 40%, var(--bg-end) 100%); padding: 24px; }
+button, input { font: inherit; }
+code { color: #e2e8f0; }
+
+.app-shell { max-width: 1480px; margin: 0 auto; }
+.glass-card {
+  background: var(--glass);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  backdrop-filter: blur(var(--blur));
+  -webkit-backdrop-filter: blur(var(--blur));
+  box-shadow: var(--shadow);
+}
+
+.topbar {
+  display: grid;
+  grid-template-columns: 1.15fr 1fr auto;
+  gap: 16px;
+  align-items: center;
+  padding: 20px 22px;
+  margin-bottom: 20px;
+}
+.title-wrap h1 { margin: 0; font-size: 30px; letter-spacing: 0.02em; }
+.subtitle { margin-top: 6px; color: var(--text-secondary); font-size: 14px; }
+
+.status-cluster, .header-meta, .tab-bar, .stack {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.header-meta { justify-content: flex-end; }
+.status-pill, .meta-pill, .auth-button, .badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+}
+.auth-button { cursor: pointer; transition: transform 0.15s ease, background 0.15s ease; }
+.auth-button:hover, .tab-button:hover, .button:hover { background: var(--glass-hover); transform: translateY(-1px); }
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent-red);
+  box-shadow: 0 0 0 0 rgba(248, 113, 113, 0.6);
+}
+.status-pill.live .status-dot { background: var(--accent-green); animation: pulse 2s infinite; }
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.55); }
+  70% { box-shadow: 0 0 0 14px rgba(52, 211, 153, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0); }
+}
+
+.meta-label, th {
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-top-color: var(--accent-blue);
+  animation: spin 0.8s linear infinite;
+  display: inline-block;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.kpi-grid, .signal-card-grid, .strategy-card-grid, .daily-card-grid, .health-card-grid, .recon-kpis {
+  display: grid;
+  gap: 14px;
+}
+.kpi-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); margin-bottom: 20px; }
+.signal-card-grid, .recon-kpis { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.strategy-card-grid, .daily-card-grid, .health-card-grid { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+
+.kpi-card, .panel, .mini-card, .strategy-card, .daily-card, .health-card, .recon-card { padding: 16px; }
+.kpi-card { min-height: 126px; }
+.kpi-title, .metric-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-secondary); }
+.kpi-value { font-size: 30px; font-weight: 700; margin-top: 14px; }
+.kpi-sub, .panel-subtitle, .muted, .inline-note { color: var(--text-secondary); font-size: 13px; }
+
+.positive { color: var(--accent-green); }
+.negative { color: var(--accent-red); }
+.neutral { color: var(--text-primary); }
+.warning { color: var(--accent-amber); }
+.info { color: var(--accent-blue); }
+
+.tab-button, .button {
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+  padding: 12px 18px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
+}
+.button { border-radius: 12px; padding: 12px 14px; }
+.button.primary, .tab-button.active {
+  background: rgba(96, 165, 250, 0.18);
+  border-color: rgba(96, 165, 250, 0.45);
+  color: #dbeafe;
+}
+
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+.panel-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 16px; }
+.span-12 { grid-column: span 12; }
+.span-8 { grid-column: span 8; }
+.span-7 { grid-column: span 7; }
+.span-6 { grid-column: span 6; }
+.span-5 { grid-column: span 5; }
+.span-4 { grid-column: span 4; }
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+.panel-title, .strategy-name, .daily-title, .health-title, .signal-ticker { font-size: 18px; font-weight: 700; margin: 0; }
+
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+table { width: 100%; border-collapse: collapse; min-width: 620px; }
+th, td {
+  padding: 12px 14px;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  vertical-align: top;
+}
+tbody tr { transition: background 0.15s ease; }
+tbody tr:hover { background: rgba(255, 255, 255, 0.04); }
+
+.empty-state, .loading-state, .error-state { padding: 28px 20px; text-align: center; color: var(--text-secondary); }
+.error-state { color: var(--accent-red); }
+
+.badge {
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1;
+}
+.badge-green { background: rgba(52, 211, 153, 0.14); color: var(--accent-green); }
+.badge-red { background: rgba(248, 113, 113, 0.14); color: var(--accent-red); }
+.badge-blue { background: rgba(96, 165, 250, 0.14); color: var(--accent-blue); }
+.badge-amber { background: rgba(251, 191, 36, 0.16); color: var(--accent-amber); }
+.badge-muted { background: rgba(255, 255, 255, 0.08); color: var(--text-secondary); }
+
+.metric-grid, .mini-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+.metric-box {
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.metric-value { font-size: 18px; margin-top: 6px; font-weight: 700; }
+
+.progress-row { margin-top: 12px; }
+.progress-head { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+.progress-track { width: 100%; height: 10px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
+.progress-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, rgba(96, 165, 250, 0.9), rgba(52, 211, 153, 0.9)); }
+.progress-fill.drawdown { background: linear-gradient(90deg, rgba(52, 211, 153, 0.9), rgba(251, 191, 36, 0.9)); }
+
+.chart-shell { position: relative; min-height: 320px; }
+.chart-shell.short { min-height: 260px; }
+
+.banner {
+  padding: 14px 16px;
+  border-radius: 16px;
+  margin-bottom: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.05);
+}
+.banner.error { background: rgba(248, 113, 113, 0.12); border-color: rgba(248, 113, 113, 0.32); }
+.banner.success { background: rgba(52, 211, 153, 0.1); border-color: rgba(52, 211, 153, 0.28); }
+.banner-head { font-weight: 700; margin-bottom: 8px; }
+
+.scan-row { cursor: pointer; }
+.scan-detail-row { display: none; background: rgba(255, 255, 255, 0.03); }
+.scan-detail-row.open { display: table-row; }
+.scan-detail { padding: 14px 0 6px; }
+.detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.detail-block { padding: 12px; border-radius: 14px; background: rgba(255, 255, 255, 0.04); }
+.detail-block ul { margin: 10px 0 0; padding-left: 18px; }
+
+.strategy-card.dimmed { opacity: 0.65; }
+.strategy-card.live-ready { box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.55), 0 0 28px rgba(96, 165, 250, 0.18); }
+
+.footer { margin-top: 22px; padding: 16px 4px 6px; text-align: center; color: var(--text-secondary); font-size: 13px; }
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 10, 20, 0.72);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  z-index: 40;
+}
+.modal-backdrop.open { display: flex; }
+.modal-card { width: min(520px, 100%); padding: 22px; }
+.modal-title { margin: 0 0 6px; font-size: 24px; }
+.modal-copy { margin: 0 0 16px; color: var(--text-secondary); }
+.input-group { display: flex; flex-direction: column; gap: 8px; }
+.token-input {
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+  outline: none;
+}
+.token-input:focus { border-color: rgba(96, 165, 250, 0.55); box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.18); }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+
+@media (max-width: 1200px) {
+  .kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .topbar { grid-template-columns: 1fr; }
+  .header-meta { justify-content: flex-start; }
+}
+@media (max-width: 900px) {
+  .span-8, .span-7, .span-6, .span-5, .span-4 { grid-column: span 12; }
+  .metric-grid, .mini-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .detail-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 768px) {
+  body { padding: 12px; }
+  .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tab-bar { overflow-x: auto; padding-bottom: 4px; }
+  .topbar, .panel, .kpi-card { padding: 16px; }
+}
+@media (max-width: 560px) {
+  .metric-grid, .mini-kpis, .kpi-grid { grid-template-columns: 1fr; }
+  .title-wrap h1 { font-size: 24px; }
+}
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <header class="glass-card topbar">
+    <div class="title-wrap">
+      <h1>Observation Dashboard</h1>
+      <div class="subtitle">Paper trading telemetry, strategy scorecards, and scan diagnostics.</div>
+    </div>
+    <div class="status-cluster">
+      <div id="healthPill" class="status-pill">
+        <span class="status-dot"></span>
+        <span id="healthText">Loading...</span>
+      </div>
+      <div class="meta-pill">
+        <div>
+          <div class="meta-label">Last Scan</div>
+          <div id="lastScanText">Loading...</div>
+        </div>
+      </div>
+      <div class="meta-pill">
+        <div>
+          <div class="meta-label">Cycle</div>
+          <div id="cycleText">-</div>
+        </div>
+      </div>
+    </div>
+    <div class="header-meta">
+      <div class="meta-pill">
+        <div>
+          <div class="meta-label">Updated</div>
+          <div id="updatedText">Waiting...</div>
+        </div>
+        <span id="loadingSpinner" class="spinner" style="display:none;"></span>
+      </div>
+      <button id="authButton" class="auth-button" type="button">&#9881; <span id="authStatus">Locked</span></button>
+    </div>
+  </header>
+
+  <section class="kpi-grid">
+    <article class="glass-card kpi-card"><div class="kpi-title">Paper P&amp;L</div><div id="kpiPnl" class="kpi-value neutral">$0.00</div><div id="kpiPnlSub" class="kpi-sub">Net realized paper performance</div></article>
+    <article class="glass-card kpi-card"><div class="kpi-title">Active Trades</div><div id="kpiActive" class="kpi-value neutral">0</div><div id="kpiActiveSub" class="kpi-sub">Open paper positions</div></article>
+    <article class="glass-card kpi-card"><div class="kpi-title">Win Rate</div><div id="kpiWinRate" class="kpi-value neutral">-</div><div id="kpiWinRateSub" class="kpi-sub">Resolved paper trades</div></article>
+    <article class="glass-card kpi-card"><div class="kpi-title">Total Exposure</div><div id="kpiExposure" class="kpi-value neutral">$0.00</div><div id="kpiExposureSub" class="kpi-sub">Active paper capital at risk</div></article>
+    <article class="glass-card kpi-card"><div class="kpi-title">Signals Today</div><div id="kpiSignals" class="kpi-value neutral">0</div><div id="kpiSignalsSub" class="kpi-sub">Latest daily summary</div></article>
+    <article class="glass-card kpi-card"><div class="kpi-title">Markets Scanned Today</div><div id="kpiMarkets" class="kpi-value neutral">0</div><div id="kpiMarketsSub" class="kpi-sub">Latest daily summary</div></article>
+  </section>
+
+  <nav class="tab-bar" aria-label="Observation Tabs">
+    <button class="tab-button active" data-tab="trades" type="button">Trades</button>
+    <button class="tab-button" data-tab="scans" type="button">Scans</button>
+    <button class="tab-button" data-tab="passes" type="button">Passes</button>
+    <button class="tab-button" data-tab="strategies" type="button">Strategies</button>
+    <button class="tab-button" data-tab="summary" type="button">Summary</button>
+  </nav>
+
+  <section id="tab-trades" class="tab-panel active">
+    <div class="panel-grid">
+      <article class="glass-card panel span-6">
+        <div class="panel-header"><div><h2 class="panel-title">Active Positions</h2><p class="panel-subtitle">Paper positions currently open in observation mode.</p></div></div>
+        <div id="activePositionsWrap"></div>
+      </article>
+      <article class="glass-card panel span-6">
+        <div class="panel-header"><div><h2 class="panel-title">Pending Orders</h2><p class="panel-subtitle">Resting paper orders waiting for a qualifying fill.</p></div></div>
+        <div id="pendingOrdersWrap"></div>
+      </article>
+      <article class="glass-card panel span-7">
+        <div class="panel-header"><div><h2 class="panel-title">Recent History</h2><p class="panel-subtitle">Most recent resolved paper outcomes.</p></div></div>
+        <div id="recentHistoryWrap"></div>
+      </article>
+      <article class="glass-card panel span-5">
+        <div class="panel-header"><div><h2 class="panel-title">Paper Locks</h2><p class="panel-subtitle">Current settlement-lock candidates and paper positions.</p></div></div>
+        <div id="paperLocksWrap"></div>
+      </article>
+    </div>
+  </section>
+
+  <section id="tab-scans" class="tab-panel">
+    <div id="weatherStatusWrap"></div>
+    <div class="panel-grid">
+      <article class="glass-card panel span-8">
+        <div class="panel-header"><div><h2 class="panel-title">Scan Feed</h2><p class="panel-subtitle">Recent scan cycles with top signals and skip breakdowns.</p></div></div>
+        <div id="scanFeedWrap" class="loading-state">Loading scan history...</div>
+      </article>
+      <article class="glass-card panel span-4">
+        <div class="panel-header"><div><h2 class="panel-title">Top Signals</h2><p class="panel-subtitle">Current cycle leaders from the live scan.</p></div></div>
+        <div id="topSignalsWrap" class="signal-card-grid"></div>
+      </article>
+      <article class="glass-card panel span-12">
+        <div class="panel-header"><div><h2 class="panel-title">Skip Reasons</h2><p class="panel-subtitle">Top aggregated reasons the bot is passing on markets.</p></div></div>
+        <div class="chart-shell"><canvas id="skipReasonsChart"></canvas></div>
+      </article>
+    </div>
+  </section>
+
+  <section id="tab-passes" class="tab-panel">
+    <div class="panel-grid">
+      <article class="glass-card panel span-12">
+        <div class="panel-header"><div><h2 class="panel-title">Skip Reason Trends</h2><p class="panel-subtitle">Daily skip reason mix across the last 7 observation days.</p></div></div>
+        <div class="chart-shell"><canvas id="skipTrendChart"></canvas></div>
+      </article>
+      <article class="glass-card panel span-6">
+        <div class="panel-header"><div><h2 class="panel-title">Guard Effectiveness</h2><p class="panel-subtitle">Auth-gated learning metrics showing whether blocked trades were good skips.</p></div></div>
+        <div id="guardEffectivenessWrap" class="loading-state">Loading guard effectiveness...</div>
+      </article>
+      <article class="glass-card panel span-6">
+        <div class="panel-header"><div><h2 class="panel-title">Paper Blocked Reasons</h2><p class="panel-subtitle">Why otherwise valid paper signals did not become paper trades.</p></div></div>
+        <div class="chart-shell short"><canvas id="paperBlockedChart"></canvas></div>
+      </article>
+      <article class="glass-card panel span-12">
+        <div class="panel-header"><div><h2 class="panel-title">Scan Reconciliation</h2><p class="panel-subtitle">Learning review of correct skips, missed opportunities, and bad trades.</p></div></div>
+        <div id="scanReconciliationWrap" class="loading-state">Loading reconciliation data...</div>
+      </article>
+    </div>
+  </section>
+
+  <section id="tab-strategies" class="tab-panel">
+    <div class="panel-grid">
+      <article class="glass-card panel span-12">
+        <div class="panel-header"><div><h2 class="panel-title">Strategy Scorecards</h2><p class="panel-subtitle">Per-strategy paper performance, promotion gates, and blockers.</p></div></div>
+        <div id="strategyCardWrap" class="strategy-card-grid"></div>
+      </article>
+      <article class="glass-card panel span-12">
+        <div class="panel-header"><div><h2 class="panel-title">Strategy Comparison</h2><p class="panel-subtitle">Net P&amp;L, resolved sample size, and expectancy by strategy.</p></div></div>
+        <div class="chart-shell"><canvas id="strategyComparisonChart"></canvas></div>
+      </article>
+      <article class="glass-card panel span-12">
+        <div class="panel-header"><div><h2 class="panel-title">Strategy Stats Table</h2><p class="panel-subtitle">Sorted by current paper profitability.</p></div></div>
+        <div id="strategyTableWrap" class="loading-state">Loading strategy scorecards...</div>
+      </article>
+    </div>
+  </section>
+
+  <section id="tab-summary" class="tab-panel">
+    <div class="panel-grid">
+      <article class="glass-card panel span-12">
+        <div class="panel-header"><div><h2 class="panel-title">Weekly Rollup</h2><p class="panel-subtitle">Trailing 7-day observation performance and activity.</p></div></div>
+        <div id="weeklyRollupWrap" class="mini-kpis"></div>
+      </article>
+      <article class="glass-card panel span-12">
+        <div class="panel-header"><div><h2 class="panel-title">Daily Cards</h2><p class="panel-subtitle">Latest 7 observation days with scanning, paper, and error stats.</p></div></div>
+        <div id="dailyCardsWrap" class="daily-card-grid"></div>
+      </article>
+      <article class="glass-card panel span-6">
+        <div class="panel-header"><div><h2 class="panel-title">Model Health</h2><p class="panel-subtitle">Weather model fetch availability and most recent failures.</p></div></div>
+        <div id="modelHealthWrap" class="health-card-grid"></div>
+      </article>
+      <article class="glass-card panel span-6">
+        <div class="panel-header"><div><h2 class="panel-title">S3 Diagnostics</h2><p class="panel-subtitle">Settlement-lock rejection reason counts from the current scan loop.</p></div></div>
+        <div id="s3DiagnosticsWrap" class="loading-state">Loading S3 diagnostics...</div>
+      </article>
+      <article class="glass-card panel span-12">
+        <div class="panel-header"><div><h2 class="panel-title">Cumulative Paper P&amp;L</h2><p class="panel-subtitle">Running paper profitability over the last 7 days.</p></div></div>
+        <div class="chart-shell"><canvas id="paperPnlChart"></canvas></div>
+      </article>
+    </div>
+  </section>
+
+  <footer class="footer">Kalshi Observation Dashboard &bull; Auto-refreshes every 60s &bull; Data from Railway</footer>
+</div>
+
+<div id="authModal" class="modal-backdrop" aria-hidden="true">
+  <div class="glass-card modal-card">
+    <h2 class="modal-title">Observation Auth</h2>
+    <p class="modal-copy">Save a dashboard bearer token locally to unlock protected learning endpoints such as <code>/api/learning</code>.</p>
+    <div class="input-group">
+      <label for="tokenInput" class="meta-label">Bearer Token</label>
+      <input id="tokenInput" class="token-input" type="password" placeholder="Paste your dashboard token">
+    </div>
+    <div id="authMessage" class="inline-note">Stored only in this browser using localStorage.</div>
+    <div class="modal-actions">
+      <button id="clearTokenButton" class="button" type="button">Clear</button>
+      <button id="closeModalButton" class="button" type="button">Cancel</button>
+      <button id="saveTokenButton" class="button primary" type="button">Save Token</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const REFRESH_MS = 60000;
+const TOKEN_KEY = "obs_dashboard_token";
+const TZ_ET = "America/New_York";
+const state = {
+  activeTab: "trades",
+  token: localStorage.getItem(TOKEN_KEY) || "",
+  observation: null,
+  scanHistory: null,
+  passesHistory: null,
+  learning: null,
+  learningUnauthorized: false,
+  strategies: null,
+  loadingMain: false,
+  lastUpdatedMs: null,
+  scanHistoryFetchedAt: 0,
+  passesHistoryFetchedAt: 0,
+  learningFetchedAt: 0,
+  strategiesFetchedAt: 0,
+  charts: {},
+};
+
+const fmtDateShort = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: TZ_ET });
+const fmtDateLong = new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: TZ_ET });
+const fmtTime = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", timeZone: TZ_ET });
+const fmtDateTime = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: TZ_ET });
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;").replace(/'/g, "&#39;");
+}
+function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
+function formatNumber(value) { return new Intl.NumberFormat("en-US").format(Number(value || 0)); }
+function formatCents(value) {
+  const cents = Number(value || 0);
+  const sign = cents < 0 ? "-" : "";
+  return sign + "$" + (Math.abs(cents) / 100).toFixed(2);
+}
+function formatPercent(value, digits = 1, ratio = false) {
+  if (value === null || value === undefined || value === "") return "-";
+  const pct = ratio ? Number(value) * 100 : Number(value);
+  return Number.isFinite(pct) ? pct.toFixed(digits) + "%" : "-";
+}
+function formatSignedPercent(value, digits = 1, ratio = true) {
+  if (value === null || value === undefined || value === "") return "-";
+  const pct = ratio ? Number(value) * 100 : Number(value);
+  if (!Number.isFinite(pct)) return "-";
+  return (pct > 0 ? "+" : "") + pct.toFixed(digits) + "%";
+}
+function formatMaybe(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  const num = Number(value);
+  if (!Number.isFinite(num)) return String(value);
+  return num.toFixed(num % 1 === 0 ? 0 : 3).replace(/\.?0+$/, "");
+}
+function formatDateShort(value) {
+  if (!value) return "-";
+  try { return fmtDateShort.format(new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? value + "T00:00:00Z" : value)); } catch (error) { return String(value); }
+}
+function formatDateLong(value) {
+  if (!value) return "-";
+  try { return fmtDateLong.format(new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? value + "T00:00:00Z" : value)); } catch (error) { return String(value); }
+}
+function formatTime(value) {
+  if (!value) return "-";
+  try { return fmtTime.format(new Date(value)); } catch (error) { return String(value); }
+}
+function formatDateTime(value) {
+  if (!value) return "-";
+  try { return fmtDateTime.format(new Date(value)) + " ET"; } catch (error) { return String(value); }
+}
+function formatRelative(ms) {
+  if (!ms) return "Waiting...";
+  const seconds = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  return seconds < 60 ? seconds + "s ago" : Math.floor(seconds / 60) + "m ago";
+}
+function classForSigned(value) { return Number(value || 0) > 0 ? "positive" : Number(value || 0) < 0 ? "negative" : "neutral"; }
+function strong(text) { return "<strong>" + escapeHtml(text || "-") + "</strong>"; }
+function mutedLine(text) { return text ? '<div class="muted" style="margin-top:6px;">' + escapeHtml(text) + "</div>" : ""; }
+function truncate(text, length) {
+  const value = String(text || "");
+  return value.length <= length ? value : value.slice(0, length - 1) + "...";
+}
+function badge(text, cls) { return '<span class="badge ' + cls + '">' + escapeHtml(text) + "</span>"; }
+function sideBadge(side) {
+  const upper = String(side || "").toUpperCase();
+  const cls = upper === "YES" ? "badge-blue" : upper === "NO" ? "badge-amber" : "badge-muted";
+  return badge(upper || "-", cls);
+}
+function resultBadge(status) {
+  const upper = String(status || "").toUpperCase();
+  if (upper === "WIN" || upper === "WON") return badge("WIN", "badge-green");
+  if (upper === "LOSS" || upper === "LOSE" || upper === "LOST") return badge("LOSS", "badge-red");
+  return badge(upper || "-", "badge-muted");
+}
+function latestDailySummary() {
+  const days = Array.isArray(state.observation?.daily_summary) ? [...state.observation.daily_summary] : [];
+  days.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  return days[days.length - 1] || null;
+}
+function sortedDailySummary(limit = 7) {
+  const days = Array.isArray(state.observation?.daily_summary) ? [...state.observation.daily_summary] : [];
+  days.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  return days.slice(-limit);
+}
+function setText(id, value, cls) {
+  const node = document.getElementById(id);
+  node.textContent = value;
+  if (cls) node.className = node.className.replace(/\bpositive\b|\bnegative\b|\bneutral\b|\bwarning\b|\binfo\b/g, "").trim() + " " + cls;
+}
+function loadingMarkup(message) { return '<div class="loading-state"><span class="spinner"></span><div style="margin-top:10px;">' + escapeHtml(message) + "</div></div>"; }
+function signInCard(message) {
+  return '<div class="glass-card" style="padding:16px;background:rgba(255,255,255,0.04);"><div class="panel-title" style="font-size:16px;">Protected Learning Data</div><div class="panel-subtitle" style="margin-top:8px;">' + escapeHtml(message) + '</div><button class="button primary" type="button" style="margin-top:14px;" onclick="openAuthModal()">Sign In</button></div>';
+}
+function summaryMetric(label, value, cls = "") {
+  return '<div class="metric-box"><div class="metric-label">' + escapeHtml(label) + '</div><div class="metric-value ' + cls + '">' + escapeHtml(value) + "</div></div>";
+}
+function summaryMetricCard(label, value, cls = "") {
+  return '<div class="mini-card"><div class="metric-label">' + escapeHtml(label) + '</div><div class="metric-value ' + cls + '">' + escapeHtml(value) + "</div></div>";
+}
+
+async function fetchJson(url, auth = false) {
+  const headers = {};
+  if (auth && state.token) headers.Authorization = "Bearer " + state.token;
+  const response = await fetch(url, { headers });
+  if (response.status === 401) {
+    const err = new Error("Unauthorized");
+    err.unauthorized = true;
+    throw err;
+  }
+  if (!response.ok) throw new Error(await response.text() || ("Request failed: " + response.status));
+  return response.json();
+}
+
+function setLoading(isLoading) {
+  state.loadingMain = !!isLoading;
+  document.getElementById("loadingSpinner").style.display = isLoading ? "inline-block" : "none";
+}
+
+function renderHeader() {
+  const obs = state.observation;
+  const pill = document.getElementById("healthPill");
+  const text = document.getElementById("healthText");
+  const lastScan = document.getElementById("lastScanText");
+  const cycle = document.getElementById("cycleText");
+  document.getElementById("authStatus").textContent = state.token ? "Unlocked" : "Locked";
+  document.getElementById("updatedText").textContent = formatRelative(state.lastUpdatedMs);
+  if (!obs) {
+    pill.className = "status-pill";
+    text.textContent = "Waiting for observation data";
+    lastScan.textContent = "-";
+    cycle.textContent = "-";
+    return;
+  }
+  const age = Number(obs.last_scan_age_seconds || 0);
+  pill.className = obs.status === "observation" && age < 180 ? "status-pill live" : "status-pill";
+  text.textContent = obs.status === "observation" && age < 180 ? "Observation Healthy" : "Scan Stale";
+  lastScan.textContent = formatDateTime(obs.last_scan);
+  const events = state.scanHistory?.recent_events || [];
+  const scans = events.filter((event) => event.event_type === "scan_cycle");
+  const latestCycle = scans.length ? scans[scans.length - 1].cycle : ((obs.paper_trades?.recent_cycles || []).slice(-1)[0] || {}).cycle;
+  cycle.textContent = latestCycle || "-";
+}
+
+function renderKpis() {
+  const summary = state.observation?.paper_trades?.summary || {};
+  const latest = latestDailySummary() || {};
+  const wins = Number(summary.wins || 0);
+  const losses = Number(summary.losses || 0);
+  const resolved = wins + losses;
+  const winRate = resolved > 0 ? wins / resolved : null;
+  setText("kpiPnl", formatCents(summary.net_profit_cents || 0), classForSigned(summary.net_profit_cents || 0));
+  setText("kpiPnlSub", resolved + " resolved paper trades");
+  setText("kpiActive", String(summary.active_count || 0));
+  setText("kpiActiveSub", (summary.pending_count || 0) + " pending orders");
+  setText("kpiWinRate", winRate === null ? "-" : formatPercent(winRate, 1, true));
+  setText("kpiWinRateSub", wins + " wins / " + losses + " losses");
+  setText("kpiExposure", formatCents(summary.active_exposure_cents || 0));
+  setText("kpiExposureSub", formatCents(summary.pending_reserved_cents || 0) + " pending reserved");
+  setText("kpiSignals", formatNumber(latest.signals_found || 0));
+  setText("kpiSignalsSub", latest.date ? formatDateShort(latest.date) : "Latest day");
+  setText("kpiMarkets", formatNumber(latest.markets_scanned || 0));
+  setText("kpiMarketsSub", (latest.scan_cycles || 0) + " scan cycles");
+}
+
+function tableHtml(columns, rows, emptyMessage) {
+  if (!rows || !rows.length) return '<div class="empty-state">' + escapeHtml(emptyMessage) + "</div>";
+  const head = columns.map((column) => "<th>" + escapeHtml(column.label) + "</th>").join("");
+  const body = rows.map((row) => "<tr>" + columns.map((column) => "<td>" + column.render(row) + "</td>").join("") + "</tr>").join("");
+  return '<div class="table-wrap"><table><thead><tr>' + head + "</tr></thead><tbody>" + body + "</tbody></table></div>";
+}
+
+function topDailyReasons(days, limit) {
+  const totals = {};
+  days.forEach((day) => Object.entries(day.skip_reasons || {}).forEach(([reason, count]) => { totals[reason] = (totals[reason] || 0) + Number(count || 0); }));
+  return Object.entries(totals).sort((a, b) => b[1] - a[1]).slice(0, limit).map(([reason]) => reason);
+}
+function stackColor(index) {
+  const colors = ["rgba(96,165,250,0.78)", "rgba(52,211,153,0.78)", "rgba(251,191,36,0.78)", "rgba(248,113,113,0.78)", "rgba(139,92,246,0.78)", "rgba(125,211,252,0.78)", "rgba(74,222,128,0.78)", "rgba(253,186,116,0.78)"];
+  return colors[index % colors.length];
+}
+function chartTicks() { return { color: "rgba(255,255,255,0.72)" }; }
+function deepMerge(target, source) {
+  const output = Array.isArray(target) ? [...target] : { ...target };
+  Object.entries(source || {}).forEach(([key, value]) => { output[key] = value && typeof value === "object" && !Array.isArray(value) ? deepMerge(output[key] || {}, value) : value; });
+  return output;
+}
+function baseChartOptions(extra = {}) {
+  return deepMerge({
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { intersect: false, mode: "index" },
+    scales: {
+      x: { ticks: chartTicks(), grid: { color: "rgba(255,255,255,0.08)" } },
+      y: { ticks: chartTicks(), grid: { color: "rgba(255,255,255,0.08)" } },
+    },
+    plugins: {
+      legend: { labels: { color: "rgba(255,255,255,0.72)" } },
+      tooltip: {
+        backgroundColor: "rgba(15,12,41,0.95)",
+        borderColor: "rgba(255,255,255,0.12)",
+        borderWidth: 1,
+        titleColor: "#f8fafc",
+        bodyColor: "#e5e7eb",
+      },
+    },
+  }, extra);
+}
+function renderChart(id, config) {
+  const canvas = document.getElementById(id);
+  if (!canvas || typeof Chart === "undefined") return;
+  if (state.charts[id]) { state.charts[id].destroy(); delete state.charts[id]; }
+  const shell = canvas.parentElement;
+  const extra = shell.querySelector(".empty-state");
+  if (extra) extra.remove();
+  if (!config) {
+    const message = document.createElement("div");
+    message.className = "empty-state";
+    message.textContent = "No chart data available.";
+    shell.appendChild(message);
+    return;
+  }
+  state.charts[id] = new Chart(canvas, config);
+}
+
+function renderTradesTab() {
+  const obs = state.observation;
+  if (!obs) {
+    document.getElementById("activePositionsWrap").innerHTML = loadingMarkup("Loading paper positions...");
+    document.getElementById("pendingOrdersWrap").innerHTML = loadingMarkup("Loading pending orders...");
+    document.getElementById("recentHistoryWrap").innerHTML = loadingMarkup("Loading paper history...");
+    document.getElementById("paperLocksWrap").innerHTML = loadingMarkup("Loading paper locks...");
+    return;
+  }
+  const activeColumns = [
+    { label: "Ticker", render: (row) => strong(row.ticker) + mutedLine(row.city_code) },
+    { label: "Side", render: (row) => sideBadge(row.side) },
+    { label: "Strategy", render: (row) => badge(row.strategy || "-", "badge-blue") },
+    { label: "Contracts", render: (row) => formatNumber(row.contracts || 0) },
+    { label: "Entry Price", render: (row) => formatCents(row.entry_price_cents || 0) },
+    { label: "Edge", render: (row) => formatSignedPercent(row.edge || 0, 1, true) + mutedLine("Fee adj " + formatSignedPercent(row.fee_adjusted_edge || 0, 1, true)) },
+    { label: "Target Date", render: (row) => formatDateShort(row.target_date) },
+  ];
+  const pendingColumns = [
+    { label: "Ticker", render: (row) => strong(row.ticker) + mutedLine(row.city_code) },
+    { label: "Side", render: (row) => sideBadge(row.side) },
+    { label: "Limit Price", render: (row) => formatCents(row.limit_price_cents || 0) },
+    { label: "Current Price", render: (row) => formatCents(row.current_price_cents || 0) },
+    { label: "Strategy", render: (row) => badge(row.strategy || "-", "badge-blue") },
+    { label: "Target Date", render: (row) => formatDateShort(row.target_date) },
+  ];
+  const historyColumns = [
+    { label: "Ticker", render: (row) => strong(row.ticker) + mutedLine(row.strategy || "-") },
+    { label: "Status", render: (row) => resultBadge(row.status) },
+    { label: "P&L", render: (row) => '<span class="' + classForSigned(row.net_profit_cents || 0) + '">' + formatCents(row.net_profit_cents || 0) + "</span>" },
+    { label: "Strategy", render: (row) => badge(row.strategy || "-", "badge-muted") },
+    { label: "Resolved", render: (row) => formatDateShort(row.resolved_at) },
+  ];
+  const lockColumns = [
+    { label: "Ticker", render: (row) => strong(row.ticker) },
+    { label: "Lock Side", render: (row) => sideBadge(row.lock_side) },
+    { label: "Price", render: (row) => formatCents(row.price_cents || 0) },
+    { label: "Payout", render: (row) => formatCents(row.payout_cents || 0) },
+    { label: "Target Date", render: (row) => formatDateShort(row.target_date) },
+  ];
+  document.getElementById("activePositionsWrap").innerHTML = tableHtml(activeColumns, obs.paper_trades?.active || [], "No active positions");
+  document.getElementById("pendingOrdersWrap").innerHTML = tableHtml(pendingColumns, obs.paper_trades?.pending || [], "No pending orders");
+  document.getElementById("recentHistoryWrap").innerHTML = tableHtml(historyColumns, obs.paper_trades?.recent_history || [], "No resolved paper trades yet");
+  document.getElementById("paperLocksWrap").innerHTML = tableHtml(lockColumns, obs.paper_locks?.active || [], "No active paper locks");
+}
+
+function renderWeatherStatus() {
+  const wrap = document.getElementById("weatherStatusWrap");
+  const error = state.observation?.scan?.weather_api_error;
+  const modelHealth = state.observation?.model_health || {};
+  const pills = Object.entries(modelHealth).map(([name, stats]) => {
+    const pct = Number(stats.availability_pct || 0);
+    const cls = pct > 80 ? "badge-green" : pct >= 50 ? "badge-amber" : "badge-red";
+    return badge(name + " " + formatPercent(pct, 1, false), cls);
+  }).join("");
+  wrap.innerHTML = '<div class="banner ' + (error ? "error" : "success") + '"><div class="banner-head">' + (error ? "Weather API Warning" : "Weather API Status") + '</div><div>' + escapeHtml(error || "No active weather API error in the latest cycle.") + '</div>' + (pills ? '<div class="stack" style="margin-top:12px;">' + pills + "</div>" : "") + "</div>";
+}
+
+function renderTopSignals() {
+  const wrap = document.getElementById("topSignalsWrap");
+  const signals = state.observation?.scan?.top_signals || [];
+  if (!signals.length) {
+    wrap.innerHTML = '<div class="empty-state">No signals this cycle.</div>';
+    return;
+  }
+  wrap.innerHTML = signals.map((signal) => '<div class="mini-card"><div class="signal-ticker">' + escapeHtml(signal.ticker || "-") + '</div><div class="kpi-value positive" style="font-size:26px;margin-top:10px;">' + formatSignedPercent(signal.edge || 0, 1, true) + '</div><div class="stack" style="margin-top:12px;">' + sideBadge(signal.side) + badge(signal.strategy || "-", "badge-blue") + "</div></div>").join("");
+}
+
+function renderScansTab() {
+  renderWeatherStatus();
+  renderTopSignals();
+  if (!state.scanHistory) {
+    document.getElementById("scanFeedWrap").innerHTML = loadingMarkup("Loading scan history...");
+    renderChart("skipReasonsChart", null);
+    return;
+  }
+  const recentEvents = (state.scanHistory.recent_events || []).filter((event) => event.event_type === "scan_cycle").slice(-20).reverse();
+  if (!recentEvents.length) {
+    document.getElementById("scanFeedWrap").innerHTML = '<div class="empty-state">No scan cycles available yet.</div>';
+  } else {
+    const rows = recentEvents.map((event) => {
+      const detailId = "scan-detail-" + event.cycle + "-" + String(event.timestamp).replace(/\W/g, "");
+      const topSignals = (event.top_signals || []).length ? "<ul>" + event.top_signals.map((signal) => "<li>" + escapeHtml(signal.ticker || "-") + " - " + escapeHtml(String(signal.side || "").toUpperCase()) + " - " + escapeHtml(signal.strategy || "-") + " - " + escapeHtml(formatSignedPercent(signal.edge || 0, 1, true)) + "</li>").join("") + "</ul>" : '<div class="muted" style="margin-top:8px;">No top signals for this cycle.</div>';
+      const skips = Object.keys(event.diag_skips || {}).length ? "<ul>" + Object.entries(event.diag_skips || {}).sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0)).map(([reason, count]) => "<li>" + escapeHtml(reason) + " - " + escapeHtml(formatNumber(count)) + "</li>").join("") + "</ul>" : '<div class="muted" style="margin-top:8px;">No skip breakdown captured.</div>';
+      return '<tr class="scan-row" data-detail-id="' + detailId + '"><td>' + formatTime(event.timestamp) + "</td><td>" + formatNumber(event.markets_scanned || 0) + "</td><td>" + formatNumber(event.signals_found || 0) + "</td><td>" + formatNumber(event.paper_entries || 0) + "</td><td>" + (event.weather_api_error ? '<span class="negative">' + escapeHtml(event.weather_api_error) + "</span>" : "-") + '</td></tr><tr id="' + detailId + '" class="scan-detail-row"><td colspan="5"><div class="scan-detail"><div class="detail-grid"><div class="detail-block"><div class="panel-title" style="font-size:15px;">Top Signals</div>' + topSignals + '</div><div class="detail-block"><div class="panel-title" style="font-size:15px;">Skip Breakdown</div>' + skips + "</div></div></div></td></tr>";
+    }).join("");
+    document.getElementById("scanFeedWrap").innerHTML = '<div class="table-wrap"><table><thead><tr><th>Time</th><th>Markets</th><th>Signals</th><th>Paper Entries</th><th>Weather Error</th></tr></thead><tbody>' + rows + "</tbody></table></div>";
+  }
+  const topSkipRows = Object.entries(state.scanHistory.summary?.skip_reasons || {}).sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0)).slice(0, 10);
+  renderChart("skipReasonsChart", topSkipRows.length ? {
+    type: "bar",
+    data: { labels: topSkipRows.map(([reason]) => truncate(reason, 26)), datasets: [{ label: "Skip Count", data: topSkipRows.map(([, count]) => Number(count || 0)), backgroundColor: "rgba(96,165,250,0.8)", borderColor: "rgba(96,165,250,1)", borderWidth: 1, borderRadius: 8 }] },
+    options: baseChartOptions({ indexAxis: "y", plugins: { legend: { display: false } } }),
+  } : null);
+}
+
+function strategyCards() { return state.strategies?.scorecards?.length ? state.strategies.scorecards : (state.observation?.strategy_scorecards || []); }
+function strategyStatusBadges(card) {
+  const parts = [];
+  if (card.eligible_for_live) parts.push(badge("Live Ready", "badge-blue"));
+  parts.push(card.eligible_for_paper_entries ? badge("Paper Active", "badge-green") : badge("Disabled", "badge-red"));
+  if (card.paper_only) parts.push(badge("Paper Only", "badge-muted"));
+  return parts.join("");
+}
+function progressRow(label, value, target, inverse, ratio) {
+  const safeTarget = Number(target || 0);
+  const pct = safeTarget <= 0 ? 100 : inverse ? clamp(100 - (Number(value || 0) / safeTarget) * 100, 0, 100) : clamp((Number(value || 0) / safeTarget) * 100, 0, 100);
+  const displayValue = ratio ? formatPercent(value, 1, true) : formatMaybe(value);
+  const displayTarget = ratio ? formatPercent(target, 1, true) : formatMaybe(target);
+  return '<div class="progress-row"><div class="progress-head"><span>' + escapeHtml(label) + '</span><span>' + escapeHtml(displayValue) + " / " + escapeHtml(displayTarget) + '</span></div><div class="progress-track"><div class="progress-fill ' + (inverse ? "drawdown" : "") + '" style="width:' + pct + '%;"></div></div></div>';
+}
+function renderStrategyCard(card) {
+  const gate = card.promotion_gate || {};
+  const blockers = (card.promotion_blockers || []).map((item) => badge(item, "badge-red")).join("");
+  const paperBlockers = (card.paper_entry_blockers || []).map((item) => badge(item, "badge-amber")).join("");
+  return '<div class="strategy-card ' + (!card.paper_entry_enabled ? "dimmed " : "") + (card.eligible_for_live ? "live-ready" : "") + '"><div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;"><div><div class="strategy-name">' + escapeHtml(card.strategy) + '</div><div class="muted" style="margin-top:4px;">' + escapeHtml(card.label || "") + '</div></div><div class="stack">' + strategyStatusBadges(card) + '</div></div><div class="metric-grid">' + summaryMetric("P&L", formatCents(card.net_profit_cents || 0), classForSigned(card.net_profit_cents || 0)) + summaryMetric("Win/Loss", formatNumber(card.wins || 0) + "W / " + formatNumber(card.losses || 0) + "L") + summaryMetric("Profit Factor", formatMaybe(card.profit_factor)) + summaryMetric("Expectancy", card.expectancy_cents === null || card.expectancy_cents === undefined ? "-" : card.expectancy_cents + "c") + summaryMetric("Fill Rate", formatPercent(card.fill_rate, 1, true)) + summaryMetric("Max Drawdown", formatCents(card.max_drawdown_cents || 0)) + "</div>" + progressRow("Resolved", Number(card.paper_resolved || 0), Number(gate.min_resolved || 0), false, false) + progressRow("Profit Factor", Number(card.profit_factor || 0), Number(gate.min_profit_factor || 0), false, false) + progressRow("Fill Rate", Number(card.fill_rate || 0), Number(gate.min_fill_rate || 0), false, true) + progressRow("Drawdown", Number(card.max_drawdown_cents || 0), Number(gate.max_drawdown_cents || 0), true, false) + (blockers ? '<div class="stack" style="margin-top:12px;">' + blockers + "</div>" : "") + (paperBlockers ? '<div class="stack" style="margin-top:10px;">' + paperBlockers + "</div>" : "") + "</div>";
+}
+
+function renderStrategiesTab() {
+  const wrap = document.getElementById("strategyCardWrap");
+  const tableWrap = document.getElementById("strategyTableWrap");
+  const cards = strategyCards();
+  if (!cards.length) {
+    wrap.innerHTML = '<div class="empty-state">No strategy scorecards available.</div>';
+    tableWrap.innerHTML = '<div class="empty-state">No strategy data available.</div>';
+    renderChart("strategyComparisonChart", null);
+    return;
+  }
+  wrap.innerHTML = cards.map((card) => renderStrategyCard(card)).join("");
+  const resolvedCards = cards.filter((card) => Number(card.paper_resolved || 0) > 0);
+  renderChart("strategyComparisonChart", resolvedCards.length ? {
+    type: "bar",
+    data: {
+      labels: resolvedCards.map((card) => card.strategy),
+      datasets: [
+        { label: "Net P&L (c)", data: resolvedCards.map((card) => Number(card.net_profit_cents || 0)), backgroundColor: "rgba(52,211,153,0.75)", borderRadius: 8 },
+        { label: "Resolved", data: resolvedCards.map((card) => Number(card.paper_resolved || 0)), backgroundColor: "rgba(96,165,250,0.72)", borderRadius: 8 },
+        { label: "Expectancy (c)", data: resolvedCards.map((card) => Number(card.expectancy_cents || 0)), backgroundColor: "rgba(251,191,36,0.72)", borderRadius: 8 },
+      ],
+    },
+    options: baseChartOptions(),
+  } : null);
+  const rows = [...cards].sort((a, b) => Number(b.net_profit_cents || 0) - Number(a.net_profit_cents || 0));
+  tableWrap.innerHTML = tableHtml([
+    { label: "Strategy", render: (row) => strong(row.strategy) + mutedLine(row.label || "") },
+    { label: "Resolved", render: (row) => formatNumber(row.paper_resolved || 0) },
+    { label: "W/L", render: (row) => formatNumber(row.wins || 0) + "W / " + formatNumber(row.losses || 0) + "L" },
+    { label: "P&L", render: (row) => '<span class="' + classForSigned(row.net_profit_cents || 0) + '">' + formatCents(row.net_profit_cents || 0) + "</span>" },
+    { label: "PF", render: (row) => formatMaybe(row.profit_factor) },
+    { label: "Expectancy", render: (row) => row.expectancy_cents === null || row.expectancy_cents === undefined ? "-" : row.expectancy_cents + "c" },
+    { label: "Fill Rate", render: (row) => formatPercent(row.fill_rate, 1, true) },
+    { label: "Drawdown", render: (row) => formatCents(row.max_drawdown_cents || 0) },
+    { label: "Status", render: (row) => strategyStatusBadges(row) },
+  ], rows, "No strategy scorecards available.");
+}
+
+function guardRowBackground(accuracyPct) {
+  const value = Number(accuracyPct || 0);
+  if (value >= 70) return "rgba(52,211,153,0.06)";
+  if (value < 50) return "rgba(248,113,113,0.06)";
+  return "transparent";
+}
+function extractGuardStats(learning) { return learning?.guard_stats || learning?.latest_report?.guard_stats || {}; }
+function extractScanReconciliation(learning) { return learning?.scan_reconciliation || learning?.latest_report?.scan_reconciliation || {}; }
+function reconCard(label, value, badgeClass) {
+  return '<div class="recon-card"><div class="metric-label">' + escapeHtml(label) + '</div><div class="metric-value">' + formatNumber(value || 0) + '</div><div class="stack" style="margin-top:10px;">' + badge(label, badgeClass) + "</div></div>";
+}
+
+function renderSkipTrend(days) {
+  const topReasons = topDailyReasons(days, 8);
+  if (!topReasons.length) { renderChart("skipTrendChart", null); return; }
+  const datasets = topReasons.map((reason, index) => ({ label: reason, data: days.map((day) => Number(day.skip_reasons?.[reason] || 0)), backgroundColor: stackColor(index), borderWidth: 0 }));
+  const other = days.map((day) => Object.entries(day.skip_reasons || {}).reduce((sum, [reason, count]) => topReasons.includes(reason) ? sum : sum + Number(count || 0), 0));
+  if (other.some((value) => value > 0)) datasets.push({ label: "other", data: other, backgroundColor: "rgba(255,255,255,0.18)", borderWidth: 0 });
+  renderChart("skipTrendChart", {
+    type: "bar",
+    data: { labels: days.map((day) => formatDateShort(day.date)), datasets },
+    options: baseChartOptions({
+      scales: {
+        x: { stacked: true, ticks: chartTicks(), grid: { color: "rgba(255,255,255,0.08)" } },
+        y: { stacked: true, ticks: chartTicks(), grid: { color: "rgba(255,255,255,0.08)" } },
+      },
+      plugins: { legend: { position: "bottom", labels: { color: "rgba(255,255,255,0.72)", boxWidth: 12, usePointStyle: true } } },
+    }),
+  });
+}
+
+function renderGuardEffectiveness() {
+  const wrap = document.getElementById("guardEffectivenessWrap");
+  if (!state.token) { wrap.innerHTML = signInCard("Sign in to view guard effectiveness."); return; }
+  if (state.learningUnauthorized) { wrap.innerHTML = signInCard("Auth expired. Sign in again to view learning data."); return; }
+  if (!state.learning) { wrap.innerHTML = loadingMarkup("Loading guard effectiveness..."); return; }
+  const rows = Object.entries(extractGuardStats(state.learning) || {}).map(([name, stats]) => ({
+    name,
+    total_blocks: Number(stats.total_blocks || 0),
+    would_have_won: Number(stats.would_have_won || 0),
+    would_have_lost: Number(stats.would_have_lost || 0),
+    block_accuracy: Number(stats.block_accuracy || 0),
+  })).sort((a, b) => b.total_blocks - a.total_blocks);
+  if (!rows.length) { wrap.innerHTML = '<div class="empty-state">No guard effectiveness data yet.</div>'; return; }
+  wrap.innerHTML = '<div class="table-wrap"><table><thead><tr><th>Guard</th><th>Total Blocks</th><th>Would Have Won</th><th>Would Have Lost</th><th>Block Accuracy</th></tr></thead><tbody>' + rows.map((row) => '<tr style="background:' + guardRowBackground(row.block_accuracy) + ';"><td>' + escapeHtml(row.name) + '</td><td>' + formatNumber(row.total_blocks) + '</td><td>' + formatNumber(row.would_have_won) + '</td><td>' + formatNumber(row.would_have_lost) + '</td><td>' + formatPercent(row.block_accuracy, 1, false) + "</td></tr>").join("") + "</tbody></table></div>";
+}
+
+function renderScanReconciliation() {
+  const wrap = document.getElementById("scanReconciliationWrap");
+  if (!state.token) { wrap.innerHTML = signInCard("Sign in to view scan reconciliation."); return; }
+  if (state.learningUnauthorized) { wrap.innerHTML = signInCard("Auth expired. Sign in again to view reconciliation data."); return; }
+  if (!state.learning) { wrap.innerHTML = loadingMarkup("Loading reconciliation data..."); return; }
+  const recon = extractScanReconciliation(state.learning);
+  if (!recon || !Object.keys(recon).length) { wrap.innerHTML = '<div class="empty-state">No reconciliation data yet.</div>'; return; }
+  const details = Array.isArray(recon.missed_details) ? recon.missed_details.slice(0, 20) : [];
+  const table = details.length ? tableHtml([
+    { label: "Ticker", render: (row) => strong(row.ticker || "-") + mutedLine(row.city_code || "") },
+    { label: "Side", render: (row) => sideBadge(row.side) },
+    { label: "Edge", render: (row) => formatSignedPercent(row.edge || 0, 1, true) },
+    { label: "Price", render: (row) => formatCents(row.price_cents || 0) },
+    { label: "Guard", render: (row) => badge(row.skip_reason || "-", "badge-amber") },
+    { label: "Predicted High", render: (row) => row.predicted_high ?? "-" },
+    { label: "Actual High", render: (row) => row.actual_high ?? "-" },
+  ], details, "No missed opportunity detail rows.") : '<div class="empty-state">No missed opportunity detail rows.</div>';
+  wrap.innerHTML = '<div class="recon-kpis">' + reconCard("Correct Skips", recon.correct_skips, "badge-green") + reconCard("Missed Opportunities", recon.missed_opportunities, "badge-amber") + reconCard("Correct Trades", recon.correct_trades, "badge-green") + reconCard("Bad Trades", recon.bad_trades, "badge-red") + '</div><div style="margin-top:16px;"><div class="panel-title" style="font-size:16px;margin-bottom:10px;">Missed Opportunities</div>' + table + "</div>";
+}
+
+function renderPassesTab() {
+  const days = sortedDailySummary(7);
+  renderSkipTrend(days);
+  const blockedRows = Object.entries(state.passesHistory?.summary?.paper_blocked_reasons || {}).sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0));
+  renderChart("paperBlockedChart", blockedRows.length ? {
+    type: "bar",
+    data: { labels: blockedRows.map(([reason]) => truncate(reason, 26)), datasets: [{ label: "Blocked", data: blockedRows.map(([, count]) => Number(count || 0)), backgroundColor: "rgba(251,191,36,0.78)", borderRadius: 8 }] },
+    options: baseChartOptions({ indexAxis: "y", plugins: { legend: { display: false } } }),
+  } : null);
+  renderGuardEffectiveness();
+  renderScanReconciliation();
+}
+
+function renderDailyCards(days) {
+  const wrap = document.getElementById("dailyCardsWrap");
+  if (!days.length) { wrap.innerHTML = '<div class="empty-state">Daily summary will appear after scan cycles complete.</div>'; return; }
+  const latest = latestDailySummary()?.date;
+  wrap.innerHTML = days.map((day) => '<div class="daily-card" style="' + (day.date === latest ? "box-shadow:0 0 0 1px rgba(96,165,250,0.45),0 0 28px rgba(96,165,250,0.14);" : "") + '"><div class="daily-title">' + formatDateLong(day.date) + "</div><div class=\"metric-grid\" style=\"margin-top:14px;\">" + summaryMetric("Scan Cycles", formatNumber(day.scan_cycles || 0)) + summaryMetric("Markets", formatNumber(day.markets_scanned || 0)) + summaryMetric("Signals", formatNumber(day.signals_found || 0)) + summaryMetric("Paper Entries", formatNumber(day.paper_entries || 0)) + summaryMetric("Paper Resolved", formatNumber(day.paper_resolved || 0)) + summaryMetric("Wins/Losses", formatNumber(day.paper_wins || 0) + " / " + formatNumber(day.paper_losses || 0)) + summaryMetric("Paper P&L", formatCents(day.paper_net_profit_cents || 0), classForSigned(day.paper_net_profit_cents || 0)) + summaryMetric("Weather Errors", formatNumber(day.weather_errors || 0)) + "</div></div>").join("");
+}
+
+function renderWeeklyRollup(days) {
+  const wrap = document.getElementById("weeklyRollupWrap");
+  if (!days.length) { wrap.innerHTML = '<div class="empty-state">Weekly rollup will appear once daily summaries exist.</div>'; return; }
+  const totals = days.reduce((acc, day) => {
+    acc.scan_cycles += Number(day.scan_cycles || 0);
+    acc.markets_scanned += Number(day.markets_scanned || 0);
+    acc.signals_found += Number(day.signals_found || 0);
+    acc.paper_entries += Number(day.paper_entries || 0);
+    acc.paper_resolved += Number(day.paper_resolved || 0);
+    acc.paper_wins += Number(day.paper_wins || 0);
+    acc.paper_losses += Number(day.paper_losses || 0);
+    acc.paper_net_profit_cents += Number(day.paper_net_profit_cents || 0);
+    return acc;
+  }, { scan_cycles: 0, markets_scanned: 0, signals_found: 0, paper_entries: 0, paper_resolved: 0, paper_wins: 0, paper_losses: 0, paper_net_profit_cents: 0 });
+  wrap.innerHTML = [
+    summaryMetricCard("Total Scans", formatNumber(totals.scan_cycles)),
+    summaryMetricCard("Total Signals", formatNumber(totals.signals_found)),
+    summaryMetricCard("Paper Entries", formatNumber(totals.paper_entries)),
+    summaryMetricCard("Resolved", formatNumber(totals.paper_resolved)),
+    summaryMetricCard("Wins / Losses", formatNumber(totals.paper_wins) + " / " + formatNumber(totals.paper_losses)),
+    summaryMetricCard("Total P&L", formatCents(totals.paper_net_profit_cents), classForSigned(totals.paper_net_profit_cents)),
+    summaryMetricCard("Avg Signals / Day", (totals.signals_found / Math.max(days.length, 1)).toFixed(1)),
+    summaryMetricCard("Markets Scanned", formatNumber(totals.markets_scanned)),
+  ].join("");
+}
+
+function renderModelHealth() {
+  const wrap = document.getElementById("modelHealthWrap");
+  const entries = Object.entries(state.observation?.model_health || {});
+  if (!entries.length) { wrap.innerHTML = '<div class="empty-state">Model health data will appear after the next scan cycle.</div>'; return; }
+  wrap.innerHTML = entries.map(([name, stats]) => '<div class="health-card"><div class="health-title">' + escapeHtml(name) + '</div><div class="kpi-value ' + (Number(stats.availability_pct || 0) > 80 ? "positive" : Number(stats.availability_pct || 0) >= 50 ? "warning" : "negative") + '" style="font-size:28px;">' + formatPercent(stats.availability_pct || 0, 1, false) + '</div><div class="metric-grid" style="margin-top:12px;">' + summaryMetric("Success", formatNumber(stats.success || 0)) + summaryMetric("Failure", formatNumber(stats.failure || 0)) + summaryMetric("Total", formatNumber(stats.total || 0)) + '</div><div class="inline-note" style="color:' + (stats.last_error ? "var(--accent-red)" : "var(--accent-green)") + ';">' + escapeHtml(stats.last_error ? truncate(stats.last_error, 120) : "None") + "</div></div>").join("");
+}
+
+function renderS3Diagnostics() {
+  const wrap = document.getElementById("s3DiagnosticsWrap");
+  const rows = Object.entries(state.observation?.s3_eval_stats || {}).sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0));
+  wrap.innerHTML = rows.length ? tableHtml([{ label: "Reason", render: (row) => escapeHtml(row.reason) }, { label: "Count", render: (row) => formatNumber(row.count) }], rows.map(([reason, count]) => ({ reason, count })), "No S3 diagnostics yet.") : '<div class="empty-state">S3 diagnostics will appear after the next scan cycle with observed temperatures.</div>';
+}
+
+function renderPaperPnlChart(days) {
+  if (!days.length) { renderChart("paperPnlChart", null); return; }
+  let running = 0;
+  const values = days.map((day) => { running += Number(day.paper_net_profit_cents || 0); return running; });
+  const positive = values[values.length - 1] >= 0;
+  renderChart("paperPnlChart", {
+    type: "line",
+    data: { labels: days.map((day) => formatDateShort(day.date)), datasets: [{ label: "Cumulative P&L (c)", data: values, borderColor: positive ? "rgba(52,211,153,1)" : "rgba(248,113,113,1)", backgroundColor: positive ? "rgba(52,211,153,0.18)" : "rgba(248,113,113,0.16)", fill: true, tension: 0.28, pointRadius: 4, pointBackgroundColor: positive ? "rgba(52,211,153,1)" : "rgba(248,113,113,1)" }] },
+    options: baseChartOptions(),
+  });
+}
+
+function renderSummaryTab() {
+  const days = sortedDailySummary(7);
+  renderDailyCards(days);
+  renderWeeklyRollup(days);
+  renderModelHealth();
+  renderS3Diagnostics();
+  renderPaperPnlChart(days);
+}
+
+async function refreshObservation() {
+  setLoading(true);
+  try {
+    state.observation = await fetchJson("/api/observation");
+    state.lastUpdatedMs = Date.now();
+    renderHeader();
+    renderKpis();
+    renderTradesTab();
+    renderSummaryTab();
+    if (state.activeTab === "scans") {
+      await loadScansHistory(true);
+      renderScansTab();
+    }
+    if (state.activeTab === "strategies") {
+      await loadStrategies(true);
+      renderStrategiesTab();
+    }
+    if (state.activeTab === "passes") {
+      await loadPasses(true);
+      renderPassesTab();
+    }
+  } catch (error) {
+    console.error("Observation refresh failed", error);
+  } finally {
+    setLoading(false);
+    renderHeader();
+  }
+}
+
+async function loadScansHistory(force) {
+  if (!force && state.scanHistory && Date.now() - state.scanHistoryFetchedAt < REFRESH_MS) return;
+  state.scanHistory = await fetchJson("/api/observation/history?hours=24&events=50");
+  state.scanHistoryFetchedAt = Date.now();
+}
+
+async function loadStrategies(force) {
+  if (!force && state.strategies && Date.now() - state.strategiesFetchedAt < REFRESH_MS) return;
+  try {
+    state.strategies = await fetchJson("/api/observation/strategies?hours=336");
+  } catch (error) {
+    console.warn("Strategy endpoint unavailable, falling back to observation payload", error);
+    state.strategies = { scorecards: state.observation?.strategy_scorecards || [], generated_at: new Date().toISOString() };
+  }
+  state.strategiesFetchedAt = Date.now();
+}
+
+async function loadPasses(force) {
+  if (force || !state.passesHistory || Date.now() - state.passesHistoryFetchedAt >= REFRESH_MS) {
+    state.passesHistory = await fetchJson("/api/observation/history?hours=168&events=500");
+    state.passesHistoryFetchedAt = Date.now();
+  }
+  if (!state.token) {
+    state.learning = null;
+    state.learningUnauthorized = false;
+    return;
+  }
+  if (!force && state.learning && Date.now() - state.learningFetchedAt < REFRESH_MS) return;
+  try {
+    state.learning = await fetchJson("/api/learning", true);
+    state.learningUnauthorized = false;
+    state.learningFetchedAt = Date.now();
+  } catch (error) {
+    if (error.unauthorized) {
+      state.learningUnauthorized = true;
+      state.learning = null;
+      return;
+    }
+    console.warn("Learning fetch failed", error);
+  }
+}
+
+async function activateTab(tab) {
+  state.activeTab = tab;
+  document.querySelectorAll(".tab-button").forEach((button) => button.classList.toggle("active", button.dataset.tab === tab));
+  document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.toggle("active", panel.id === "tab-" + tab));
+  if (tab === "trades") { renderTradesTab(); return; }
+  if (tab === "summary") { renderSummaryTab(); return; }
+  if (tab === "scans") { document.getElementById("scanFeedWrap").innerHTML = loadingMarkup("Loading scan history..."); await loadScansHistory(false); renderScansTab(); return; }
+  if (tab === "strategies") { document.getElementById("strategyTableWrap").innerHTML = loadingMarkup("Loading strategy scorecards..."); await loadStrategies(false); renderStrategiesTab(); return; }
+  if (tab === "passes") { document.getElementById("guardEffectivenessWrap").innerHTML = loadingMarkup("Loading guard effectiveness..."); document.getElementById("scanReconciliationWrap").innerHTML = loadingMarkup("Loading reconciliation data..."); await loadPasses(false); renderPassesTab(); }
+}
+
+function openAuthModal() {
+  document.getElementById("tokenInput").value = state.token || "";
+  document.getElementById("authModal").classList.add("open");
+  document.getElementById("authModal").setAttribute("aria-hidden", "false");
+}
+function closeAuthModal() {
+  document.getElementById("authModal").classList.remove("open");
+  document.getElementById("authModal").setAttribute("aria-hidden", "true");
+}
+
+function bindUi() {
+  document.querySelectorAll(".tab-button").forEach((button) => button.addEventListener("click", () => activateTab(button.dataset.tab)));
+  document.getElementById("authButton").addEventListener("click", openAuthModal);
+  document.getElementById("closeModalButton").addEventListener("click", closeAuthModal);
+  document.getElementById("saveTokenButton").addEventListener("click", async () => {
+    state.token = document.getElementById("tokenInput").value.trim();
+    if (state.token) {
+      localStorage.setItem(TOKEN_KEY, state.token);
+      document.getElementById("authMessage").textContent = "Token saved locally. Protected panels will refresh now.";
+    } else {
+      localStorage.removeItem(TOKEN_KEY);
+      document.getElementById("authMessage").textContent = "Token cleared.";
+    }
+    closeAuthModal();
+    renderHeader();
+    if (state.activeTab === "passes") {
+      await loadPasses(true);
+      renderPassesTab();
+    }
+  });
+  document.getElementById("clearTokenButton").addEventListener("click", () => {
+    state.token = "";
+    state.learning = null;
+    state.learningUnauthorized = false;
+    localStorage.removeItem(TOKEN_KEY);
+    document.getElementById("tokenInput").value = "";
+    document.getElementById("authMessage").textContent = "Token cleared.";
+    renderHeader();
+  });
+  document.getElementById("authModal").addEventListener("click", (event) => { if (event.target.id === "authModal") closeAuthModal(); });
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeAuthModal(); });
+  document.addEventListener("click", (event) => {
+    const row = event.target.closest(".scan-row");
+    if (!row) return;
+    const detail = document.getElementById(row.dataset.detailId || "");
+    if (detail) detail.classList.toggle("open");
+  });
+}
+
+function tickUpdatedLabel() { renderHeader(); }
+
+async function initialize() {
+  bindUi();
+  renderHeader();
+  renderTradesTab();
+  renderSummaryTab();
+  await refreshObservation();
+  setInterval(refreshObservation, REFRESH_MS);
+  setInterval(tickUpdatedLabel, 1000);
+}
+
+initialize();
+</script>
+</body>
+</html>

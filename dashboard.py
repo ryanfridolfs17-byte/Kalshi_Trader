@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
 import config
+from bot_db import BotDatabase
 from observation_journal import ObservationJournal
 from strategy_registry import build_strategy_scorecards
 
@@ -491,6 +492,10 @@ def _build_observation_response():
                     "contracts": row.get("contracts", 0),
                     "entry_price_cents": row.get("entry_price_cents", 0),
                     "strategy": row.get("strategy", ""),
+                    "city_code": row.get("city_code", ""),
+                    "edge": row.get("edge", 0),
+                    "fee_adjusted_edge": row.get("fee_adjusted_edge", 0),
+                    "confirmation_verdict": row.get("confirmation_verdict", ""),
                     "target_date": row.get("target_date", ""),
                 }
                 for row in paper_active
@@ -503,6 +508,10 @@ def _build_observation_response():
                     "limit_price_cents": row.get("limit_price_cents", 0),
                     "current_price_cents": row.get("current_price_cents", 0),
                     "strategy": row.get("strategy", ""),
+                    "city_code": row.get("city_code", ""),
+                    "edge": row.get("edge", 0),
+                    "fee_adjusted_edge": row.get("fee_adjusted_edge", 0),
+                    "confirmation_verdict": row.get("confirmation_verdict", ""),
                     "target_date": row.get("target_date", ""),
                 }
                 for row in paper_pending
@@ -514,6 +523,8 @@ def _build_observation_response():
                     "side": row.get("side", ""),
                     "status": row.get("status", ""),
                     "net_profit_cents": row.get("net_profit_cents", 0),
+                    "strategy": row.get("strategy", ""),
+                    "city_code": row.get("city_code", ""),
                     "resolved_at": row.get("resolved_at", ""),
                 }
                 for row in list((paper_trades.get("history", []) or []))[-5:]
@@ -538,6 +549,85 @@ def _build_observation_response():
         "model_health": scan_log.get("model_health", {}),
         "s3_eval_stats": scan_log.get("s3_eval_stats", {}),
     }
+
+
+def _build_observation_strategies_response(hours=336):
+    """Observation strategy scorecards enriched with daily P&L when SQLite is available."""
+    hours = max(1, min(int(hours or 336), 24 * 30))
+    generated_at = datetime.now(timezone.utc).isoformat()
+    scorecards = build_strategy_scorecards(hours=hours)
+    by_strategy = {}
+    for card in scorecards:
+        card["daily_pnl"] = []
+        by_strategy[card.get("strategy", "")] = card
+
+    if not bool(getattr(config, "OBSERVATION_ENABLE_SQLITE", True)):
+        return {"scorecards": scorecards, "generated_at": generated_at}
+
+    db = None
+    try:
+        db = BotDatabase()
+        daily_rows = db.fetch_strategy_daily_pnl(hours=hours)
+        cumulative_by_strategy = {}
+        for row in daily_rows:
+            strategy = row.get("strategy", "")
+            card = by_strategy.get(strategy)
+            if not card:
+                continue
+            cumulative_by_strategy[strategy] = cumulative_by_strategy.get(strategy, 0) + int(row.get("pnl_cents", 0) or 0)
+            card["daily_pnl"].append({
+                "date": row.get("date", ""),
+                "pnl_cents": int(row.get("pnl_cents", 0) or 0),
+                "wins": int(row.get("wins", 0) or 0),
+                "losses": int(row.get("losses", 0) or 0),
+                "cumulative_cents": cumulative_by_strategy[strategy],
+            })
+    except Exception:
+        pass
+    finally:
+        if db is not None:
+            db.close()
+
+    return {"scorecards": scorecards, "generated_at": generated_at}
+
+
+def _build_observation_scan_detail_response(cycle, max_rows=500):
+    """Return all recorded decision rows for a given scan cycle when SQLite is available."""
+    cycle = int(cycle or 0)
+    limit = max(1, min(int(max_rows or 500), 1000))
+    if cycle <= 0:
+        return {"error": "Invalid cycle", "cycle": cycle, "decisions": [], "count": 0}
+    if not bool(getattr(config, "OBSERVATION_ENABLE_SQLITE", True)):
+        return {"error": "SQLite not available", "cycle": cycle, "decisions": [], "count": 0}
+
+    db = None
+    try:
+        db = BotDatabase()
+        decisions = db.fetch_scan_decisions_by_cycle(cycle=cycle, limit=limit)
+        slim = []
+        for row in decisions:
+            slim.append({
+                "ticker": row.get("ticker", ""),
+                "signal": row.get("signal", ""),
+                "side": row.get("side", ""),
+                "edge": row.get("edge", 0),
+                "fee_adjusted_edge": row.get("fee_adjusted_edge", 0),
+                "our_prob": row.get("our_prob", 0),
+                "market_prob": row.get("market_prob", 0),
+                "price_cents": row.get("price_cents", 0),
+                "strategy": row.get("strategy", ""),
+                "skip_reason": row.get("skip_reason"),
+                "confirmation_verdict": row.get("confirmation_verdict", ""),
+                "city_code": row.get("city_code", ""),
+                "target_date": row.get("target_date", ""),
+                "execution_status": row.get("execution_status", ""),
+            })
+        return {"cycle": cycle, "decisions": slim, "count": len(slim)}
+    except Exception:
+        return {"error": "SQLite not available", "cycle": cycle, "decisions": [], "count": 0}
+    finally:
+        if db is not None:
+            db.close()
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -593,6 +683,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/" or path == "/dashboard":
             self._send_html("dashboard.html")
 
+        elif path in ("/observation", "/obs"):
+            self._send_html("observation_dashboard.html")
+
         elif path == "/api/health":
             # Unauthenticated: minimal {status, timestamp}.
             # Authenticated: full operational details.
@@ -601,6 +694,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         elif path == "/api/observation":
             self._send_json(_build_observation_response())
+
+        elif path == "/api/observation/strategies":
+            parsed = urlparse(self.path)
+            qs = parse_qs(parsed.query)
+            try:
+                hours = int(qs.get("hours", ["336"])[0])
+            except Exception:
+                hours = 336
+            self._send_json(_build_observation_strategies_response(hours=hours))
 
         elif path == "/api/observation/history":
             parsed = urlparse(self.path)
@@ -637,6 +739,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 )
             except Exception as e:
                 self._send_json({"error": "Observation export unavailable", "detail": str(e)}, 500)
+
+        elif path == "/api/observation/scan-detail":
+            parsed = urlparse(self.path)
+            qs = parse_qs(parsed.query)
+            try:
+                cycle = int(qs.get("cycle", ["0"])[0])
+            except Exception:
+                cycle = 0
+            self._send_json(_build_observation_scan_detail_response(cycle=cycle))
 
         elif path == "/api/state":
             if not self._check_auth():

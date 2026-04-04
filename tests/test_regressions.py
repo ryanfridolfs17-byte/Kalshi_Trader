@@ -1631,7 +1631,15 @@ class ObservationChallengerRegressionTests(unittest.TestCase):
 
     def test_soft_settlement_lock_challenger_builds_signal(self):
         engine = PaperChallengerEngine()
-        today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        class FixedSoftLockDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                base = datetime(2026, 4, 3, 15, 0, tzinfo=ZoneInfo("America/New_York"))
+                if tz is None:
+                    return base.replace(tzinfo=None)
+                return base.astimezone(tz)
+
+        today = "2026-04-03"
         signal = {
             "ticker": "KXHIGHTSEA-26MAR30-B52.5",
             "strategy": "S1-Weather",
@@ -1649,7 +1657,8 @@ class ObservationChallengerRegressionTests(unittest.TestCase):
         with patch.object(config, "ENABLE_OBSERVATION_CHALLENGER_STRATEGIES", True), \
                 patch.object(config, "PAPER_CHALLENGER_ALLOW_SOFT_SETTLEMENT_LOCK", True), \
                 patch.object(config, "PAPER_CHALLENGER_SOFT_LOCK_MIN_LOCAL_HOUR", 1), \
-                patch.object(config, "PAPER_CHALLENGER_SOFT_LOCK_MAX_PRICE_CENTS", 85):
+                patch.object(config, "PAPER_CHALLENGER_SOFT_LOCK_MAX_PRICE_CENTS", 85), \
+                patch("paper_challengers.datetime", FixedSoftLockDateTime):
             challengers = engine.generate({}, signal, todays_high=54, observation_mode=True)
         self.assertEqual(len(challengers), 1)
         self.assertEqual(challengers[0]["strategy"], "S5-SoftSettlementLockPaper")
@@ -1731,6 +1740,43 @@ class WeatherFetchWindowRegressionTests(unittest.TestCase):
 
 
 class ObservationDashboardRegressionTests(unittest.TestCase):
+
+    def test_observation_dashboard_route_serves_html(self):
+        server = dashboard.HTTPServer(("127.0.0.1", 0), dashboard.DashboardHandler)
+        thread = threading.Thread(target=server.handle_request, daemon=True)
+        thread.start()
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{server.server_port}/observation",
+                timeout=10,
+            ) as response:
+                body = response.read().decode("utf-8")
+            self.assertEqual(response.status, 200)
+            self.assertIn("Observation Dashboard", body)
+        finally:
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_observation_strategies_response_includes_daily_pnl_without_sqlite(self):
+        with patch.object(config, "OBSERVATION_ENABLE_SQLITE", False), \
+                patch.object(dashboard, "build_strategy_scorecards", return_value=[
+                    {"strategy": "S1-Weather", "label": "Weather", "net_profit_cents": 0}
+                ]):
+            payload = dashboard._build_observation_strategies_response(hours=24)
+
+        self.assertIn("generated_at", payload)
+        self.assertEqual(len(payload["scorecards"]), 1)
+        self.assertEqual(payload["scorecards"][0]["strategy"], "S1-Weather")
+        self.assertEqual(payload["scorecards"][0]["daily_pnl"], [])
+
+    def test_observation_scan_detail_response_handles_sqlite_disabled(self):
+        with patch.object(config, "OBSERVATION_ENABLE_SQLITE", False):
+            payload = dashboard._build_observation_scan_detail_response(cycle=7)
+
+        self.assertEqual(payload["cycle"], 7)
+        self.assertEqual(payload["count"], 0)
+        self.assertEqual(payload["decisions"], [])
+        self.assertEqual(payload["error"], "SQLite not available")
 
     def test_observation_response_includes_strategy_scorecards(self):
         with tempfile.TemporaryDirectory() as temp_dir:

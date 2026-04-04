@@ -343,6 +343,52 @@ class BotDatabase:
             ).fetchall()
         return [self._row_to_decision(row) for row in reversed(rows)]
 
+    def fetch_scan_decisions_by_cycle(self, cycle, limit=500):
+        cycle = _as_int(cycle)
+        limit = max(1, _as_int(limit))
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                    SELECT *
+                    FROM scan_decisions
+                    WHERE cycle = ?
+                    ORDER BY timestamp ASC, id ASC
+                    LIMIT ?
+                """,
+                (cycle, limit),
+            ).fetchall()
+        return [self._row_to_decision(row) for row in rows]
+
+    def fetch_strategy_daily_pnl(self, hours=336):
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(1, _as_int(hours)))).isoformat()
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                    SELECT
+                        strategy,
+                        substr(timestamp, 1, 10) AS trade_date,
+                        SUM(net_profit_cents) AS pnl_cents,
+                        SUM(CASE WHEN net_profit_cents > 0 THEN 1 ELSE 0 END) AS wins,
+                        SUM(CASE WHEN net_profit_cents < 0 THEN 1 ELSE 0 END) AS losses
+                    FROM paper_trade_events
+                    WHERE event_type = 'paper_trade_resolved'
+                      AND timestamp >= ?
+                    GROUP BY strategy, trade_date
+                    ORDER BY strategy ASC, trade_date ASC
+                """,
+                (cutoff,),
+            ).fetchall()
+        return [
+            {
+                "strategy": row["strategy"],
+                "date": row["trade_date"],
+                "pnl_cents": _as_int(row["pnl_cents"]),
+                "wins": _as_int(row["wins"]),
+                "losses": _as_int(row["losses"]),
+            }
+            for row in rows
+        ]
+
     @staticmethod
     def _row_to_scan_event(row):
         return {
