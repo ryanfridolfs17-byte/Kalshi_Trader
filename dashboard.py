@@ -486,9 +486,12 @@ def _build_observation_response():
         "scan": {
             "markets_scanned": scan_log.get("markets_scanned", 0),
             "signals_found": scan_log.get("signals_found", 0),
+            "candidate_signals_found": scan_log.get("candidate_signals_found", scan_log.get("signals_found", 0)),
             "trades_placed": scan_log.get("trades_placed", 0),
             "top_signals": (scan_log.get("top_signals", []) or [])[:10],
             "diag_skips": scan_log.get("diag_skips", {}),
+            "paper_blocked_reasons": scan_log.get("paper_blocked_reasons", {}),
+            "observation_health": scan_log.get("observation_health", {}),
             "weather_api_error": scan_log.get("weather_api_error"),
         },
         "paper_trades": {

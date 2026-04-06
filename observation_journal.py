@@ -116,6 +116,7 @@ class ObservationJournal:
         decisions,
         signals_found,
         trades_placed,
+        candidate_signals_found=None,
         skip_counts=None,
         null_count=0,
         evaluated_count=0,
@@ -135,6 +136,9 @@ class ObservationJournal:
             "observation_mode": bool(observation_mode),
             "markets_scanned": _as_int(markets_scanned),
             "signals_found": _as_int(signals_found),
+            "candidate_signals_found": _as_int(
+                signals_found if candidate_signals_found is None else candidate_signals_found
+            ),
             "trades_placed": _as_int(trades_placed),
             "diag_null": _as_int(null_count),
             "diag_evaluated": _as_int(evaluated_count),
@@ -460,6 +464,7 @@ class ObservationJournal:
             "scan_cycles": 0,
             "markets_scanned": 0,
             "signals_found": 0,
+            "candidate_signals_found": 0,
             "trades_placed_live": 0,
             "diag_null": 0,
             "diag_evaluated": 0,
@@ -488,6 +493,7 @@ class ObservationJournal:
                 summary["scan_cycles"] += 1
                 summary["markets_scanned"] += _as_int(event.get("markets_scanned", 0))
                 summary["signals_found"] += _as_int(event.get("signals_found", 0))
+                summary["candidate_signals_found"] += _as_int(event.get("candidate_signals_found", 0))
                 summary["trades_placed_live"] += _as_int(event.get("trades_placed", 0))
                 summary["diag_null"] += _as_int(event.get("diag_null", 0))
                 summary["diag_evaluated"] += _as_int(event.get("diag_evaluated", 0))
@@ -579,6 +585,7 @@ class ObservationJournal:
             "scan_cycles": 0,
             "markets_scanned": 0,
             "signals_found": 0,
+            "candidate_signals_found": 0,
             "trades_placed_live": 0,
             "diag_null": 0,
             "diag_evaluated": 0,
@@ -623,6 +630,7 @@ class ObservationJournal:
             row["scan_cycles"] += 1
             row["markets_scanned"] += _as_int(scan_event.get("markets_scanned", 0))
             row["signals_found"] += _as_int(scan_event.get("signals_found", 0))
+            row["candidate_signals_found"] += _as_int(scan_event.get("candidate_signals_found", 0))
             row["trades_placed_live"] += _as_int(scan_event.get("trades_placed", 0))
             row["diag_null"] += _as_int(scan_event.get("diag_null", 0))
             row["diag_evaluated"] += _as_int(scan_event.get("diag_evaluated", 0))

@@ -310,10 +310,13 @@ class WeatherEngine:
         cache_key = f"{city_code}_{target_date}{weights_key}{bias_key}{mbias_key}"
         pos_ttl = getattr(config, "DISTRIBUTION_CACHE_TTL", 900)
         in_window = _in_fetch_window()
+        stale_cached_data = None
         if cache_key in self._cache:
             cached = self._cache[cache_key]
             age = (datetime.now(timezone.utc) - cached["fetched_at"]).total_seconds()
             ttl = 60 if cached["data"] is None else pos_ttl
+            if cached["data"] is not None:
+                stale_cached_data = cached["data"]
             # Outside fetch window: return ANY cached data (even stale)
             if not in_window or age < ttl:
                 return cached["data"]
@@ -363,6 +366,9 @@ class WeatherEngine:
             print(f"  [WEATHER] WARN: thin ensemble for {city_code} ({total_members} members)")
 
         if not model_family_highs:
+            if stale_cached_data is not None:
+                print(f"  [WEATHER] {city_code}: using stale cached distribution after live fetch failure")
+                return stale_cached_data
             print(f"  [WEATHER] WARN: No ensemble data for {city_code} on {target_date}")
             # Negative cache: avoid re-hitting failed API for 60s
             self._cache[cache_key] = {
@@ -601,18 +607,27 @@ class WeatherEngine:
         ens_key = f"ens_{city.get('name','')}_{target_date}_{model}"
         pos_ttl = getattr(config, "ENSEMBLE_CACHE_TTL", 900)
         in_window = _in_fetch_window()
+        stale_cached_data = None
         if ens_key in self._cache:
             cached = self._cache[ens_key]
             age = (datetime.now(timezone.utc) - cached["fetched_at"]).total_seconds()
             ttl = 60 if cached["data"] is None else pos_ttl
+            if cached["data"] is not None:
+                stale_cached_data = cached["data"]
             if not in_window or age < ttl:
                 return cached["data"]
 
         # Outside fetch window with no cache: skip API call
         if not in_window:
-            return None
+            return stale_cached_data if stale_cached_data is not None else None
 
         result = self._fetch_ensemble_raw(city, target_date, model)
+        if result is None and stale_cached_data is not None:
+            print(
+                "  [WEATHER] %s: using stale cached ensemble for %s after live fetch failure"
+                % (model, city.get("name", "?"))
+            )
+            return stale_cached_data
         self._cache[ens_key] = {"data": result, "fetched_at": datetime.now(timezone.utc)}
         return result
 
@@ -728,15 +743,18 @@ class WeatherEngine:
         cc_key = f"cc_{city_code}_{target_date}"
         cc_ttl = getattr(config, "CLOUD_COVER_CACHE_TTL", 1800)
         in_window = _in_fetch_window()
+        stale_cached_data = None
         if cc_key in self._cloud_cache:
             cached = self._cloud_cache[cc_key]
             age = (datetime.now(timezone.utc) - cached["fetched_at"]).total_seconds()
+            if cached["data"] is not None:
+                stale_cached_data = cached["data"]
             if not in_window or age < cc_ttl:
                 return cached["data"]
 
         # Outside fetch window with no cache: skip API call
         if not in_window:
-            return None
+            return stale_cached_data if stale_cached_data is not None else None
 
         try:
             _cc_url = FORECAST_API
@@ -782,6 +800,9 @@ class WeatherEngine:
 
         except Exception as e:
             print(f"  [WEATHER] Cloud cover fetch error for {city_code}: {e}")
+            if stale_cached_data is not None:
+                print(f"  [WEATHER] {city_code}: using stale cached cloud data after fetch failure")
+                return stale_cached_data
             return None
 
     # ═══════════════════════════════════════════════════════

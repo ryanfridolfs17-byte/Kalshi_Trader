@@ -161,9 +161,9 @@ class Strategy:
                               city_code=city_code, target_date=target_date)
 
         # Step 3: Fetch ensemble distribution
-        model_weights, city_bias_correction, bias_blocked = self._get_learning_adjustments(city_code)
-        if bias_blocked:
-            return self._skip("city_bias_blocked", ticker,
+        model_weights, city_bias_correction, learning_block_reason = self._get_learning_adjustments(city_code)
+        if learning_block_reason:
+            return self._skip(learning_block_reason, ticker,
                               city_code=city_code, target_date=target_date)
         distribution = self.weather.get_temperature_distribution(
             city_code,
@@ -931,18 +931,18 @@ class Strategy:
         return contracts
 
     def _get_learning_adjustments(self, city_code):
-        """Return reviewer-driven model weights, city bias correction, and block flag.
+        """Return reviewer-driven model weights, bias correction, and block reason.
 
-        Returns (model_weights or None, city_bias_correction, blocked).
-        blocked=True when |learned bias| exceeds threshold, or when pattern
-        analysis shows a statistically losing city (<20% win rate, 5+ trades).
+        Returns (model_weights or None, city_bias_correction, block_reason).
+        block_reason is "" when trading is allowed, otherwise one of
+        "city_bias_blocked" or "city_pattern_blocked".
         """
         if not self.reviewer:
-            return None, 0.0, False
+            return None, 0.0, ""
 
         # Learning kill switch
         if not getattr(config, 'LEARNING_AUTO_APPLY', True):
-            return None, 0.0, False
+            return None, 0.0, ""
 
         min_pts = getattr(config, 'LEARNING_MIN_DATA_POINTS', 3)
 
@@ -986,7 +986,7 @@ class Strategy:
         if blocked:
             print("  [BIAS-BLOCK] %s bias=%.1fF count=%d — blocking trades" % (
                 city_code, city_bias, bias_count))
-            return weights or None, city_bias_correction, True
+            return weights or None, city_bias_correction, "city_bias_blocked"
 
         # Safety gate 2: block cities with <20% win rate (5+ trades)
         losing = self.reviewer.get_losing_patterns()
@@ -994,11 +994,11 @@ class Strategy:
             pat = losing[f"city:{city_code}"]
             print("  [PATTERN-BLOCK] %s city %dW/%dL (%.0f%%) — blocking" % (
                 city_code, pat["wins"], pat["losses"], pat["win_rate"] * 100))
-            return weights or None, city_bias_correction, True
+            return weights or None, city_bias_correction, "city_pattern_blocked"
 
         # Use learned weights if available, otherwise backtest-derived defaults
         final_weights = weights if weights else getattr(config, 'DEFAULT_MODEL_WEIGHTS', None)
-        return final_weights, city_bias_correction, False
+        return final_weights, city_bias_correction, ""
 
     # ===========================================================
     # UTILITY

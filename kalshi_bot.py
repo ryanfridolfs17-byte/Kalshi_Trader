@@ -135,6 +135,8 @@ def _log_cycle_audit(
     decisions,
     buy_signals,
     trades_placed,
+    signals_found=None,
+    candidate_signals_found=None,
     skip_counts=None,
     null_count=0,
     evaluated_count=0,
@@ -144,11 +146,14 @@ def _log_cycle_audit(
     paper_lock_signals=None,
 ):
     try:
+        effective_signals = len(buy_signals or []) if signals_found is None else int(signals_found or 0)
+        candidate_signals = len(buy_signals or []) if candidate_signals_found is None else int(candidate_signals_found or 0)
         journal.log_scan_cycle(
             cycle=cycle,
             markets_scanned=len(markets),
             decisions=decisions,
-            signals_found=len(buy_signals),
+            signals_found=effective_signals,
+            candidate_signals_found=candidate_signals,
             trades_placed=trades_placed,
             skip_counts=skip_counts or {},
             null_count=null_count,
@@ -603,6 +608,7 @@ def main(shutdown_event=None):
                                evaluated_count=len(all_evaluated),
                                weather_error=strategy.weather.last_api_error,
                                model_health=model_health,
+                               observation_health=getattr(intel, "last_observation_stats", {}),
                                s3_eval_stats=s3_eval_stats)
                 _log_cycle_audit(
                     journal=journal,
@@ -689,6 +695,7 @@ def main(shutdown_event=None):
                                evaluated_count=len(all_evaluated),
                                weather_error=strategy.weather.last_api_error,
                                model_health=model_health,
+                               observation_health=getattr(intel, "last_observation_stats", {}),
                                s3_eval_stats=s3_eval_stats)
                 _log_cycle_audit(
                     journal=journal,
@@ -777,6 +784,8 @@ def main(shutdown_event=None):
                     )
                     print("  [PAPER] Blocked paper entries: %s" % top_blocked)
                 final_logged_decisions = _finalize_observation_decisions(logged_decisions, paper_summary)
+                actionable_signals = len(paper_entries) + len(queued)
+                candidate_signals = len(buy_signals)
                 _capture_cycle_learning(
                     reviewer,
                     final_logged_decisions,
@@ -784,14 +793,20 @@ def main(shutdown_event=None):
                 )
                 print("  [SAFETY] Observation mode active - paper trading only, no live entries")
                 _write_bot_status(cycle, risk, intel, maker,
-                                len(buy_signals), 0, next_scan_seconds=scan_interval if 'scan_interval' in locals() else config.SCAN_INTERVAL)
+                                actionable_signals, 0,
+                                next_scan_seconds=scan_interval if 'scan_interval' in locals() else config.SCAN_INTERVAL,
+                                candidate_signals_count=candidate_signals)
                 paper_locks.print_eval_summary()
                 _save_scan_log(weather_markets, buy_signals, 0,
                               skip_counts=_skip_counts, null_count=_null_count,
                               evaluated_count=len(all_evaluated),
                               weather_error=strategy.weather.last_api_error,
                               model_health=strategy.weather.get_model_health(),
-                              s3_eval_stats=paper_locks.get_eval_stats())
+                              observation_health=getattr(intel, "last_observation_stats", {}),
+                              s3_eval_stats=paper_locks.get_eval_stats(),
+                              signals_found_count=actionable_signals,
+                              candidate_signals_count=candidate_signals,
+                              paper_blocked_reasons=blocked)
                 _log_cycle_audit(
                     journal=journal,
                     cycle=cycle,
@@ -799,6 +814,8 @@ def main(shutdown_event=None):
                     decisions=final_logged_decisions,
                     buy_signals=buy_signals,
                     trades_placed=0,
+                    signals_found=actionable_signals,
+                    candidate_signals_found=candidate_signals,
                     skip_counts=_skip_counts,
                     null_count=_null_count,
                     evaluated_count=len(all_evaluated),
@@ -873,17 +890,24 @@ def main(shutdown_event=None):
 
             # --- STEP 8: Write status ---
             final_logged_decisions = _merge_decision_updates(logged_decisions, submitted_signals)
+            actionable_signals = len(submitted_signals)
+            candidate_signals = len(buy_signals)
             _capture_cycle_learning(reviewer, final_logged_decisions, [])
             scan_interval = config.PEAK_SCAN_INTERVAL if config.PEAK_SCAN_START_ET <= hour_et <= config.PEAK_SCAN_END_ET else config.SCAN_INTERVAL
             _write_bot_status(cycle, risk, intel, maker,
-                            len(buy_signals), trades_this_cycle, next_scan_seconds=scan_interval)
+                            actionable_signals, trades_this_cycle,
+                            next_scan_seconds=scan_interval,
+                            candidate_signals_count=candidate_signals)
             paper_locks.print_eval_summary()
             _save_scan_log(weather_markets, buy_signals, trades_this_cycle,
                           skip_counts=_skip_counts, null_count=_null_count,
                           evaluated_count=len(all_evaluated),
                           weather_error=strategy.weather.last_api_error,
                           model_health=strategy.weather.get_model_health(),
-                          s3_eval_stats=paper_locks.get_eval_stats())
+                          observation_health=getattr(intel, "last_observation_stats", {}),
+                          s3_eval_stats=paper_locks.get_eval_stats(),
+                          signals_found_count=actionable_signals,
+                          candidate_signals_count=candidate_signals)
             _log_cycle_audit(
                 journal=journal,
                 cycle=cycle,
@@ -891,6 +915,8 @@ def main(shutdown_event=None):
                 decisions=final_logged_decisions,
                 buy_signals=buy_signals,
                 trades_placed=trades_this_cycle,
+                signals_found=actionable_signals,
+                candidate_signals_found=candidate_signals,
                 skip_counts=_skip_counts,
                 null_count=_null_count,
                 evaluated_count=len(all_evaluated),
@@ -1108,6 +1134,17 @@ def _fetch_observed_highs(markets, intel=None):
                 missing_desc,
             )
         )
+        if intel is not None:
+            intel.last_observation_stats = {
+                "et_hour": et_hour,
+                "checked_cities": checked_cities,
+                "observed_cities": sorted(obs_highs.keys()),
+                "missing_cities": missing_cities,
+                "checked_count": len(checked_cities),
+                "observed_count": len(obs_highs),
+                "missing_count": len(missing_cities),
+                "coverage_pct": round(100.0 * len(obs_highs) / len(checked_cities), 1) if checked_cities else 0.0,
+            }
 
     return obs_highs
 
@@ -1276,7 +1313,17 @@ def _save_trade_log(fill_info):
         print("  [BOT] Error saving trade log: %s" % e)
 
 
-def _write_bot_status(cycle, risk, intel, maker, signals_count, trades_count, next_scan_seconds=120):
+def _write_bot_status(
+    cycle,
+    risk,
+    intel,
+    maker,
+    signals_count,
+    trades_count,
+    next_scan_seconds=120,
+    candidate_signals_count=None,
+    observation_health=None,
+):
     """Write bot_status.json for dashboard."""
     try:
         rs = risk.get_state_summary()
@@ -1298,6 +1345,7 @@ def _write_bot_status(cycle, risk, intel, maker, signals_count, trades_count, ne
             "paper_challenger_max_signals_per_cycle": getattr(config, "PAPER_CHALLENGER_MAX_SIGNALS_PER_CYCLE", None),
             "paper_challenger_min_fee_adj_edge": getattr(config, "PAPER_CHALLENGER_MIN_FEE_ADJ_EDGE", None),
             "allow_off_hours_forecast_fetch": bool(getattr(config, "ALLOW_OFF_HOURS_FORECAST_FETCH", False)),
+            "open_meteo_api_key_configured": bool(getattr(config, "OPEN_METEO_API_KEY", "")),
             "observation_enable_recent_mirrors": bool(getattr(config, "OBSERVATION_ENABLE_RECENT_MIRRORS", True)),
             "observation_enable_sqlite": bool(getattr(config, "OBSERVATION_ENABLE_SQLITE", True)),
             "no_side_max_price_cents": getattr(config, "NO_SIDE_MAX_PRICE_CENTS", None),
@@ -1322,6 +1370,15 @@ def _write_bot_status(cycle, risk, intel, maker, signals_count, trades_count, ne
             "observation_reason": rs.get("observation_reason", ""),
             "open_orders": maker.get_open_order_count(),
             "signals_found": signals_count,
+            "candidate_signals_found": (
+                signals_count if candidate_signals_count is None
+                else int(candidate_signals_count or 0)
+            ),
+            "observation_health": dict(
+                observation_health
+                if observation_health is not None
+                else getattr(intel, "last_observation_stats", {}) or {}
+            ),
             "trades_placed": trades_count,
             "next_scan": (datetime.now(timezone.utc) + timedelta(seconds=next_scan_seconds)).isoformat(),
             "runtime_fingerprint": runtime_fingerprint,
@@ -1331,15 +1388,30 @@ def _write_bot_status(cycle, risk, intel, maker, signals_count, trades_count, ne
         print("  [ERROR] write_bot_status: %s" % e)
 
 
-def _save_scan_log(markets, signals, trades, skip_counts=None,
-                    null_count=0, evaluated_count=0, weather_error=None,
-                    model_health=None, s3_eval_stats=None):
+def _save_scan_log(
+    markets,
+    signals,
+    trades,
+    skip_counts=None,
+    null_count=0,
+    evaluated_count=0,
+    weather_error=None,
+    model_health=None,
+    s3_eval_stats=None,
+    signals_found_count=None,
+    candidate_signals_count=None,
+    paper_blocked_reasons=None,
+    observation_health=None,
+):
     """Write scan_log.json."""
     try:
+        effective_signals = len(signals or []) if signals_found_count is None else int(signals_found_count or 0)
+        candidate_signals = len(signals or []) if candidate_signals_count is None else int(candidate_signals_count or 0)
         log = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "markets_scanned": len(markets),
-            "signals_found": len(signals),
+            "signals_found": effective_signals,
+            "candidate_signals_found": candidate_signals,
             "trades_placed": trades,
             "top_signals": [
                 {
@@ -1353,8 +1425,10 @@ def _save_scan_log(markets, signals, trades, skip_counts=None,
             "diag_null": null_count,
             "diag_evaluated": evaluated_count,
             "diag_skips": skip_counts or {},
+            "paper_blocked_reasons": dict(paper_blocked_reasons or {}),
             "weather_api_error": weather_error,
             "model_health": model_health or {},
+            "observation_health": dict(observation_health or {}),
             "s3_eval_stats": s3_eval_stats or {},
         }
         config.atomic_json_save(config.SCAN_LOG_FILE, log)

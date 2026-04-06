@@ -59,6 +59,7 @@ class TradeIntelligence:
         self.weather = weather_engine
         self._obs_cache = {}
         self._obs_diag_logged = {}
+        self.last_observation_stats = {}
         self.pnl_data = self._load_pnl()
 
     # =====================================================
@@ -1297,6 +1298,8 @@ class TradeIntelligence:
         cities = self._get_cities()
         if not cities or city_code not in cities:
             return None
+        tz_name = cities[city_code].get("timezone", "America/New_York")
+        local_date = datetime.now(ZoneInfo(tz_name)).strftime("%Y-%m-%d")
         cache_key = f"obs_{station}"
         obs_cache_ttl = 120
         cached = self._get_cached(cache_key, max_age_sec=obs_cache_ttl)
@@ -1316,7 +1319,7 @@ class TradeIntelligence:
         if nws_high is None:
             nws_high = self._fetch_nws_todays_high(city_code, station)
             if nws_high is not None:
-                self._set_cached(nws_cache_key, nws_high)
+                self._set_cached(nws_cache_key, nws_high, local_date=local_date)
 
         # Cross-check: use conservative value when sources disagree
         if metar_high is not None and nws_high is not None:
@@ -1330,6 +1333,32 @@ class TradeIntelligence:
         elif nws_high is not None:
             result = nws_high
         else:
+            stale_obs = self._get_cached(
+                cache_key,
+                max_age_sec=obs_cache_ttl,
+                allow_stale_same_day=True,
+                local_date=local_date,
+            )
+            if stale_obs is not None:
+                if self._should_emit_obs_diag(f"obs_stale_{station}", max_age_sec=obs_cache_ttl):
+                    print(
+                        "  [OBS-STALE] %s: using same-day cached obs=%sF after live fetch miss"
+                        % (city_code, stale_obs)
+                    )
+                return stale_obs
+            stale_nws = self._get_cached(
+                nws_cache_key,
+                max_age_sec=obs_cache_ttl,
+                allow_stale_same_day=True,
+                local_date=local_date,
+            )
+            if stale_nws is not None:
+                if self._should_emit_obs_diag(f"nws_obs_stale_{station}", max_age_sec=obs_cache_ttl):
+                    print(
+                        "  [OBS-STALE] %s: using same-day cached NWS obs=%sF after live fetch miss"
+                        % (city_code, stale_nws)
+                    )
+                return stale_nws
             if self._should_emit_obs_diag(f"obs_miss_{station}", max_age_sec=obs_cache_ttl):
                 print(
                     "  [OBS-MISS] %s: metar=None nws=None (station=%s)"
@@ -1337,7 +1366,7 @@ class TradeIntelligence:
                 )
             return None
 
-        self._set_cached(cache_key, result)
+        self._set_cached(cache_key, result, local_date=local_date)
         return result
 
     def _fetch_nws_todays_high(self, city_code, station):
@@ -1569,18 +1598,28 @@ class TradeIntelligence:
         except Exception as e:
             print(f"  [SETTLE] get_market({ticker}) error: {e}")
 
-    def _get_cached(self, key, max_age_sec=120):
-        "Return cached value if fresh enough, else None."
+    def _get_cached(self, key, max_age_sec=120, allow_stale_same_day=False, local_date=None):
+        "Return cached value if fresh enough, else optionally stale same-day data."
         if key in self._obs_cache:
             entry = self._obs_cache[key]
             age = (datetime.now(timezone.utc) - entry["fetched_at"]).total_seconds()
             if age < max_age_sec:
                 return entry["data"]
+            if (
+                allow_stale_same_day
+                and local_date
+                and entry.get("local_date") == local_date
+            ):
+                return entry["data"]
         return None
 
-    def _set_cached(self, key, data):
+    def _set_cached(self, key, data, local_date=None):
         "Store data in observation cache."
-        self._obs_cache[key] = {"data": data, "fetched_at": datetime.now(timezone.utc)}
+        self._obs_cache[key] = {
+            "data": data,
+            "fetched_at": datetime.now(timezone.utc),
+            "local_date": local_date,
+        }
         # Prune stale entries to prevent unbounded memory growth
         if len(self._obs_cache) > 200:
             cutoff = datetime.now(timezone.utc) - timedelta(hours=6)
