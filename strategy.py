@@ -34,6 +34,16 @@ class Strategy:
         self.confirmer = SignalConfirmer()
         self.reviewer = reviewer
         self.balance_cents = config.BALANCE_FALLBACK_CENTS
+        self.observation_mode = False
+
+    def _paper_filters_relaxed(self):
+        return bool(
+            getattr(self, "observation_mode", False)
+            and getattr(config, "PAPER_STRATEGY_RELAX_FILTERS", False)
+        )
+
+    def _paper_override_enabled(self, flag_name):
+        return bool(self._paper_filters_relaxed() and getattr(config, flag_name, False))
 
     @staticmethod
     def _describe_bet(side, temp_low, temp_high):
@@ -259,23 +269,36 @@ class Strategy:
             return self._skip(reason, ticker, **fields)
 
         # Block same-day trades before 6 AM local -- overnight forecasts are stale
-        if not is_next_day and local_hour < 6:
+        if (
+            not is_next_day
+            and local_hour < 6
+            and not self._paper_override_enabled("PAPER_ALLOW_BEFORE_6AM_DIRECTIONAL_TRADES")
+        ):
             return _side_skip("before_6am_local")
 
         if (
             is_next_day
             and not getattr(config, "ALLOW_NEXT_DAY_DIRECTIONAL_TRADES", False)
+            and not self._paper_override_enabled("PAPER_ALLOW_NEXT_DAY_DIRECTIONAL_TRADES")
             and not allow_next_day_directional_override
         ):
             return _side_skip("next_day_directional_blocked")
 
-        if is_threshold_market and not getattr(config, "ALLOW_THRESHOLD_DIRECTIONAL_TRADES", False):
+        if (
+            is_threshold_market
+            and not getattr(config, "ALLOW_THRESHOLD_DIRECTIONAL_TRADES", False)
+            and not self._paper_override_enabled("PAPER_ALLOW_THRESHOLD_DIRECTIONAL_TRADES")
+        ):
             return _side_skip("threshold_directional_blocked")
 
         # Block ALL YES-side trades. Data: YES 1W/17L (-$23), NO 2W/1L (+$4).
         # Favourite-longshot bias (Whelan 2025): cheap YES contracts lose more than
         # price implies. Only profitable path is NO-side + CASE 1 confirmed.
-        if side == "yes" and not getattr(config, "ALLOW_YES_SIDE_TRADES", False):
+        if (
+            side == "yes"
+            and not getattr(config, "ALLOW_YES_SIDE_TRADES", False)
+            and not self._paper_override_enabled("PAPER_ALLOW_YES_SIDE_TRADES")
+        ):
             return _side_skip("yes_side_blocked")
 
         # Direction sanity check: forecast mean must not strongly contradict bet.
@@ -303,7 +326,12 @@ class Strategy:
         # Block same-day directional trades before noon local.
         # Data: morning 19W/24L (-$17), afternoon 18W/0L (+$10.71).
         # CASE 1 confirmed outcomes bypass (checked earlier at _check_confirmed_outcome).
-        if not is_next_day and local_hour is not None and local_hour < 12:
+        if (
+            not is_next_day
+            and local_hour is not None
+            and local_hour < 12
+            and not self._paper_override_enabled("PAPER_ALLOW_BEFORE_NOON_DIRECTIONAL_TRADES")
+        ):
             return _side_skip("before_noon_directional")
 
         # Convergence score (same-day afternoon only)
@@ -318,6 +346,11 @@ class Strategy:
             local_hour=local_hour if not is_next_day else None,
             convergence_score=convergence_score,
             city_code=city_code, target_date=target_date)
+        if self._paper_filters_relaxed():
+            min_edge *= max(
+                0.0,
+                float(getattr(config, "PAPER_EDGE_THRESHOLD_MULTIPLIER", 1.0) or 1.0),
+            )
         # Deferred edge check: afternoon CONFIRM trades get a lower 4% threshold.
         # We don't know the verdict yet (confirmation runs at Step 8), so if edge
         # is between AFTERNOON_CONFIRM_MIN_EDGE and min_edge, defer the rejection.
@@ -332,19 +365,44 @@ class Strategy:
             else:
                 return _side_skip("edge_below_threshold",
                                   min_edge_required=round(min_edge, 4))
-        if fee_adjusted_edge < config.FEE_ADJUSTED_MIN_EDGE:
+        fee_adj_min_edge = float(
+            getattr(config, "PAPER_FEE_ADJ_MIN_EDGE", config.FEE_ADJUSTED_MIN_EDGE)
+            if self._paper_filters_relaxed()
+            else config.FEE_ADJUSTED_MIN_EDGE
+        )
+        if fee_adjusted_edge < fee_adj_min_edge:
             return _side_skip("fee_adj_edge_below_threshold")
 
         # Price guardrails
-        if price_cents < config.LONGSHOT_FLOOR_CENTS:
+        longshot_floor = int(
+            getattr(config, "PAPER_LONGSHOT_FLOOR_CENTS", config.LONGSHOT_FLOOR_CENTS)
+            if self._paper_filters_relaxed()
+            else config.LONGSHOT_FLOOR_CENTS
+        )
+        near_certainty_cap = int(
+            getattr(config, "PAPER_NEAR_CERTAINTY_CAP_CENTS", config.NEAR_CERTAINTY_CAP_CENTS)
+            if self._paper_filters_relaxed()
+            else config.NEAR_CERTAINTY_CAP_CENTS
+        )
+        if price_cents < longshot_floor:
             return _side_skip("longshot_floor")
-        if price_cents > config.NEAR_CERTAINTY_CAP_CENTS:
+        if price_cents > near_certainty_cap:
             return _side_skip("near_certainty_cap")
 
         # Model divergence check (side-aware)
-        if side == "yes" and model_spread > config.MAX_MODEL_DIVERGENCE_YES_F:
+        max_divergence_yes = float(
+            getattr(config, "PAPER_MAX_MODEL_DIVERGENCE_YES_F", config.MAX_MODEL_DIVERGENCE_YES_F)
+            if self._paper_filters_relaxed()
+            else config.MAX_MODEL_DIVERGENCE_YES_F
+        )
+        max_divergence_no = float(
+            getattr(config, "PAPER_MAX_MODEL_DIVERGENCE_NO_F", config.MAX_MODEL_DIVERGENCE_NO_F)
+            if self._paper_filters_relaxed()
+            else config.MAX_MODEL_DIVERGENCE_NO_F
+        )
+        if side == "yes" and model_spread > max_divergence_yes:
             return _side_skip("model_divergence_yes")
-        if side == "no" and model_spread > config.MAX_MODEL_DIVERGENCE_NO_F:
+        if side == "no" and model_spread > max_divergence_no:
             return _side_skip("model_divergence_no")
 
         # Step 8: Confirm signal
@@ -366,7 +424,11 @@ class Strategy:
 
         # Block STRONG verdict: 2W/13L (-$3.42). Ensemble overconfidence + NWS
         # agreement doesn't overcome the favourite-longshot bias.
-        if verdict == "STRONG" and not getattr(config, "ALLOW_STRONG_VERDICTS", False):
+        if (
+            verdict == "STRONG"
+            and not getattr(config, "ALLOW_STRONG_VERDICTS", False)
+            and not self._paper_override_enabled("PAPER_ALLOW_STRONG_VERDICTS")
+        ):
             return _side_skip("strong_verdict_blocked",
                               confirmation_verdict="STRONG")
 
@@ -704,6 +766,9 @@ class Strategy:
         2. Price cap: NO >= 50c = reject
         3. Model divergence already checked in caller
         """
+        if self._paper_override_enabled("PAPER_IGNORE_NO_SIDE_GUARDS"):
+            return True, ""
+
         # Price cap (>= to match NO_SIDE_SIZING_MULTIPLIER check)
         if price_cents >= config.NO_SIDE_MAX_PRICE_CENTS:
             return False, (f"NO price {price_cents}c >= "
@@ -761,6 +826,9 @@ class Strategy:
         (2F) = 50% sizing, UNLESS the contract is expensive (>50c) — then
         a 1F rounding error means total loss on an expensive bet.
         """
+        if self._paper_override_enabled("PAPER_IGNORE_ROUNDING_BUFFER"):
+            return 1.0
+
         if side == "no":
             eff_low = temp_low - config.ROUNDING_BUFFER_HARD_F
             eff_high = temp_high + config.ROUNDING_BUFFER_HARD_F
@@ -979,6 +1047,11 @@ class Strategy:
                     city_code, raw_correction, city_bias_correction, bias_count))
         else:
             city_bias_correction = 0.0
+
+        ignore_learning_blocks = self._paper_override_enabled("PAPER_IGNORE_LEARNING_BLOCKS")
+        if ignore_learning_blocks:
+            final_weights = weights if weights else getattr(config, 'DEFAULT_MODEL_WEIGHTS', None)
+            return final_weights, city_bias_correction, ""
 
         # Safety gate 1: block city if learned bias is extreme (model is broken)
         blocked = (abs(city_bias) > config.CITY_BIAS_BLOCK_THRESHOLD_F

@@ -394,6 +394,7 @@ def main(shutdown_event=None):
             balance = risk._get_balance_cents()
             strategy_balance = _effective_strategy_balance_cents(risk, balance)
             strategy.balance_cents = strategy_balance
+            strategy.observation_mode = risk.is_observation_mode()
             if risk.is_observation_mode() and strategy_balance != balance:
                 print("  [BOT] Live balance: $%.2f | Paper bankroll: $%.2f" % (
                     balance / 100.0,
@@ -1364,6 +1365,18 @@ def _write_bot_status(
             "paper_use_separate_bankroll": bool(getattr(config, "PAPER_USE_SEPARATE_BANKROLL", False)),
             "paper_bankroll_cents": getattr(config, "PAPER_BANKROLL_CENTS", None),
             "paper_ignore_risk_gates": bool(getattr(config, "PAPER_IGNORE_RISK_GATES", False)),
+            "paper_strategy_relax_filters": bool(getattr(config, "PAPER_STRATEGY_RELAX_FILTERS", False)),
+            "paper_ignore_learning_blocks": bool(getattr(config, "PAPER_IGNORE_LEARNING_BLOCKS", False)),
+            "paper_allow_before_6am_directional_trades": bool(getattr(config, "PAPER_ALLOW_BEFORE_6AM_DIRECTIONAL_TRADES", False)),
+            "paper_allow_before_noon_directional_trades": bool(getattr(config, "PAPER_ALLOW_BEFORE_NOON_DIRECTIONAL_TRADES", False)),
+            "paper_allow_next_day_directional_trades": bool(getattr(config, "PAPER_ALLOW_NEXT_DAY_DIRECTIONAL_TRADES", False)),
+            "paper_allow_threshold_directional_trades": bool(getattr(config, "PAPER_ALLOW_THRESHOLD_DIRECTIONAL_TRADES", False)),
+            "paper_allow_yes_side_trades": bool(getattr(config, "PAPER_ALLOW_YES_SIDE_TRADES", False)),
+            "paper_allow_strong_verdicts": bool(getattr(config, "PAPER_ALLOW_STRONG_VERDICTS", False)),
+            "paper_ignore_no_side_guards": bool(getattr(config, "PAPER_IGNORE_NO_SIDE_GUARDS", False)),
+            "paper_ignore_rounding_buffer": bool(getattr(config, "PAPER_IGNORE_ROUNDING_BUFFER", False)),
+            "paper_edge_threshold_multiplier": getattr(config, "PAPER_EDGE_THRESHOLD_MULTIPLIER", None),
+            "paper_fee_adj_min_edge": getattr(config, "PAPER_FEE_ADJ_MIN_EDGE", None),
             "paper_max_trades_per_cycle": getattr(config, "PAPER_MAX_TRADES_PER_CYCLE", None),
             "paper_challenger_max_signals_per_cycle": getattr(config, "PAPER_CHALLENGER_MAX_SIGNALS_PER_CYCLE", None),
             "paper_challenger_max_per_city": getattr(config, "PAPER_CHALLENGER_MAX_PER_CITY", None),
