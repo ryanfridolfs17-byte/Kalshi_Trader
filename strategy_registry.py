@@ -135,17 +135,11 @@ class StrategyRegistry:
         if not candidates:
             return []
 
-        max_total = max(
-            0,
-            int(getattr(config, "PAPER_CHALLENGER_MAX_SIGNALS_PER_CYCLE", 2) or 2),
-        )
-        if max_total <= 0:
-            return []
+        raw_max_total = int(getattr(config, "PAPER_CHALLENGER_MAX_SIGNALS_PER_CYCLE", 0) or 0)
+        max_total = raw_max_total if raw_max_total > 0 else None
 
-        max_per_city = max(
-            1,
-            int(getattr(config, "PAPER_CHALLENGER_MAX_PER_CITY", 1) or 1),
-        )
+        raw_max_per_city = int(getattr(config, "PAPER_CHALLENGER_MAX_PER_CITY", 0) or 0)
+        max_per_city = raw_max_per_city if raw_max_per_city > 0 else None
         existing_tickers = {
             row.get("ticker", "")
             for row in existing_signals or []
@@ -167,13 +161,13 @@ class StrategyRegistry:
             if not ticker or ticker in seen_tickers:
                 continue
             city_code = candidate.get("city_code", "")
-            if city_code and city_counts.get(city_code, 0) >= max_per_city:
+            if city_code and max_per_city is not None and city_counts.get(city_code, 0) >= max_per_city:
                 continue
             selected.append(candidate)
             seen_tickers.add(ticker)
             if city_code:
                 city_counts[city_code] = city_counts.get(city_code, 0) + 1
-            if len(selected) >= max_total:
+            if max_total is not None and len(selected) >= max_total:
                 break
         return selected
 

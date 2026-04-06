@@ -70,14 +70,17 @@ class ObservationPaperTrader:
             cycle=cycle,
             opened_at=now_iso,
         )
-        effective_max_per_cycle = max(0, int(max_per_cycle or 0) - len(filled_pending))
+        raw_max_per_cycle = int(max_per_cycle or 0)
+        effective_max_per_cycle = None
+        if raw_max_per_cycle > 0:
+            effective_max_per_cycle = max(0, raw_max_per_cycle - len(filled_pending))
         placed_this_cycle = []
         executed = []
         queued = []
         blocked_signals = []
 
         for signal in signals:
-            if len(placed_this_cycle) >= effective_max_per_cycle:
+            if effective_max_per_cycle is not None and len(placed_this_cycle) >= effective_max_per_cycle:
                 blocked_reasons["per_cycle_limit"] += 1
                 blocked_signals.append(self._build_blocked_signal(signal, "per_cycle_limit"))
                 continue
@@ -282,6 +285,9 @@ class ObservationPaperTrader:
             return False, "paper_position_exists"
         if self._has_pending_ticker(ticker):
             return False, "paper_pending_exists"
+
+        if getattr(config, "PAPER_IGNORE_RISK_GATES", False):
+            return True, dict(entry_order)
 
         shadow = self._build_shadow_risk(balance_cents, live_risk)
         risk_signal = build_risk_signal(entry_order, same_cycle=same_cycle)

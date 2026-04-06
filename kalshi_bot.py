@@ -59,6 +59,16 @@ def _build_market_price_map(markets):
     return price_map
 
 
+def _effective_strategy_balance_cents(risk, live_balance_cents=None):
+    live_balance = int(
+        risk._get_balance_cents() if live_balance_cents is None else live_balance_cents
+    )
+    if risk.is_observation_mode() and getattr(config, "PAPER_USE_SEPARATE_BANKROLL", False):
+        paper_balance = int(getattr(config, "PAPER_BANKROLL_CENTS", live_balance) or live_balance)
+        return max(0, paper_balance)
+    return live_balance
+
+
 def _decision_key(row):
     return (
         row.get("ticker", ""),
@@ -379,10 +389,18 @@ def main(shutdown_event=None):
             print("  Cycle %d | %s ET%s" % (cycle, ts, _window_tag))
             print("-" * 50)
 
-            # Update strategy balance from risk manager (single source)
+            # Live account balance and observation-mode paper bankroll are tracked
+            # separately so paper sizing can run independently of the live wallet.
             balance = risk._get_balance_cents()
-            strategy.balance_cents = balance
-            print("  [BOT] Balance: $%.2f" % (balance / 100.0))
+            strategy_balance = _effective_strategy_balance_cents(risk, balance)
+            strategy.balance_cents = strategy_balance
+            if risk.is_observation_mode() and strategy_balance != balance:
+                print("  [BOT] Live balance: $%.2f | Paper bankroll: $%.2f" % (
+                    balance / 100.0,
+                    strategy_balance / 100.0,
+                ))
+            else:
+                print("  [BOT] Balance: $%.2f" % (strategy_balance / 100.0))
 
             # Morning retry: catch overnight NWS updates for West Coast
             if hour_et == 6:
@@ -523,7 +541,7 @@ def main(shutdown_event=None):
             strategy_results = strategy_registry.evaluate_markets(
                 weather_markets,
                 observed_highs=obs_highs,
-                balance_cents=balance,
+                balance_cents=strategy_balance,
                 observation_mode=risk.is_observation_mode(),
             )
             buy_signals = strategy_results["buy_signals"]
@@ -567,7 +585,8 @@ def main(shutdown_event=None):
             except Exception as e:
                 print("  [ERROR] bucket inconsistency detection: %s" % e)
 
-            max_per_cycle = 3  # Prevent concentrated losses (data: 6 trades in 22min, all lost)
+            live_max_per_cycle = 3
+            paper_max_per_cycle = int(getattr(config, "PAPER_MAX_TRADES_PER_CYCLE", 0) or 0)
             market_price_map = _build_market_price_map(weather_markets)
 
             if not buy_signals:
@@ -577,10 +596,10 @@ def main(shutdown_event=None):
                     paper_summary = paper_trader.record_observation_cycle(
                         [],
                         cycle=cycle,
-                        balance_cents=balance,
+                        balance_cents=strategy_balance,
                         market_prices=market_price_map,
                         live_risk=risk,
-                        max_per_cycle=max_per_cycle,
+                        max_per_cycle=paper_max_per_cycle,
                     )
                     filled_pending = paper_summary.get("filled_pending", [])
                     if filled_pending:
@@ -659,10 +678,10 @@ def main(shutdown_event=None):
                     paper_summary = paper_trader.record_observation_cycle(
                         [],
                         cycle=cycle,
-                        balance_cents=balance,
+                        balance_cents=strategy_balance,
                         market_prices=market_price_map,
                         live_risk=risk,
-                        max_per_cycle=max_per_cycle,
+                        max_per_cycle=paper_max_per_cycle,
                     )
                     filled_pending = paper_summary.get("filled_pending", [])
                     if filled_pending:
@@ -733,10 +752,10 @@ def main(shutdown_event=None):
                 paper_summary = paper_trader.record_observation_cycle(
                     buy_signals,
                     cycle=cycle,
-                    balance_cents=balance,
+                    balance_cents=strategy_balance,
                     market_prices=market_price_map,
                     live_risk=risk,
-                    max_per_cycle=max_per_cycle,
+                    max_per_cycle=paper_max_per_cycle,
                 )
                 paper_entries = paper_summary.get("executed", [])
                 filled_pending = paper_summary.get("filled_pending", [])
@@ -843,8 +862,8 @@ def main(shutdown_event=None):
             trades_this_cycle = 0
             submitted_signals = []
             for signal in buy_signals:
-                if trades_this_cycle >= max_per_cycle:
-                    print("  [BOT] Per-cycle limit reached (%d trades), deferring rest" % max_per_cycle)
+                if trades_this_cycle >= live_max_per_cycle:
+                    print("  [BOT] Per-cycle limit reached (%d trades), deferring rest" % live_max_per_cycle)
                     break
                 ticker = signal.get("ticker", "")
                 edge = signal.get("edge", 0)
@@ -1342,8 +1361,14 @@ def _write_bot_status(
             "settlement_lock_min_local_hour": getattr(config, "SETTLEMENT_LOCK_MIN_LOCAL_HOUR", None),
             "settlement_lock_max_price_cents": getattr(config, "SETTLEMENT_LOCK_MAX_PRICE_CENTS", None),
             "enable_observation_challenger_strategies": bool(getattr(config, "ENABLE_OBSERVATION_CHALLENGER_STRATEGIES", False)),
+            "paper_use_separate_bankroll": bool(getattr(config, "PAPER_USE_SEPARATE_BANKROLL", False)),
+            "paper_bankroll_cents": getattr(config, "PAPER_BANKROLL_CENTS", None),
+            "paper_ignore_risk_gates": bool(getattr(config, "PAPER_IGNORE_RISK_GATES", False)),
+            "paper_max_trades_per_cycle": getattr(config, "PAPER_MAX_TRADES_PER_CYCLE", None),
             "paper_challenger_max_signals_per_cycle": getattr(config, "PAPER_CHALLENGER_MAX_SIGNALS_PER_CYCLE", None),
+            "paper_challenger_max_per_city": getattr(config, "PAPER_CHALLENGER_MAX_PER_CITY", None),
             "paper_challenger_min_fee_adj_edge": getattr(config, "PAPER_CHALLENGER_MIN_FEE_ADJ_EDGE", None),
+            "paper_strategy_autokill_enabled": bool(getattr(config, "PAPER_STRATEGY_AUTOKILL_ENABLED", False)),
             "allow_off_hours_forecast_fetch": bool(getattr(config, "ALLOW_OFF_HOURS_FORECAST_FETCH", False)),
             "open_meteo_api_key_configured": bool(getattr(config, "OPEN_METEO_API_KEY", "")),
             "observation_enable_recent_mirrors": bool(getattr(config, "OBSERVATION_ENABLE_RECENT_MIRRORS", True)),
@@ -1360,6 +1385,7 @@ def _write_bot_status(
             "environment": config.ENVIRONMENT,
             "dry_run": config.DRY_RUN,
             "balance_cents": balance,
+            "strategy_balance_cents": _effective_strategy_balance_cents(risk, balance),
             "account_pnl_cents": account_pnl,
             "daily_pnl_cents": rs.get("daily_pnl_cents", 0),
             "open_positions": rs.get("open_positions", 0),

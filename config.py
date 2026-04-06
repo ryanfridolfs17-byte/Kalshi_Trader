@@ -335,11 +335,30 @@ ENABLE_OBSERVATION_CHALLENGER_STRATEGIES = os.environ.get(
     "ENABLE_OBSERVATION_CHALLENGER_STRATEGIES",
     "true" if ENVIRONMENT == "production" else "false"
 ).lower() == "true"
+# Observation-mode paper account defaults to a large standalone bankroll and
+# relaxed entry gating so we can measure broader paper performance without
+# affecting live risk controls.
+PAPER_USE_SEPARATE_BANKROLL = os.environ.get(
+    "PAPER_USE_SEPARATE_BANKROLL",
+    "true"
+).lower() == "true"
+PAPER_BANKROLL_CENTS = int(
+    os.environ.get("PAPER_BANKROLL_CENTS", "1000000")
+)
+PAPER_IGNORE_RISK_GATES = os.environ.get(
+    "PAPER_IGNORE_RISK_GATES",
+    "true"
+).lower() == "true"
+# 0 = unlimited paper entries per scan cycle.
+PAPER_MAX_TRADES_PER_CYCLE = int(
+    os.environ.get("PAPER_MAX_TRADES_PER_CYCLE", "0")
+)
+# 0 = no paper challenger cap for total signals or per-city concentration.
 PAPER_CHALLENGER_MAX_SIGNALS_PER_CYCLE = int(
-    os.environ.get("PAPER_CHALLENGER_MAX_SIGNALS_PER_CYCLE", "2")
+    os.environ.get("PAPER_CHALLENGER_MAX_SIGNALS_PER_CYCLE", "0")
 )
 PAPER_CHALLENGER_MAX_PER_CITY = int(
-    os.environ.get("PAPER_CHALLENGER_MAX_PER_CITY", "1")
+    os.environ.get("PAPER_CHALLENGER_MAX_PER_CITY", "0")
 )
 PAPER_CHALLENGER_MIN_PRICE_CENTS = int(
     os.environ.get("PAPER_CHALLENGER_MIN_PRICE_CENTS", "35")
@@ -352,7 +371,7 @@ PAPER_CHALLENGER_MIN_FEE_ADJ_EDGE = float(
 )
 PAPER_CHALLENGER_ALLOW_NEXT_DAY_NO = os.environ.get(
     "PAPER_CHALLENGER_ALLOW_NEXT_DAY_NO",
-    "false"
+    "true"
 ).lower() == "true"
 PAPER_CHALLENGER_ALLOW_TIGHT_NEXT_DAY_NO = os.environ.get(
     "PAPER_CHALLENGER_ALLOW_TIGHT_NEXT_DAY_NO",
@@ -376,7 +395,7 @@ PAPER_CHALLENGER_ALLOW_SOFT_SETTLEMENT_LOCK = os.environ.get(
 ).lower() == "true"
 PAPER_STRATEGY_AUTOKILL_ENABLED = os.environ.get(
     "PAPER_STRATEGY_AUTOKILL_ENABLED",
-    "true"
+    "false"
 ).lower() == "true"
 PAPER_STRATEGY_AUTOKILL_MIN_RESOLVED = int(
     os.environ.get("PAPER_STRATEGY_AUTOKILL_MIN_RESOLVED", "5")
