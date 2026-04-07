@@ -382,11 +382,7 @@ def main(shutdown_event=None):
             print()
             print("-" * 50)
             ts = now_et.strftime("%Y-%m-%d %H:%M:%S")
-            _fetch_start = getattr(config, "OPEN_METEO_FETCH_START_ET", 8)
-            _fetch_end = getattr(config, "OPEN_METEO_FETCH_END_ET", 18)
-            _in_window = _fetch_start <= hour_et < _fetch_end
-            _window_tag = "" if _in_window else " | OUTSIDE FETCH WINDOW"
-            print("  Cycle %d | %s ET%s" % (cycle, ts, _window_tag))
+            print("  Cycle %d | %s ET" % (cycle, ts))
             print("-" * 50)
 
             # Live account balance and observation-mode paper bankroll are tracked
@@ -395,6 +391,8 @@ def main(shutdown_event=None):
             strategy_balance = _effective_strategy_balance_cents(risk, balance)
             strategy.balance_cents = strategy_balance
             strategy.observation_mode = risk.is_observation_mode()
+            if getattr(strategy, "weather", None):
+                strategy.weather.last_api_error = None
             if risk.is_observation_mode() and strategy_balance != balance:
                 print("  [BOT] Live balance: $%.2f | Paper bankroll: $%.2f" % (
                     balance / 100.0,
@@ -1382,8 +1380,7 @@ def _write_bot_status(
             "paper_challenger_max_per_city": getattr(config, "PAPER_CHALLENGER_MAX_PER_CITY", None),
             "paper_challenger_min_fee_adj_edge": getattr(config, "PAPER_CHALLENGER_MIN_FEE_ADJ_EDGE", None),
             "paper_strategy_autokill_enabled": bool(getattr(config, "PAPER_STRATEGY_AUTOKILL_ENABLED", False)),
-            "allow_off_hours_forecast_fetch": bool(getattr(config, "ALLOW_OFF_HOURS_FORECAST_FETCH", False)),
-            "open_meteo_api_key_configured": bool(getattr(config, "OPEN_METEO_API_KEY", "")),
+            "forecast_stack": "nws_native",
             "observation_enable_recent_mirrors": bool(getattr(config, "OBSERVATION_ENABLE_RECENT_MIRRORS", True)),
             "observation_enable_sqlite": bool(getattr(config, "OBSERVATION_ENABLE_SQLITE", True)),
             "no_side_max_price_cents": getattr(config, "NO_SIDE_MAX_PRICE_CENTS", None),

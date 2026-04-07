@@ -182,9 +182,7 @@ class Strategy:
             city_bias_f=city_bias_correction,
         )
         if not distribution:
-            from weather_engine import _in_fetch_window
-            reason = "outside_fetch_window" if not _in_fetch_window() else "ensemble_fetch_failed"
-            return self._skip(reason, ticker,
+            return self._skip("forecast_fetch_failed", ticker,
                               city_code=city_code, target_date=target_date)
 
         # Step 4: Calculate bucket probability
@@ -414,6 +412,8 @@ class Strategy:
             temp_high=temp_high,
             ensemble_prob=our_prob,
             market_price_cents=ref_price,
+            distribution=distribution,
+            todays_high=todays_high,
         )
         verdict = confirmation["verdict"]
         conf_mult = confirmation["size_multiplier"]
@@ -1015,38 +1015,29 @@ class Strategy:
         min_pts = getattr(config, 'LEARNING_MIN_DATA_POINTS', 3)
 
         model_data = self.reviewer.get_model_weights().get(city_code, {})
+        supported_keys = set(getattr(config, "DEFAULT_MODEL_WEIGHTS", {}).keys())
         model_key_map = {
-            "GFS": "gfs_ensemble",
-            "ECMWF": "ecmwf_ifs",
-            "ICON": "icon_eps",
-            "GEM": "gem_ensemble",
+            "NWS Daily": "nws_daily",
+            "NWS Hourly": "nws_hourly",
+            "NWS Grid Daily": "nws_grid_daily",
+            "NWS Grid Hourly": "nws_grid_hourly",
+            "Observation Blend": "obs_blend",
         }
 
         weights = {}
         for model_name, payload in model_data.items():
-            quant_key = model_key_map.get(model_name)
+            quant_key = model_key_map.get(model_name, model_name if model_name in supported_keys else None)
             if not quant_key:
                 continue
             weight = payload.get("weight") if isinstance(payload, dict) else None
             if weight is not None:
                 weights[quant_key] = weight
 
-        bias_payload = self.reviewer.get_city_biases().get(city_code, {})
-        city_bias = bias_payload.get("bias", 0.0) if isinstance(bias_payload, dict) else 0.0
-        bias_count = bias_payload.get("count", 0) if isinstance(bias_payload, dict) else 0
-
-        # Only apply bias correction if we have enough data points
-        # AND cap at ±3F — backtest shows no city has >2.2F true bias.
-        # Larger corrections from small samples are noise, not signal.
-        max_bias_correction = getattr(config, 'MAX_BIAS_CORRECTION_F', 3.0)
-        if bias_count >= min_pts:
-            raw_correction = -float(city_bias or 0.0)
-            city_bias_correction = max(-max_bias_correction, min(max_bias_correction, raw_correction))
-            if abs(raw_correction) > max_bias_correction:
-                print("  [BIAS-CAP] %s correction capped: %.1fF -> %.1fF (count=%d)" % (
-                    city_code, raw_correction, city_bias_correction, bias_count))
-        else:
-            city_bias_correction = 0.0
+        # The old city-bias corrections were learned against the Open-Meteo ensemble
+        # stack. Do not carry those directly into the NWS-native forecast engine.
+        city_bias = 0.0
+        bias_count = 0
+        city_bias_correction = 0.0
 
         ignore_learning_blocks = self._paper_override_enabled("PAPER_IGNORE_LEARNING_BLOCKS")
         if ignore_learning_blocks:

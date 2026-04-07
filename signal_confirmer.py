@@ -1,287 +1,115 @@
 """
-SIGNAL CONFIRMATION ENGINE v4.0
+SIGNAL CONFIRMATION ENGINE v5.0
 ================================
-5-source voting system with NWS veto power.
-Returns STRONG, CONFIRM, or REJECT (WEAK eliminated -- 0% win rate).
-
-Sources:
-  1. NWS/GFS HRRR   -- US deterministic (Open-Meteo)
-  2. ECMWF IFS       -- European deterministic (Open-Meteo)
-  3. DWD ICON        -- German model (Open-Meteo)
-  4. GEM Canada      -- Canadian model (Open-Meteo)
-  5. NWS Point Fcst  -- Settlement source, veto power (api.weather.gov)
-
-Verdicts:
-  STRONG:  3+ models agree + NWS agrees  -> 1.5x sizing
-  CONFIRM: 2+ agree, NWS neutral/abstain -> 1.0x sizing
-  REJECT:  NWS disagrees OR majority disagree -> 0.0x (skip)
+Confirms signals from the NWS-native forecast stack already built by
+weather_engine.py. This avoids duplicate network fetches and removes the
+old Open-Meteo dependency from confirmation.
 """
-
-import requests
-import time
-from datetime import datetime
-import config
-from weather_engine import _in_fetch_window
-
-# Open-Meteo deterministic endpoints — switch to customer API if key is set
-_OM_KEY = getattr(config, "OPEN_METEO_API_KEY", "")
-_BASE = "https://customer-api.open-meteo.com/v1" if _OM_KEY else "https://api.open-meteo.com/v1"
-_MODEL_APIS = {
-    "nws_gfs": {
-        "url": f"{_BASE}/forecast",
-        "name": "NWS/GFS HRRR",
-    },
-    "ecmwf": {
-        "url": f"{_BASE}/ecmwf",
-        "name": "ECMWF IFS",
-    },
-    "icon": {
-        "url": f"{_BASE}/dwd-icon",
-        "name": "DWD ICON",
-    },
-    "gem": {
-        "url": f"{_BASE}/gem",
-        "name": "GEM Canada",
-    },
-}
-
-# Cache durations (seconds)
-_MODEL_CACHE_TTL = 7200   # 120 min for deterministic forecasts (models update every 6h)
-_NWS_CACHE_TTL = 3600     # 60 min for NWS point forecast
-
-# Gray zone: forecast within this many deg F of bucket edge -> ABSTAIN
-_MODEL_GRAY_ZONE_F = 1.5
-_NWS_GRAY_ZONE_F = 1.5
 
 
 class SignalConfirmer:
-    """Confirms or rejects trading signals via 5-source independent voting."""
+    """Confirms or rejects trading signals via NWS-native source voting."""
 
-    def __init__(self):
-        self._cache = {}  # {cache_key: (timestamp, result)}
-
-    def confirm_signal(self, city_info, target_date, temp_low, temp_high,
-                       our_prob=None, market_price_cents=0,
-                       ensemble_prob=None):
-        """
-        Poll 5 independent sources and return a confirmation verdict.
-
-        Args:
-            city_info: dict with name, lat, lon, station, tz
-            target_date: "YYYY-MM-DD"
-            temp_low: lower bound of temperature bucket (deg F)
-            temp_high: upper bound of temperature bucket (deg F)
-            our_prob: our ensemble probability (0.0-1.0)
-            market_price_cents: Kalshi market price in cents (0-100)
-            ensemble_prob: alias for our_prob (backward compat)
-
-        Returns:
-            dict with verdict, size_multiplier, votes, details, nws_agrees
-        """
-        # Support legacy callers that pass ensemble_prob=
+    def confirm_signal(
+        self,
+        city_info,
+        target_date,
+        temp_low,
+        temp_high,
+        our_prob=None,
+        market_price_cents=0,
+        ensemble_prob=None,
+        distribution=None,
+        todays_high=None,
+    ):
         if our_prob is None:
             our_prob = ensemble_prob if ensemble_prob is not None else 0.5
+
         votes = {}
         details = {}
+        model_means = dict((distribution or {}).get("model_means", {}) or {})
 
-        # --- 4 model sources from Open-Meteo ---
-        for key, info in _MODEL_APIS.items():
-            high = self._get_deterministic_high(key, city_info, target_date)
+        for source_name, high in model_means.items():
             if high is None:
-                votes[key] = "ABSTAIN"
-                details[key] = f"{info['name']}: no data -> ABSTAIN"
+                votes[source_name] = "ABSTAIN"
+                details[source_name] = "%s: no data -> ABSTAIN" % source_name
                 continue
-            vote = self._cast_vote(high, temp_low, temp_high, our_prob,
-                                   gray_zone=_MODEL_GRAY_ZONE_F)
-            votes[key] = vote
-            details[key] = f"{info['name']}: {high}F [{temp_low}-{temp_high}] -> {vote}"
+            vote = self._cast_vote(high, temp_low, temp_high, our_prob, gray_zone=1.5)
+            votes[source_name] = vote
+            details[source_name] = "%s: %.1fF [%s-%s] -> %s" % (
+                source_name,
+                float(high),
+                temp_low,
+                temp_high,
+                vote,
+            )
 
-        # --- 5th source: NWS point forecast (settlement authority) ---
-        nws_high = self._get_nws_point_forecast(city_info, target_date)
-        if nws_high is None:
-            votes["nws_point"] = "ABSTAIN"
-            details["nws_point"] = "NWS Point: no data -> ABSTAIN"
-        else:
-            vote = self._cast_vote(nws_high, temp_low, temp_high, our_prob,
-                                   gray_zone=_NWS_GRAY_ZONE_F)
-            votes["nws_point"] = vote
-            details["nws_point"] = f"NWS Point: {nws_high}F [{temp_low}-{temp_high}] -> {vote}"
+        if todays_high is not None:
+            obs_vote = self._cast_observation_vote(float(todays_high), temp_low, temp_high, our_prob)
+            votes["ObservedHigh"] = obs_vote
+            details["ObservedHigh"] = "Observed high: %.1fF [%s-%s] -> %s" % (
+                float(todays_high),
+                temp_low,
+                temp_high,
+                obs_vote,
+            )
 
-        # --- Tally ---
-        agree = sum(1 for v in votes.values() if v == "AGREE")
-        disagree = sum(1 for v in votes.values() if v == "DISAGREE")
-        nws_vote = votes.get("nws_point", "ABSTAIN")
-        nws_agrees = (nws_vote == "AGREE")
+        agree = sum(1 for vote in votes.values() if vote == "AGREE")
+        disagree = sum(1 for vote in votes.values() if vote == "DISAGREE")
+        anchor_agrees = votes.get("NWS Daily") == "AGREE"
+        non_abstain = sum(1 for vote in votes.values() if vote != "ABSTAIN")
 
-        # --- Verdict logic ---
-        # NWS is the settlement authority. If NWS disagrees, ALWAYS reject.
-        # See git d706490: same pattern as REJECT bypass (0/6 win rate).
-        if nws_vote == "DISAGREE":
+        if non_abstain == 0:
             verdict, mult = "REJECT", 0.0
-            summary = f"NWS DISAGREE ({agree} models agree, irrelevant) -> REJECT"
+            summary = "No forecast sources voted -> REJECT"
         elif disagree > agree:
             verdict, mult = "REJECT", 0.0
-            summary = f"Majority disagree ({disagree}>{agree}) -> REJECT"
-        elif agree >= 3 and nws_agrees:
+            summary = "Majority disagree (%d>%d) -> REJECT" % (disagree, agree)
+        elif agree >= 3:
             verdict, mult = "STRONG", 1.5
-            summary = f"{agree}/5 agree + NWS agrees -> STRONG"
+            summary = "%d sources agree -> STRONG" % agree
         elif agree >= 2:
             verdict, mult = "CONFIRM", 1.0
-            nws_note = "+ NWS agrees" if nws_agrees else "(NWS abstains)"
-            summary = f"{agree}/5 agree {nws_note} -> CONFIRM"
-        elif agree >= 1 and disagree == 0:
-            # Require 2+ sources actually voted (not ABSTAIN) for cautious confirm
-            non_abstain = sum(1 for v in votes.values() if v != "ABSTAIN")
-            if non_abstain >= 2:
-                verdict, mult = "CONFIRM", 0.8
-                summary = f"{agree}/5 agree, 0 disagree ({non_abstain} voted) -> CONFIRM (cautious)"
-            else:
-                # Only 1 source returned data — too fragile
-                verdict, mult = "REJECT", 0.0
-                summary = f"Only {non_abstain} source(s) voted -> REJECT (insufficient data)"
+            summary = "%d sources agree -> CONFIRM" % agree
+        elif agree >= 1 and disagree == 0 and non_abstain >= 2:
+            verdict, mult = "CONFIRM", 0.8
+            summary = "%d source agrees, %d voted -> CONFIRM (cautious)" % (agree, non_abstain)
         else:
             verdict, mult = "REJECT", 0.0
-            summary = f"Only {agree}/5 agree, {disagree} disagree -> REJECT"
+            summary = "Only %d agree, %d disagree -> REJECT" % (agree, disagree)
 
         city_name = city_info.get("name", "?")
-        print(f"    [CONFIRM] {city_name} {target_date}: {summary}")
+        print("    [CONFIRM] %s %s: %s" % (city_name, target_date, summary))
 
         return {
             "verdict": verdict,
             "size_multiplier": mult,
             "votes": votes,
             "details": details,
-            "nws_agrees": nws_agrees,
+            "nws_agrees": anchor_agrees,
             "agree_count": agree,
             "disagree_count": disagree,
             "summary": summary,
         }
 
-    def _get_deterministic_high(self, source_key, city_info, target_date):
-        """
-        Fetch a single model's predicted daily high from Open-Meteo.
+    def _cast_vote(self, forecast_high, temp_low, temp_high, our_prob, gray_zone=1.5):
+        is_yes_signal = our_prob >= 0.5
+        if temp_low <= forecast_high <= temp_high:
+            return "AGREE" if is_yes_signal else "DISAGREE"
 
-        Returns temperature in deg F (rounded int) or None.
-        """
-        cache_key = f"{source_key}_{city_info.get('name', '')}_{target_date}"
-        cached = self._cache.get(cache_key)
-        in_window = _in_fetch_window()
-        if cached:
-            ts, temp = cached
-            # Outside window: return stale cache regardless of age
-            if not in_window or time.time() - ts < _MODEL_CACHE_TTL:
-                return temp
+        distance = min(abs(forecast_high - temp_low), abs(forecast_high - temp_high))
+        if distance <= gray_zone:
+            return "ABSTAIN"
 
-        # Outside fetch window with no cache: skip API call
-        if not in_window:
-            return None
+        return "DISAGREE" if is_yes_signal else "AGREE"
 
-        api_url = _MODEL_APIS[source_key]["url"]
-        try:
-            _params = {
-                "latitude": city_info["lat"],
-                "longitude": city_info["lon"],
-                "daily": "temperature_2m_max",
-                "temperature_unit": "fahrenheit",
-                "timezone": "auto",
-                "forecast_days": 3,
-            }
-            if _OM_KEY:
-                _params["apikey"] = _OM_KEY
-            resp = requests.get(api_url, params=_params, timeout=15)
-            if resp.status_code != 200:
-                return None
+    def _cast_observation_vote(self, observed_high, temp_low, temp_high, our_prob):
+        is_yes_signal = our_prob >= 0.5
 
-            data = resp.json()
-            dates = data.get("daily", {}).get("time", [])
-            temps = data.get("daily", {}).get("temperature_2m_max", [])
-
-            for i, d in enumerate(dates):
-                if d == target_date and i < len(temps) and temps[i] is not None:
-                    temp = round(temps[i])
-                    self._cache[cache_key] = (time.time(), temp)
-                    return temp
-        except Exception as e:
-            print("  [CONFIRMER] %s fetch failed for %s: %s" % (source_key, city_info.get("name", "?"), e))
-        return None
-
-    def _get_nws_point_forecast(self, city_info, target_date):
-        """
-        Fetch NWS point forecast (two-step: gridpoint lookup -> forecast).
-
-        Returns predicted daily high in deg F (int) or None.
-        """
-        station = city_info.get("nws_station", "")
-        cache_key = f"nws_point_{station}_{target_date}"
-        cached = self._cache.get(cache_key)
-        if cached:
-            ts, temp = cached
-            if time.time() - ts < _NWS_CACHE_TTL:
-                return temp
-
-        headers = {
-            "User-Agent": "KalshiBot/4.0 (weather-trading-bot)",
-            "Accept": "application/geo+json",
-        }
-        try:
-            # Step 1: resolve lat/lon to forecast grid URL
-            points_url = f"https://api.weather.gov/points/{city_info['lat']},{city_info['lon']}"
-            r1 = requests.get(points_url, headers=headers, timeout=15)
-            if r1.status_code != 200:
-                return None
-            forecast_url = r1.json().get("properties", {}).get("forecast")
-            if not forecast_url:
-                return None
-
-            # Step 2: get period forecasts, find matching daytime period
-            r2 = requests.get(forecast_url, headers=headers, timeout=15)
-            if r2.status_code != 200:
-                return None
-            periods = r2.json().get("properties", {}).get("periods", [])
-            for period in periods:
-                start = period.get("startTime", "")
-                if target_date in start and period.get("isDaytime", False):
-                    temp = period.get("temperature")
-                    if temp is not None:
-                        self._cache[cache_key] = (time.time(), int(temp))
-                        return int(temp)
-        except Exception as e:
-            print("  [CONFIRMER] NWS point forecast failed for %s: %s" % (city_info.get("name", "?"), e))
-        return None
-
-    def _cast_vote(self, forecast_high, temp_low, temp_high, our_prob,
-                   gray_zone=2.0):
-        """
-        Determine whether a forecast agrees with our signal.
-
-        Returns 'AGREE', 'DISAGREE', or 'ABSTAIN'.
-
-        YES signal (our_prob > 0.5): we think temp lands IN bucket.
-          - Forecast in bucket -> AGREE
-          - Forecast outside but within gray_zone of edge -> ABSTAIN
-          - Forecast clearly outside -> DISAGREE
-
-        NO signal (our_prob <= 0.5): we think temp lands OUTSIDE bucket.
-          - Forecast outside bucket by > gray_zone -> AGREE
-          - Forecast within gray_zone of edge -> ABSTAIN
-          - Forecast in bucket -> DISAGREE
-        """
-        in_bucket = temp_low <= forecast_high <= temp_high
-        dist_to_edge = min(abs(forecast_high - temp_low),
-                           abs(forecast_high - temp_high))
-        is_yes = our_prob >= 0.5
-
-        if is_yes:
-            if in_bucket:
-                return "AGREE"
-            elif dist_to_edge <= gray_zone:
-                return "ABSTAIN"
-            else:
-                return "DISAGREE"
-        else:  # NO signal
-            if in_bucket:
-                return "DISAGREE"  # In-bucket contradicts NO thesis
-            else:
-                if dist_to_edge <= gray_zone:
-                    return "ABSTAIN"
-                return "AGREE"
+        if observed_high > temp_high:
+            return "DISAGREE" if is_yes_signal else "AGREE"
+        if observed_high < temp_low:
+            return "ABSTAIN"
+        if temp_low <= observed_high <= temp_high:
+            return "AGREE" if is_yes_signal else "ABSTAIN"
+        return "ABSTAIN"

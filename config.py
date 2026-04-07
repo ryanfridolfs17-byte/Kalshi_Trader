@@ -140,10 +140,10 @@ MAX_BIAS_CORRECTION_F = 3.0          # Cap learned bias at ±3F (backtest: no ci
 # GFS: 1.8F MAE, 0.0 bias. ECMWF: 3.0F MAE. GEM: 2.8F MAE. ICON: no backtest data.
 # Used when no per-city learned weights available. Learned weights override when sufficient data.
 DEFAULT_MODEL_WEIGHTS = {
-    "gfs_ensemble": 0.375,   # 1.8x weight of others (best model for all 20 cities)
-    "ecmwf_ifs": 0.208,
-    "icon_eps": 0.208,       # No backtest data; assume ECMWF-equivalent
-    "gem_ensemble": 0.208,
+    "nws_daily": 0.30,
+    "nws_hourly": 0.25,
+    "nws_grid_daily": 0.25,
+    "nws_grid_hourly": 0.20,
 }
 
 # === SEASONAL EDGE MULTIPLIERS (backtest: March 2.7F MAE vs Oct 2.0F) ===
