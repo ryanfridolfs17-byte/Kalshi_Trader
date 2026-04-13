@@ -25,6 +25,83 @@ def _no_price_cents(source):
 
 class PaperChallengerEngine:
     @staticmethod
+    def _paper_contracts_from_signal(signal, default_contracts=1):
+        contracts = int(
+            (signal or {}).get(
+                "suggested_contracts",
+                (signal or {}).get("contracts", (signal or {}).get("requested_contracts", 0)),
+            ) or 0
+        )
+        if contracts > 0:
+            return contracts
+        return max(1, int(default_contracts or 1))
+
+    @staticmethod
+    def _paper_kelly_contracts(
+        *,
+        win_prob,
+        price_cents,
+        balance_cents,
+        confirmation_multiplier=1.0,
+        model_spread=None,
+        is_confirmed=False,
+        is_arb=False,
+    ):
+        if price_cents <= 0 or balance_cents <= 0:
+            return 0
+        if balance_cents < 500:
+            return 0
+
+        prob_win = min(0.99, max(0.01, float(win_prob)))
+        gross_payout = 100 - int(price_cents)
+        net_payout = gross_payout * (1.0 - config.KALSHI_FEE_PCT)
+        cost = int(price_cents)
+        if net_payout <= 0:
+            return 0
+
+        kelly = ((prob_win * net_payout) - ((1.0 - prob_win) * cost)) / net_payout
+        if kelly <= 0:
+            return 0
+
+        fraction = kelly * max(0.0, float(confirmation_multiplier or 0.0))
+        if model_spread is not None and model_spread > 0:
+            fraction *= 1.0 / (1.0 + max(0.0, model_spread) / 5.0)
+
+        bet_cents = fraction * int(balance_cents)
+        if is_arb:
+            max_pct = float(getattr(config, "PAPER_ARB_POSITION_PCT", config.ARB_POSITION_PCT) or config.ARB_POSITION_PCT)
+        elif is_confirmed:
+            max_pct = float(
+                getattr(config, "PAPER_CONFIRMED_POSITION_PCT", config.CONFIRMED_POSITION_PCT)
+                or config.CONFIRMED_POSITION_PCT
+            )
+        else:
+            max_pct = float(
+                getattr(config, "PAPER_MAX_POSITION_PCT", config.MAX_POSITION_PCT)
+                or config.MAX_POSITION_PCT
+            )
+        max_bet = int(balance_cents) * max_pct
+        max_abs = int(
+            getattr(config, "PAPER_MAX_PER_TICKER_CENTS", config.MAX_PER_TICKER_CENTS)
+            or config.MAX_PER_TICKER_CENTS
+        )
+        max_contracts = int(
+            getattr(config, "PAPER_MAX_CONTRACTS_PER_TICKER", config.MAX_CONTRACTS_PER_TICKER)
+            or config.MAX_CONTRACTS_PER_TICKER
+        )
+
+        bet_cents = min(bet_cents, max_bet)
+        if max_abs > 0:
+            bet_cents = min(bet_cents, max_abs)
+
+        contracts = int(bet_cents / cost)
+        if contracts <= 0:
+            return 0
+        if max_contracts > 0:
+            contracts = min(contracts, max_contracts)
+        return contracts
+
+    @staticmethod
     def _paper_strategy_blockers(strategy_id, strategy_statuses=None):
         if not strategy_id:
             return []
@@ -48,6 +125,7 @@ class PaperChallengerEngine:
         observation_mode=False,
         next_day_shadow_signal=None,
         strategy_statuses=None,
+        balance_cents=None,
     ):
         if not observation_mode or not getattr(config, "ENABLE_OBSERVATION_CHALLENGER_STRATEGIES", False):
             return []
@@ -57,6 +135,7 @@ class PaperChallengerEngine:
             weather_signal,
             shadow_signal=next_day_shadow_signal,
             strategy_statuses=strategy_statuses,
+            balance_cents=balance_cents,
         )
         if next_day:
             challengers.append(next_day)
@@ -65,6 +144,7 @@ class PaperChallengerEngine:
             weather_signal,
             shadow_signal=next_day_shadow_signal,
             strategy_statuses=strategy_statuses,
+            balance_cents=balance_cents,
         )
         if tight_next_day:
             challengers.append(tight_next_day)
@@ -73,6 +153,7 @@ class PaperChallengerEngine:
             weather_signal,
             todays_high=todays_high,
             strategy_statuses=strategy_statuses,
+            balance_cents=balance_cents,
         )
         if soft_lock:
             challengers.append(soft_lock)
@@ -80,13 +161,20 @@ class PaperChallengerEngine:
         afternoon_no = self._build_afternoon_no_sweet_spot(
             weather_signal,
             strategy_statuses=strategy_statuses,
+            balance_cents=balance_cents,
         )
         if afternoon_no:
             challengers.append(afternoon_no)
 
         return challengers
 
-    def _build_next_day_no_challenger(self, signal, shadow_signal=None, strategy_statuses=None):
+    def _build_next_day_no_challenger(
+        self,
+        signal,
+        shadow_signal=None,
+        strategy_statuses=None,
+        balance_cents=None,
+    ):
         if not getattr(config, "PAPER_CHALLENGER_ALLOW_NEXT_DAY_NO", False):
             return None
         if self._paper_strategy_blockers("S4-NextDayNoPaper", strategy_statuses):
@@ -113,14 +201,16 @@ class PaperChallengerEngine:
         fee_adj_edge = float(shadow_signal.get("fee_adjusted_edge", 0) or 0)
         if fee_adj_edge < float(getattr(config, "PAPER_CHALLENGER_MIN_FEE_ADJ_EDGE", 0.05) or 0.05):
             return None
+        contracts = self._paper_contracts_from_signal(shadow_signal)
 
         challenger = dict(shadow_signal)
         challenger.update({
             "signal": "buy",
             "strategy": "S4-NextDayNoPaper",
             "execution_style": "taker",
-            "suggested_contracts": 1,
-            "contracts": 1,
+            "suggested_contracts": contracts,
+            "contracts": contracts,
+            "requested_contracts": contracts,
             "current_price_cents": price_cents,
             "entry_price_cents": price_cents,
             "limit_price_cents": price_cents,
@@ -140,7 +230,13 @@ class PaperChallengerEngine:
         })
         return challenger
 
-    def _build_tight_next_day_no_challenger(self, signal, shadow_signal=None, strategy_statuses=None):
+    def _build_tight_next_day_no_challenger(
+        self,
+        signal,
+        shadow_signal=None,
+        strategy_statuses=None,
+        balance_cents=None,
+    ):
         if not getattr(config, "PAPER_CHALLENGER_ALLOW_TIGHT_NEXT_DAY_NO", False):
             return None
         if self._paper_strategy_blockers("S6-TightNextDayNoPaper", strategy_statuses):
@@ -174,14 +270,16 @@ class PaperChallengerEngine:
 
         if str(shadow_signal.get("confirmation_verdict", "") or "").upper() != "CONFIRM":
             return None
+        contracts = self._paper_contracts_from_signal(shadow_signal)
 
         challenger = dict(shadow_signal)
         challenger.update({
             "signal": "buy",
             "strategy": "S6-TightNextDayNoPaper",
             "execution_style": "taker",
-            "suggested_contracts": 1,
-            "contracts": 1,
+            "suggested_contracts": contracts,
+            "contracts": contracts,
+            "requested_contracts": contracts,
             "current_price_cents": price_cents,
             "entry_price_cents": price_cents,
             "limit_price_cents": price_cents,
@@ -201,7 +299,13 @@ class PaperChallengerEngine:
         })
         return challenger
 
-    def _build_soft_settlement_lock(self, signal, todays_high=None, strategy_statuses=None):
+    def _build_soft_settlement_lock(
+        self,
+        signal,
+        todays_high=None,
+        strategy_statuses=None,
+        balance_cents=None,
+    ):
         if not getattr(config, "PAPER_CHALLENGER_ALLOW_SOFT_SETTLEMENT_LOCK", False):
             return None
         if self._paper_strategy_blockers("S5-SoftSettlementLockPaper", strategy_statuses):
@@ -258,6 +362,14 @@ class PaperChallengerEngine:
         )
         if fee_adj_edge <= 0:
             return None
+        contracts = self._paper_kelly_contracts(
+            win_prob=our_prob_no,
+            price_cents=price_cents,
+            balance_cents=int(balance_cents or 0),
+            is_confirmed=True,
+        )
+        if contracts <= 0:
+            contracts = 1
 
         return {
             "signal": "buy",
@@ -265,8 +377,9 @@ class PaperChallengerEngine:
             "side": "no",
             "strategy": "S5-SoftSettlementLockPaper",
             "execution_style": "taker",
-            "suggested_contracts": 1,
-            "contracts": 1,
+            "suggested_contracts": contracts,
+            "contracts": contracts,
+            "requested_contracts": contracts,
             "price_cents": price_cents,
             "current_price_cents": price_cents,
             "entry_price_cents": price_cents,
@@ -295,7 +408,7 @@ class PaperChallengerEngine:
             ),
         }
 
-    def _build_afternoon_no_sweet_spot(self, signal, strategy_statuses=None):
+    def _build_afternoon_no_sweet_spot(self, signal, strategy_statuses=None, balance_cents=None):
         """S7: Paper challenger targeting the historically profitable afternoon NO profile.
 
         Triggers on enriched skip signals from the main weather strategy where the
@@ -384,6 +497,15 @@ class PaperChallengerEngine:
             return None
         if fee_adj_edge < min_fee_adj:
             return None
+        contracts = self._paper_kelly_contracts(
+            win_prob=no_win_prob,
+            price_cents=price_cents,
+            balance_cents=int(balance_cents or 0),
+            confirmation_multiplier=1.0,
+            model_spread=signal.get("model_spread"),
+        )
+        if contracts <= 0:
+            contracts = 1
 
         return {
             "signal": "buy",
@@ -391,8 +513,9 @@ class PaperChallengerEngine:
             "side": "no",
             "strategy": "S7-AfternoonNOSweetSpot",
             "execution_style": "taker",
-            "suggested_contracts": 1,
-            "contracts": 1,
+            "suggested_contracts": contracts,
+            "contracts": contracts,
+            "requested_contracts": contracts,
             "price_cents": price_cents,
             "current_price_cents": price_cents,
             "entry_price_cents": price_cents,

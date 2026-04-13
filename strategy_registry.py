@@ -293,6 +293,7 @@ class StrategyRegistry:
                             observation_mode=observation_mode,
                             next_day_shadow_signal=shadow_signal,
                             strategy_statuses=strategy_statuses,
+                            balance_cents=balance_cents,
                         )
                     )
 

@@ -382,10 +382,14 @@ class Strategy:
             if self._paper_filters_relaxed()
             else config.NEAR_CERTAINTY_CAP_CENTS
         )
-        if price_cents < longshot_floor:
-            return _side_skip("longshot_floor")
-        if price_cents > near_certainty_cap:
-            return _side_skip("near_certainty_cap")
+        # These are YES-side guardrails only. Applying them to NO-side trades
+        # suppresses cheap favorites and expensive favorites that our data treats
+        # very differently from cheap YES longshots.
+        if side == "yes":
+            if price_cents < longshot_floor:
+                return _side_skip("longshot_floor")
+            if price_cents > near_certainty_cap:
+                return _side_skip("near_certainty_cap")
 
         # Model divergence check (side-aware)
         max_divergence_yes = float(
@@ -763,15 +767,15 @@ class Strategy:
         1. Dynamic separation: max(2.0F, std_dev * 0.6)
            - NO-side expands bucket by +/-1F for NWS rounding
            - CONFIRM gets 1.25x penalty
-        2. Price cap: NO >= 50c = reject
+        2. Price cap: NO above the configured max = reject
         3. Model divergence already checked in caller
         """
         if self._paper_override_enabled("PAPER_IGNORE_NO_SIDE_GUARDS"):
             return True, ""
 
-        # Price cap (>= to match NO_SIDE_SIZING_MULTIPLIER check)
-        if price_cents >= config.NO_SIDE_MAX_PRICE_CENTS:
-            return False, (f"NO price {price_cents}c >= "
+        # Treat the configured value as an inclusive max.
+        if price_cents > config.NO_SIDE_MAX_PRICE_CENTS:
+            return False, (f"NO price {price_cents}c > "
                            f"{config.NO_SIDE_MAX_PRICE_CENTS}c cap")
 
         # Dynamic separation from expanded bucket
@@ -924,7 +928,7 @@ class Strategy:
         return max(0.0, raw_edge - fee_frac)
 
     # ===========================================================
-    # QUARTER-KELLY SIZING
+    # KELLY SIZING
     # ===========================================================
 
     def _kelly_size(self, edge, win_prob, price_cents, balance_cents,
@@ -959,19 +963,30 @@ class Strategy:
         if kelly <= 0:
             return 0
 
-        # Continuous Kelly divisor: raw edge 5% -> 6.0, raw edge 15%+ -> 4.0
-        # Edge capped at 15% — data: 0-10% edge = 96% win rate, 20%+ = 21%.
-        # High edge = ensemble overconfidence, NOT real edge. Treat as 15% max.
-        divisor_edge = raw_edge if raw_edge is not None else edge
-        divisor_edge = min(divisor_edge, 0.15)  # Was 0.40. Favourite-longshot: high edge = overconfident.
-        divisor = max(3.0, min(6.0, 6.0 - (divisor_edge - 0.05) * 20.0))
+        use_paper_bankroll_overrides = bool(
+            getattr(self, "observation_mode", False)
+            and getattr(config, "PAPER_USE_SEPARATE_BANKROLL", False)
+        )
+        use_full_paper_kelly = bool(
+            use_paper_bankroll_overrides
+            and getattr(config, "PAPER_USE_FULL_KELLY_SIZING", False)
+        )
 
-        fraction = kelly / divisor * confirmation_multiplier
+        if use_full_paper_kelly:
+            fraction = kelly * confirmation_multiplier
+        else:
+            # Continuous Kelly divisor: raw edge 5% -> 6.0, raw edge 15%+ -> 4.0
+            # Edge capped at 15% — data: 0-10% edge = 96% win rate, 20%+ = 21%.
+            # High edge = ensemble overconfidence, NOT real edge. Treat as 15% max.
+            divisor_edge = raw_edge if raw_edge is not None else edge
+            divisor_edge = min(divisor_edge, 0.15)
+            divisor = max(3.0, min(6.0, 6.0 - (divisor_edge - 0.05) * 20.0))
+            fraction = kelly / divisor * confirmation_multiplier
 
-        # High-edge penalty: >20% raw edge gets 50% size reduction.
-        # Data: 20%+ edge trades are 5W/19L (-$13.82). Anti-correlated with reality.
-        if raw_edge is not None and raw_edge > 0.20:
-            fraction *= 0.5
+            # High-edge penalty: >20% raw edge gets 50% size reduction.
+            # Data: 20%+ edge trades are 5W/19L (-$13.82). Anti-correlated with reality.
+            if raw_edge is not None and raw_edge > 0.20:
+                fraction *= 0.5
 
         # Dispersion multiplier: high model disagreement = lower sizing
         if model_spread is not None and model_spread > 0:
@@ -980,21 +995,58 @@ class Strategy:
 
         bet_cents = fraction * balance_cents
 
-        if is_arb:
-            max_pct = config.ARB_POSITION_PCT
-        elif is_confirmed:
-            max_pct = config.CONFIRMED_POSITION_PCT
+        if use_paper_bankroll_overrides:
+            if is_arb:
+                max_pct = float(
+                    getattr(config, "PAPER_ARB_POSITION_PCT", config.ARB_POSITION_PCT)
+                    or config.ARB_POSITION_PCT
+                )
+            elif is_confirmed:
+                max_pct = float(
+                    getattr(
+                        config,
+                        "PAPER_CONFIRMED_POSITION_PCT",
+                        config.CONFIRMED_POSITION_PCT,
+                    )
+                    or config.CONFIRMED_POSITION_PCT
+                )
+            else:
+                max_pct = float(
+                    getattr(config, "PAPER_MAX_POSITION_PCT", config.MAX_POSITION_PCT)
+                    or config.MAX_POSITION_PCT
+                )
+            max_bet_abs = int(
+                getattr(config, "PAPER_MAX_PER_TICKER_CENTS", config.MAX_PER_TICKER_CENTS)
+                or config.MAX_PER_TICKER_CENTS
+            )
+            max_contracts = int(
+                getattr(
+                    config,
+                    "PAPER_MAX_CONTRACTS_PER_TICKER",
+                    config.MAX_CONTRACTS_PER_TICKER,
+                )
+                or config.MAX_CONTRACTS_PER_TICKER
+            )
         else:
-            max_pct = config.MAX_POSITION_PCT
+            if is_arb:
+                max_pct = config.ARB_POSITION_PCT
+            elif is_confirmed:
+                max_pct = config.CONFIRMED_POSITION_PCT
+            else:
+                max_pct = config.MAX_POSITION_PCT
+            max_bet_abs = config.MAX_PER_TICKER_CENTS
+            max_contracts = config.MAX_CONTRACTS_PER_TICKER
 
         max_bet = balance_cents * max_pct
         bet_cents = min(bet_cents, max_bet)
-        bet_cents = min(bet_cents, config.MAX_PER_TICKER_CENTS)
+        if max_bet_abs > 0:
+            bet_cents = min(bet_cents, max_bet_abs)
 
         contracts = int(bet_cents / price_cents)
         if contracts <= 0:
             return 0
-        contracts = min(contracts, config.MAX_CONTRACTS_PER_TICKER)
+        if max_contracts > 0:
+            contracts = min(contracts, max_contracts)
 
         return contracts
 

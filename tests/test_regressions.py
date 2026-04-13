@@ -188,7 +188,7 @@ class StrategyRegressionTests(unittest.TestCase):
 
     @patch("strategy.datetime", FixedDateTime)
     @patch.object(Strategy, "_get_edge_threshold", return_value=0.0)
-    def test_weather_strategy_blocks_longshot_no_by_default(self, _mock_threshold):
+    def test_weather_strategy_does_not_apply_longshot_floor_to_no_side(self, _mock_threshold):
         strategy = self._build_strategy(
             probability=0.20,
             distribution={
@@ -199,6 +199,7 @@ class StrategyRegressionTests(unittest.TestCase):
                 "total_members": 100,
                 "model_means": {"gfs_ensemble": 40.0},
             },
+            verdict="CONFIRM",
         )
         market = {
             "ticker": "KXHIGHNY-26MAR10-B50.5",
@@ -212,8 +213,7 @@ class StrategyRegressionTests(unittest.TestCase):
 
         signal = strategy.evaluate_market(market)
 
-        self.assertEqual(signal["signal"], "skip")
-        self.assertEqual(signal["skip_reason"], "longshot_floor")
+        self.assertEqual(signal["signal"], "buy")
         self.assertEqual(signal["side"], "no")
 
     @patch("strategy.datetime", FixedDateTime)
@@ -248,6 +248,133 @@ class StrategyRegressionTests(unittest.TestCase):
         self.assertEqual(signal["side"], "no")
         self.assertEqual(signal["price_cents"], 20)
         self.assertGreater(signal["suggested_contracts"], 0)
+
+    @patch("strategy.datetime", FixedDateTime)
+    @patch.object(config, "ALLOW_YES_SIDE_TRADES", True)
+    @patch.object(Strategy, "_get_edge_threshold", return_value=0.0)
+    def test_weather_strategy_keeps_longshot_floor_for_yes_side(self, _mock_threshold):
+        strategy = self._build_strategy(
+            probability=0.80,
+            distribution={
+                "forecasted_high_mean": 55.0,
+                "raw_forecast_mean": 55.0,
+                "model_spread": 1.0,
+                "std_dev": 2.0,
+                "total_members": 100,
+                "model_means": {"gfs_ensemble": 55.0},
+            },
+            verdict="CONFIRM",
+        )
+        market = {
+            "ticker": "KXHIGHNY-26MAR10-B50.5",
+            "yes_ask": 20,
+            "no_ask": 82,
+            "last_price": 20,
+            "volume": 100,
+            "open_interest": 50,
+            "volume_24h": 100,
+        }
+
+        signal = strategy.evaluate_market(market)
+
+        self.assertEqual(signal["signal"], "skip")
+        self.assertEqual(signal["skip_reason"], "longshot_floor")
+        self.assertEqual(signal["side"], "yes")
+
+    @patch("strategy.datetime", FixedDateTime)
+    @patch.object(config, "NO_SIDE_MAX_PRICE_CENTS", 95)
+    @patch.object(Strategy, "_get_edge_threshold", return_value=0.0)
+    def test_weather_strategy_does_not_apply_near_certainty_cap_to_no_side(self, _mock_threshold):
+        strategy = self._build_strategy(
+            probability=0.10,
+            distribution={
+                "forecasted_high_mean": 40.0,
+                "raw_forecast_mean": 40.0,
+                "model_spread": 1.5,
+                "std_dev": 2.0,
+                "total_members": 100,
+                "model_means": {"gfs_ensemble": 40.0},
+            },
+            verdict="CONFIRM",
+        )
+        market = {
+            "ticker": "KXHIGHNY-26MAR10-B50.5",
+            "yes_ask": 18,
+            "no_ask": 84,
+            "last_price": 18,
+            "volume": 100,
+            "open_interest": 50,
+            "volume_24h": 100,
+        }
+
+        signal = strategy.evaluate_market(market)
+
+        self.assertEqual(signal["signal"], "buy")
+        self.assertEqual(signal["side"], "no")
+        self.assertEqual(signal["price_cents"], 84)
+
+    @patch("strategy.datetime", FixedDateTime)
+    @patch.object(config, "NO_SIDE_MAX_PRICE_CENTS", 75)
+    @patch.object(Strategy, "_get_edge_threshold", return_value=0.0)
+    def test_weather_strategy_allows_no_side_at_exact_price_cap(self, _mock_threshold):
+        strategy = self._build_strategy(
+            probability=0.20,
+            distribution={
+                "forecasted_high_mean": 40.0,
+                "raw_forecast_mean": 40.0,
+                "model_spread": 1.5,
+                "std_dev": 2.0,
+                "total_members": 100,
+                "model_means": {"gfs_ensemble": 40.0},
+            },
+            verdict="CONFIRM",
+        )
+        market = {
+            "ticker": "KXHIGHNY-26MAR10-B50.5",
+            "yes_ask": 27,
+            "no_ask": 75,
+            "last_price": 27,
+            "volume": 100,
+            "open_interest": 50,
+            "volume_24h": 100,
+        }
+
+        signal = strategy.evaluate_market(market)
+
+        self.assertEqual(signal["signal"], "buy")
+        self.assertEqual(signal["side"], "no")
+        self.assertEqual(signal["price_cents"], 75)
+
+    def test_observation_mode_full_kelly_uses_paper_caps(self):
+        strategy = Strategy()
+        strategy.observation_mode = True
+
+        with patch.object(config, "PAPER_USE_SEPARATE_BANKROLL", True), \
+                patch.object(config, "PAPER_USE_FULL_KELLY_SIZING", True), \
+                patch.object(config, "PAPER_MAX_POSITION_PCT", 0.20), \
+                patch.object(config, "PAPER_MAX_PER_TICKER_CENTS", 250000), \
+                patch.object(config, "PAPER_MAX_CONTRACTS_PER_TICKER", 250):
+            paper_contracts = strategy._kelly_size(
+                edge=0.20,
+                win_prob=0.80,
+                price_cents=40,
+                balance_cents=1_000_000,
+                confirmation_multiplier=1.0,
+                raw_edge=0.20,
+            )
+
+        strategy.observation_mode = False
+        live_contracts = strategy._kelly_size(
+            edge=0.20,
+            win_prob=0.80,
+            price_cents=40,
+            balance_cents=1_000_000,
+            confirmation_multiplier=1.0,
+            raw_edge=0.20,
+        )
+
+        self.assertGreater(paper_contracts, live_contracts)
+        self.assertGreater(paper_contracts, 5)
 
     @patch("strategy.datetime", FixedDateTime)
     @patch.object(config, "LONGSHOT_FLOOR_CENTS", 1)
@@ -1457,6 +1584,7 @@ class ObservationChallengerRegressionTests(unittest.TestCase):
             self.assertEqual(result["buy_signals"][0]["strategy"], "S4-NextDayNoPaper")
             self.assertEqual(result["buy_signals"][0]["execution_style"], "taker")
             self.assertEqual(result["buy_signals"][0]["paper_shadow_mode"], "next_day_directional_override")
+            self.assertEqual(result["buy_signals"][0]["suggested_contracts"], 2)
             self.assertEqual(len(result["all_decisions"]), 2)
 
             live_result = registry.evaluate_markets(
@@ -1521,6 +1649,7 @@ class ObservationChallengerRegressionTests(unittest.TestCase):
         self.assertEqual(len(result["buy_signals"]), 1)
         self.assertEqual(result["buy_signals"][0]["strategy"], "S6-TightNextDayNoPaper")
         self.assertEqual(result["buy_signals"][0]["execution_style"], "taker")
+        self.assertEqual(result["buy_signals"][0]["suggested_contracts"], 2)
 
     def test_tight_next_day_challenger_respects_price_band(self):
         engine = PaperChallengerEngine()
@@ -1659,10 +1788,20 @@ class ObservationChallengerRegressionTests(unittest.TestCase):
                 patch.object(config, "PAPER_CHALLENGER_ALLOW_SOFT_SETTLEMENT_LOCK", True), \
                 patch.object(config, "PAPER_CHALLENGER_SOFT_LOCK_MIN_LOCAL_HOUR", 1), \
                 patch.object(config, "PAPER_CHALLENGER_SOFT_LOCK_MAX_PRICE_CENTS", 85), \
+                patch.object(config, "PAPER_CONFIRMED_POSITION_PCT", 0.30), \
+                patch.object(config, "PAPER_MAX_PER_TICKER_CENTS", 250000), \
+                patch.object(config, "PAPER_MAX_CONTRACTS_PER_TICKER", 250), \
                 patch("paper_challengers.datetime", FixedSoftLockDateTime):
-            challengers = engine.generate({}, signal, todays_high=54, observation_mode=True)
+            challengers = engine.generate(
+                {},
+                signal,
+                todays_high=54,
+                observation_mode=True,
+                balance_cents=1000000,
+            )
         self.assertEqual(len(challengers), 1)
         self.assertEqual(challengers[0]["strategy"], "S5-SoftSettlementLockPaper")
+        self.assertGreater(challengers[0]["suggested_contracts"], 1)
 
     def test_registry_blocks_auto_killed_next_day_challenger(self):
         signal = {

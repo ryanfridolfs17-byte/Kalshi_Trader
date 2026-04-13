@@ -108,9 +108,9 @@ ENABLE_ARBITRAGE_STRATEGY = False
 KALSHI_FEE_PCT = 0.07
 FEE_ADJUSTED_MIN_EDGE = 0.03
 CASE1_FEE_ADJUSTED_MIN_EDGE = 0.005  # Was 0.01. Confirmed outcomes: near-guaranteed, accept thinner edge.
-LONGSHOT_FLOOR_CENTS = 30  # Was 3. YES <30c: 4W/19L (-$14.71). Favourite-longshot bias confirmed by Whelan 2025.
-NEAR_CERTAINTY_CAP_CENTS = 80  # Was 93. Buying YES >80c = terrible risk/reward with 5-8F model MAE.
-NO_SIDE_MAX_PRICE_CENTS = 75       # Was 35. NO at 75c+: 29W/0L (+$20.52) — our most profitable segment, was blocked!
+LONGSHOT_FLOOR_CENTS = 30  # YES-only guard. YES <30c: 4W/19L (-$14.71). Favourite-longshot bias confirmed by Whelan 2025.
+NEAR_CERTAINTY_CAP_CENTS = 80  # YES-only guard. Buying YES >80c = terrible risk/reward with 5-8F model MAE.
+NO_SIDE_MAX_PRICE_CENTS = 75       # Inclusive NO cap. Allow 75c, block >75c.
 NO_SIDE_SIZING_MULTIPLIER = 0.60   # Was 0.30. 29-0 track record at high NO prices — increase sizing.
 NEXT_DAY_EDGE_MULTIPLIER = 1.5
 EARLY_MORNING_EDGE_MULTIPLIER = 2.0  # 6-9 AM local: 14% min edge (stale 00Z forecasts)
@@ -344,6 +344,25 @@ PAPER_USE_SEPARATE_BANKROLL = os.environ.get(
 ).lower() == "true"
 PAPER_BANKROLL_CENTS = int(
     os.environ.get("PAPER_BANKROLL_CENTS", "1000000")
+)
+PAPER_USE_FULL_KELLY_SIZING = os.environ.get(
+    "PAPER_USE_FULL_KELLY_SIZING",
+    "true"
+).lower() == "true"
+PAPER_MAX_POSITION_PCT = float(
+    os.environ.get("PAPER_MAX_POSITION_PCT", "0.20")
+)
+PAPER_CONFIRMED_POSITION_PCT = float(
+    os.environ.get("PAPER_CONFIRMED_POSITION_PCT", "0.30")
+)
+PAPER_ARB_POSITION_PCT = float(
+    os.environ.get("PAPER_ARB_POSITION_PCT", "0.25")
+)
+PAPER_MAX_PER_TICKER_CENTS = int(
+    os.environ.get("PAPER_MAX_PER_TICKER_CENTS", "250000")
+)
+PAPER_MAX_CONTRACTS_PER_TICKER = int(
+    os.environ.get("PAPER_MAX_CONTRACTS_PER_TICKER", "250")
 )
 PAPER_IGNORE_RISK_GATES = os.environ.get(
     "PAPER_IGNORE_RISK_GATES",
