@@ -137,7 +137,7 @@ Bankroll ~$48. All values in `config.py`. Cents = 100 per $1.00. `BALANCE_FALLBA
 ### Core Limits
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `MIN_EDGE` | 6% | Morning (before noon): 7.2% (1.2x). Next-day: 9% (1.5x). Early morning (6-9 AM local): 12% (2.0x). |
+| `MIN_EDGE` | 6% | Morning (9 AM-noon): 7.2% (1.2x). Next-day: 9% (1.5x). Early morning (6-9 AM local): 12% (2.0x, paper/observation only because live blocks before 9 AM). |
 | `CONFIRMED_MIN_EDGE` | 5% | CASE 3 and convergence trades |
 | `CASE1_MIN_EDGE` | 2% | CASE 1 confirmed outcomes only (obs already exceeded bucket) |
 | `FEE_ADJUSTED_MIN_EDGE` | 3% | After 7% fee drag |
@@ -170,14 +170,14 @@ Bankroll ~$48. All values in `config.py`. Cents = 100 per $1.00. `BALANCE_FALLBA
 - **NO-side separation**: `max(2.0F, std_dev * 0.6)`. CONFIRM gets 1.25x penalty.
 - **Model divergence**: YES >8F = skip, NO >10F = skip. <2F = 1.2x boost.
 - **Longshot floor**: 3c. **Near-certainty cap**: 80c (was 93c — buying YES >80c is terrible risk/reward with 5-8F model MAE). **NO ceiling**: 50c (CASE1 bypasses).
-- **NO sizing**: >=50c gets 40% normal sizing.
+- **NO sizing**: >=50c gets 60% normal sizing.
 - **Next-day**: 1.5x edge threshold, 50% sizing.
-- **Same-day before 6 AM local**: BLOCKED. Overnight forecasts are stale.
-- **Same-day 6-9 AM local**: 2.0x edge threshold (14%). Stale forecast penalty. NO-side gets additional 50% sizing reduction.
+- **Same-day before 9 AM local**: BLOCKED for live directional trades. Observation mode can still score the window with the 2.0x early-morning edge multiplier.
+- **Live city whitelist**: `LV`, `LAX`, `ATL`, `OKC`, `DEN`, `DAL`. Paper mode keeps all cities open unless `PAPER_CITY_WHITELIST` is set.
 - **Warm city bias defaults**: DEN +4F, Gulf/SE +3F, Desert +2F, PNW +2F/+1.5F (hardcoded in weather_engine.py). Applied in winter months (Dec-Mar).
 
 ### Confirmed Outcomes
-- **CASE 1** (high exceeded bucket): CONFIRMED_OUTCOME. Min 10 AM local. `obs_high > temp_high + 1F`. Edge = `0.99 - market_prob`. Min edge 2% (`CASE1_MIN_EDGE`). NO price cap 98c. Kelly with `is_confirmed=True` (10% max position). Taker mode if edge >15%.
+- **CASE 1** (high exceeded bucket): CONFIRMED_OUTCOME. Min 9 AM local. `obs_high > temp_high + 1F`. Edge = `0.99 - market_prob`. Min edge 2% (`CASE1_MIN_EDGE`). NO price cap 70c. Kelly with `is_confirmed=True` (10% max position). Taker mode if edge >15%.
 - **CASE 2**: DELETED from codebase.
 - **CASE 3** (gap too large): Returns STRONG (not confirmed). `confirmation_multiplier=1.0`. Cooling gate before 2 PM. Ensemble veto. Graduated gaps.
 
@@ -241,7 +241,7 @@ If weakest position edge < 3% (`REBALANCE_MAX_OLD_EDGE`) AND at max capacity: ex
 | `CONVERGENCE_MIN_LOCAL_HOUR` | 14 | Only after 2 PM local |
 | `CONVERGENCE_SIZING_BOOST` | 0.3 | Was 0.7. Max 1.3x (was 1.7x). No longer lowers edge threshold. |
 | `WEATHER_BIAS_CAP_F` | -2.0 | Max total cloud+precip+wind bias. Prevents -3.5F stacking. |
-| `CASE1_NO_PRICE_CAP` | 60 | Was 98c. Max NO price for CASE 1 confirmed outcomes. |
+| `CASE1_NO_PRICE_CAP` | 70 | Max NO price for CASE 1 confirmed outcomes. |
 | `CLOUD_COVER_THRESHOLD_PCT` | 70 | Above = apply temp bias |
 | `CLOUD_COVER_TEMP_BIAS_F` | -1.5 | Overcast day bias |
 | `PRECIP_THRESHOLD_MM` | 0.5 | Above = apply additional bias |
@@ -304,7 +304,8 @@ Based on comprehensive trade history analysis (89 positions, 200 fills, 104 sett
 #### New Config Parameters (v4.5)
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `CITY_EDGE_MULTIPLIERS` | dict | Per-city edge threshold multiplier. DAL/AUS: 1.5x, PHX/DEN/DC: 1.3x, CHI: 1.2x |
+| `CITY_EDGE_MULTIPLIERS` | `{}` | Soft city multipliers currently disabled; live filtering now uses `LIVE_CITY_WHITELIST` |
+| `LIVE_CITY_WHITELIST` | `{"LV","LAX","ATL","OKC","DEN","DAL"}` | Live-only city gate; paper remains broad by default |
 | `WIND_SPEED_THRESHOLD_KMH` | 32 | ~20 mph; above this, boundary layer mixing suppresses highs |
 | `WIND_SPEED_TEMP_BIAS_F` | -1.0 | Applied when wind exceeds threshold |
 

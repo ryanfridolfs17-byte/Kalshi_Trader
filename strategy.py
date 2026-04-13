@@ -299,6 +299,14 @@ class Strategy:
         ):
             return _side_skip("yes_side_blocked")
 
+        whitelist_name = "PAPER_CITY_WHITELIST" if self._paper_filters_relaxed() else "LIVE_CITY_WHITELIST"
+        active_city_whitelist = getattr(config, whitelist_name, None)
+        if active_city_whitelist is not None and city_code not in active_city_whitelist:
+            return _side_skip(
+                "city_not_whitelisted",
+                detail=f"{city_code} not in {whitelist_name}",
+            )
+
         # Direction sanity check: forecast mean must not strongly contradict bet.
         # Catches tail-probability edge where ensemble mean says the opposite.
         _DIRECTION_SANITY_MARGIN_F = 3.0
@@ -321,13 +329,14 @@ class Strategy:
                 return _side_skip("direction_sanity_check",
                                   detail=f"NO on above-{temp_low}F but mean {forecast_mean:.1f}F")
 
-        # Block same-day directional trades before noon local.
-        # Data: morning 19W/24L (-$17), afternoon 18W/0L (+$10.71).
+        # Block live same-day directional trades before 9 AM local.
+        # Keep the historical skip label stable so observation challengers and
+        # dashboards that key off "before_noon_directional" keep working.
         # CASE 1 confirmed outcomes bypass (checked earlier at _check_confirmed_outcome).
         if (
             not is_next_day
             and local_hour is not None
-            and local_hour < 12
+            and local_hour < 9
             and not self._paper_override_enabled("PAPER_ALLOW_BEFORE_NOON_DIRECTIONAL_TRADES")
         ):
             return _side_skip("before_noon_directional")
@@ -873,7 +882,8 @@ class Strategy:
         Early morning (6-9 AM local): 12% (MIN_EDGE * 2.0)
         Morning (before noon local): 7.2% (MIN_EDGE * 1.2)
         Afternoon: 6% (MIN_EDGE)
-        City multiplier: losing cities get higher thresholds (config.CITY_EDGE_MULTIPLIERS)
+        City multiplier: optional soft multiplier (currently usually empty because
+        live filtering is handled by LIVE_CITY_WHITELIST)
         """
         if is_confirmed:
             return config.CONFIRMED_MIN_EDGE

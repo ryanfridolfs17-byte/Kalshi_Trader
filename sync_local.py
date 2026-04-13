@@ -59,16 +59,33 @@ def sync(url=None, token=None, state_dir=".", observation_hours=24 * 14):
         print("ERROR: No token. Set DASHBOARD_TOKEN env var or pass --token")
         sys.exit(1)
 
-    state_endpoint = f"{url.rstrip('/')}/api/state"
-    print(f"Fetching {state_endpoint} ...")
+    sync_endpoint = (
+        f"{url.rstrip('/')}/api/sync"
+        f"?include_observation=1&hours={int(observation_hours)}&events=1000&decisions=5000"
+    )
+    print(f"Fetching {sync_endpoint} ...")
     try:
-        data = _request_json(state_endpoint, token=token, timeout=30)
+        data = _request_json(sync_endpoint, token=token, timeout=60)
+        observation_export = data.pop("observation_export", None)
+        state_source = "sync"
     except RuntimeError as exc:
-        print(f"ERROR: {exc}")
-        sys.exit(1)
+        print(f"WARNING: {exc}")
+        state_endpoint = f"{url.rstrip('/')}/api/state"
+        print(f"Falling back to {state_endpoint} ...")
+        try:
+            data = _request_json(state_endpoint, token=token, timeout=30)
+        except RuntimeError as state_exc:
+            print(f"ERROR: {state_exc}")
+            sys.exit(1)
+        observation_export = None
+        state_source = "state"
     written = 0
 
-    for key, filename in FILE_MAP.items():
+    file_map = dict(FILE_MAP)
+    if "fill_tracking" in data:
+        file_map["fill_tracking"] = "fill_tracking.json"
+
+    for key, filename in file_map.items():
         if key not in data:
             continue
         filepath = os.path.join(state_dir, filename)
@@ -78,29 +95,37 @@ def sync(url=None, token=None, state_dir=".", observation_hours=24 * 14):
         print(f"  {filename:30s} {size:>8,} bytes")
         written += 1
 
-    export_endpoint = (
-        f"{url.rstrip('/')}/api/observation/export"
-        f"?hours={int(observation_hours)}&events=1000&decisions=5000"
-    )
-    print(f"\nFetching {export_endpoint} ...")
-    try:
-        export_data = _request_json(export_endpoint, token=token, timeout=60)
+    if observation_export is not None:
         import_summary = import_observation_export(
-            export_data,
+            observation_export,
             replace=True,
             state_dir=state_dir,
         )
-        import_mode = "Railway observation export"
-    except RuntimeError as exc:
-        print(f"WARNING: {exc}")
-        print("Falling back to local DB backfill from synced Railway state files ...")
-        import_summary = run_backfill(
-            replace=True,
-            include_live_trades=True,
-            include_retro_locks=True,
-            state_dir=state_dir,
+        import_mode = f"Railway sync snapshot export ({state_source})"
+    else:
+        export_endpoint = (
+            f"{url.rstrip('/')}/api/observation/export"
+            f"?hours={int(observation_hours)}&events=1000&decisions=5000"
         )
-        import_mode = "legacy state backfill"
+        print(f"\nFetching {export_endpoint} ...")
+        try:
+            export_data = _request_json(export_endpoint, token=token, timeout=60)
+            import_summary = import_observation_export(
+                export_data,
+                replace=True,
+                state_dir=state_dir,
+            )
+            import_mode = "Railway observation export"
+        except RuntimeError as exc:
+            print(f"WARNING: {exc}")
+            print("Falling back to local DB backfill from synced Railway state files ...")
+            import_summary = run_backfill(
+                replace=True,
+                include_live_trades=True,
+                include_retro_locks=True,
+                state_dir=state_dir,
+            )
+            import_mode = "legacy state backfill"
 
     print(f"\nSynced {written} state files")
     print(

@@ -110,26 +110,19 @@ FEE_ADJUSTED_MIN_EDGE = 0.03
 CASE1_FEE_ADJUSTED_MIN_EDGE = 0.005  # Was 0.01. Confirmed outcomes: near-guaranteed, accept thinner edge.
 LONGSHOT_FLOOR_CENTS = 30  # YES-only guard. YES <30c: 4W/19L (-$14.71). Favourite-longshot bias confirmed by Whelan 2025.
 NEAR_CERTAINTY_CAP_CENTS = 80  # YES-only guard. Buying YES >80c = terrible risk/reward with 5-8F model MAE.
-NO_SIDE_MAX_PRICE_CENTS = 75       # Inclusive NO cap. Allow 75c, block >75c.
+NO_SIDE_MAX_PRICE_CENTS = 50       # Live-only NO cap. Above ~57c, the observed paper win rate no longer clears fees.
 NO_SIDE_SIZING_MULTIPLIER = 0.60   # Was 0.30. 29-0 track record at high NO prices — increase sizing.
 NEXT_DAY_EDGE_MULTIPLIER = 1.5
 EARLY_MORNING_EDGE_MULTIPLIER = 2.0  # 6-9 AM local: 14% min edge (stale 00Z forecasts)
 NEXT_DAY_SIZING_MULTIPLIER = 0.50
 MIN_PAYOUT_DOLLARS = 0.10
 
-# === CITY-SPECIFIC EDGE MULTIPLIERS ===
-# Data-driven: cities with negative P&L get higher edge thresholds.
-# 1.0 = no change, 1.5 = 50% higher min edge for that city.
-CITY_EDGE_MULTIPLIERS = {
-    "PHI": 2.0,   # Worst bias: -7.86F ensemble miscalibration
-    "DAL": 1.5,   # -$20.81
-    "AUS": 1.5,   # -$19.49
-    "HOU": 1.5,   # -5.5F bias
-    "PHX": 1.3,   # -$16.13
-    "DEN": 1.3,   # -$15.08
-    "DC":  1.3,   # -$14.39
-    "CHI": 1.2,   # -$8.61
-}
+# === CITY FILTERS ===
+# Live trading uses a hard whitelist based on the April 2026 paper sample.
+# Paper mode stays broad by default so observation can keep collecting data.
+CITY_EDGE_MULTIPLIERS = {}
+LIVE_CITY_WHITELIST = {"LV", "LAX", "ATL", "OKC", "DEN", "DAL"}
+PAPER_CITY_WHITELIST = None
 
 # === LEARNING AUTO-APPLICATION ===
 LEARNING_AUTO_APPLY = True           # Kill switch: False disables all auto-applied learning

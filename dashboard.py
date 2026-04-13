@@ -90,6 +90,10 @@ def _bounded_int(raw_value, default, minimum, maximum):
     return max(minimum, min(value, maximum))
 
 
+def _state_file_default(key):
+    return [] if key == "trades" else {}
+
+
 def _default_risk_state():
     return {
         "positions": {},
@@ -810,10 +814,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             state = {}
             for key, filepath in STATE_FILES.items():
-                if key in ("trades", "reports", "attribution", "analysis", "scan_log"):
-                    state[key] = _read_json(filepath, default=[])
-                else:
-                    state[key] = _read_json(filepath, default={})
+                state[key] = _read_json(filepath, default=_state_file_default(key))
             state["risk"] = _normalize_risk_state(state.get("risk", {}))
             self._send_json(state)
 
@@ -1046,14 +1047,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path == "/api/sync":
             if not self._check_auth():
                 return
+            parsed = urlparse(self.path)
+            qs = parse_qs(parsed.query)
+            include_observation = qs.get("include_observation", ["0"])[0] in ("1", "true", "yes")
             sync_data = {}
             for key, filepath in STATE_FILES.items():
-                default = [] if key in ("trades", "scan_log") else {}
-                sync_data[key] = _read_json(filepath, default=default)
+                sync_data[key] = _read_json(filepath, default=_state_file_default(key))
             # Include fill_tracking (not in STATE_FILES dict)
             sync_data["fill_tracking"] = _read_json(
                 config.FILL_TRACKING_FILE, default={}
             )
+            if include_observation:
+                hours = _bounded_int(qs.get("hours", ["336"])[0], default=336, minimum=1, maximum=24 * 30)
+                events = _bounded_int(qs.get("events", ["1000"])[0], default=1000, minimum=1, maximum=1000)
+                decisions = _bounded_int(qs.get("decisions", ["5000"])[0], default=5000, minimum=1, maximum=5000)
+                sync_data["observation_export"] = _observation_journal.get_cached_history(
+                    hours=hours,
+                    event_limit=events,
+                    decision_limit=decisions,
+                    include_decisions=True,
+                )
             sync_data["synced_at"] = datetime.now(timezone.utc).isoformat()
             self._send_json(sync_data)
 

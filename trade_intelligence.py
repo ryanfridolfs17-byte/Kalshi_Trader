@@ -1538,7 +1538,18 @@ class TradeIntelligence:
     def _get_cities(self):
         "Get CITIES dict from weather engine."
         if self.weather:
-            return getattr(self.weather, "CITIES", None)
+            cities = getattr(self.weather, "CITIES", None)
+            if cities:
+                return cities
+            weather_module = getattr(self.weather, "__class__", None)
+            if weather_module is not None:
+                try:
+                    module = __import__(weather_module.__module__, fromlist=["CITIES"])
+                    cities = getattr(module, "CITIES", None)
+                    if cities:
+                        return cities
+                except Exception:
+                    pass
         try:
             from weather_engine import CITIES
             return CITIES

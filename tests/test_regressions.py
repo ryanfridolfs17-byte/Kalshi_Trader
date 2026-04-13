@@ -71,7 +71,7 @@ class StrategyRegressionTests(unittest.TestCase):
 
     def _build_strategy(self, probability, distribution, verdict="STRONG"):
         parsed = {
-            "city_code": "NYC",
+            "city_code": "DAL",
             "temp_low": 50,
             "temp_high": 51,
             "target_date": "2026-03-27",
@@ -86,6 +86,22 @@ class StrategyRegressionTests(unittest.TestCase):
         @classmethod
         def now(cls, tz=None):
             base = datetime(2026, 3, 27, 15, 0, tzinfo=ZoneInfo("America/New_York"))
+            if tz is None:
+                return base.replace(tzinfo=None)
+            return base.astimezone(tz)
+
+    class FixedMidMorningDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            base = datetime(2026, 3, 27, 10, 0, tzinfo=ZoneInfo("America/New_York"))
+            if tz is None:
+                return base.replace(tzinfo=None)
+            return base.astimezone(tz)
+
+    class FixedEarlyMorningDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            base = datetime(2026, 3, 27, 8, 0, tzinfo=ZoneInfo("America/New_York"))
             if tz is None:
                 return base.replace(tzinfo=None)
             return base.astimezone(tz)
@@ -214,6 +230,138 @@ class StrategyRegressionTests(unittest.TestCase):
         signal = strategy.evaluate_market(market)
 
         self.assertEqual(signal["signal"], "buy")
+        self.assertEqual(signal["side"], "no")
+
+    @patch("strategy.datetime", FixedDateTime)
+    @patch.object(config, "LIVE_CITY_WHITELIST", {"DEN"})
+    @patch.object(Strategy, "_get_edge_threshold", return_value=0.0)
+    def test_weather_strategy_blocks_non_whitelisted_live_city(self, _mock_threshold):
+        strategy = self._build_strategy(
+            probability=0.20,
+            distribution={
+                "forecasted_high_mean": 40.0,
+                "raw_forecast_mean": 40.0,
+                "model_spread": 1.5,
+                "std_dev": 2.0,
+                "total_members": 100,
+                "model_means": {"gfs_ensemble": 40.0},
+            },
+            verdict="CONFIRM",
+        )
+        strategy.weather.parsed["city_code"] = "NYC"
+        market = {
+            "ticker": "KXHIGHNY-26MAR27-B50.5",
+            "yes_ask": 85,
+            "no_ask": 20,
+            "last_price": 85,
+            "volume": 100,
+            "open_interest": 50,
+            "volume_24h": 100,
+        }
+
+        signal = strategy.evaluate_market(market)
+
+        self.assertEqual(signal["signal"], "skip")
+        self.assertEqual(signal["skip_reason"], "city_not_whitelisted")
+        self.assertEqual(signal["side"], "no")
+
+    @patch("strategy.datetime", FixedDateTime)
+    @patch.object(config, "LIVE_CITY_WHITELIST", {"DEN"})
+    @patch.object(config, "PAPER_CITY_WHITELIST", None)
+    @patch.object(config, "PAPER_STRATEGY_RELAX_FILTERS", True)
+    @patch.object(Strategy, "_get_edge_threshold", return_value=0.0)
+    def test_weather_strategy_paper_mode_bypasses_live_city_whitelist(self, _mock_threshold):
+        strategy = self._build_strategy(
+            probability=0.20,
+            distribution={
+                "forecasted_high_mean": 40.0,
+                "raw_forecast_mean": 40.0,
+                "model_spread": 1.5,
+                "std_dev": 2.0,
+                "total_members": 100,
+                "model_means": {"gfs_ensemble": 40.0},
+            },
+            verdict="CONFIRM",
+        )
+        strategy.observation_mode = True
+        market = {
+            "ticker": "KXHIGHNY-26MAR27-B50.5",
+            "yes_ask": 85,
+            "no_ask": 20,
+            "last_price": 85,
+            "volume": 100,
+            "open_interest": 50,
+            "volume_24h": 100,
+        }
+
+        signal = strategy.evaluate_market(market)
+
+        self.assertEqual(signal["signal"], "buy")
+        self.assertEqual(signal["side"], "no")
+
+    @patch("strategy.datetime", FixedMidMorningDateTime)
+    @patch.object(config, "LIVE_CITY_WHITELIST", {"DAL"})
+    @patch.object(Strategy, "_get_edge_threshold", return_value=0.0)
+    def test_weather_strategy_allows_whitelisted_city_after_9am(self, _mock_threshold):
+        strategy = self._build_strategy(
+            probability=0.20,
+            distribution={
+                "forecasted_high_mean": 40.0,
+                "raw_forecast_mean": 40.0,
+                "model_spread": 1.5,
+                "std_dev": 2.0,
+                "total_members": 100,
+                "model_means": {"gfs_ensemble": 40.0},
+            },
+            verdict="CONFIRM",
+        )
+        strategy.weather.parsed["city_code"] = "DAL"
+        market = {
+            "ticker": "KXHIGHDAL-26MAR27-B50.5",
+            "yes_ask": 85,
+            "no_ask": 20,
+            "last_price": 85,
+            "volume": 100,
+            "open_interest": 50,
+            "volume_24h": 100,
+        }
+
+        signal = strategy.evaluate_market(market)
+
+        self.assertEqual(signal["signal"], "buy")
+        self.assertEqual(signal["side"], "no")
+
+    @patch("strategy.datetime", FixedEarlyMorningDateTime)
+    @patch.object(config, "LIVE_CITY_WHITELIST", {"DAL"})
+    @patch.object(Strategy, "_get_edge_threshold", return_value=0.0)
+    def test_weather_strategy_keeps_morning_block_before_9am(self, _mock_threshold):
+        strategy = self._build_strategy(
+            probability=0.20,
+            distribution={
+                "forecasted_high_mean": 40.0,
+                "raw_forecast_mean": 40.0,
+                "model_spread": 1.5,
+                "std_dev": 2.0,
+                "total_members": 100,
+                "model_means": {"gfs_ensemble": 40.0},
+            },
+            verdict="CONFIRM",
+        )
+        strategy.weather.parsed["city_code"] = "DAL"
+        market = {
+            "ticker": "KXHIGHDAL-26MAR27-B50.5",
+            "yes_ask": 85,
+            "no_ask": 20,
+            "last_price": 85,
+            "volume": 100,
+            "open_interest": 50,
+            "volume_24h": 100,
+        }
+
+        signal = strategy.evaluate_market(market)
+
+        self.assertEqual(signal["signal"], "skip")
+        self.assertEqual(signal["skip_reason"], "before_noon_directional")
         self.assertEqual(signal["side"], "no")
 
     @patch("strategy.datetime", FixedDateTime)
@@ -2510,6 +2658,115 @@ class SyncLocalRegressionTests(unittest.TestCase):
             db = BotDatabase(db_path=os.path.join(temp_dir, "bot_data.sqlite3"))
             self.assertEqual(len(db.fetch_recent_decisions(hours=24 * 365, max_rows=20)), 1)
             db.close()
+
+    def test_sync_local_prefers_sync_snapshot_with_observation_export(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            calls = []
+
+            def fake_request(endpoint, token, timeout=30):
+                calls.append(endpoint)
+                if "/api/sync" in endpoint:
+                    return {
+                        "trades": [],
+                        "risk": {},
+                        "pnl": {},
+                        "bot_status": {"cycle": 1},
+                        "scan_log": {},
+                        "maker": {},
+                        "learning": {},
+                        "paper_locks": {"retrospective": {"history": []}},
+                        "paper_trades": {"history": [], "active": {}, "pending_orders": {}, "cycle_log": [], "summary": {}},
+                        "observation_daily_summary": {"updated_at": "", "days": {}},
+                        "fill_tracking": {"yes_orders": []},
+                        "observation_export": {
+                            "generated_at": "2026-04-13T17:00:00+00:00",
+                            "daily_summary": [{"date": "2026-04-13", "scan_cycles": 1}],
+                            "recent_events": [{
+                                "timestamp": "2026-04-13T17:00:00+00:00",
+                                "event_type": "scan_cycle",
+                                "cycle": 1,
+                                "observation_mode": True,
+                                "markets_scanned": 10,
+                                "signals_found": 1,
+                                "trades_placed": 0,
+                                "diag_null": 0,
+                                "diag_evaluated": 10,
+                                "diag_skips": {"no_edge": 1},
+                                "weather_api_error": "",
+                                "paper_entries": 0,
+                                "paper_filled_pending": 0,
+                                "paper_resting_orders": 0,
+                                "paper_expired_pending": 0,
+                                "paper_blocked_reasons": {},
+                                "settlement_lock_candidates": 0,
+                                "top_signals": [],
+                            }],
+                            "recent_decisions": [{
+                                "timestamp": "2026-04-13T17:00:00+00:00",
+                                "cycle": 1,
+                                "observation_mode": True,
+                                "ticker": "KXHIGHNY-TEST",
+                                "event_ticker": "KXHIGHNY-TEST",
+                                "city_code": "NYC",
+                                "target_date": "2026-04-13",
+                                "signal": "buy",
+                                "execution_status": "paper_queued",
+                                "side": "no",
+                                "skip_reason": "",
+                                "strategy": "S1-Weather",
+                                "execution_style": "maker",
+                                "edge": 0.12,
+                                "fee_adjusted_edge": 0.1,
+                                "our_prob": 0.8,
+                                "market_prob": 0.3,
+                                "price_cents": 30,
+                                "entry_price_cents": 30,
+                                "limit_price_cents": 30,
+                                "risk_price_cents": 30,
+                                "yes_price_cents": 70,
+                                "no_price_cents": 30,
+                                "predicted_high": 54.0,
+                                "todays_high_snapshot": None,
+                                "confirmation_verdict": "CONFIRM",
+                                "market_title": "",
+                                "market_subtitle": "",
+                                "strike_type": "between",
+                                "floor_strike": 54,
+                                "cap_strike": 55,
+                            }],
+                            "summary": {"scan_cycles": 1, "decision_rows": 1},
+                        },
+                        "synced_at": "2026-04-13T17:00:00+00:00",
+                    }
+                raise AssertionError(f"Unexpected endpoint {endpoint}")
+
+            with patch.object(sync_local, "_request_json", side_effect=fake_request):
+                sync_local.sync(
+                    url="https://example.com",
+                    token="token",
+                    state_dir=temp_dir,
+                    observation_hours=24,
+                )
+
+            self.assertEqual(len(calls), 1)
+            self.assertIn("/api/sync", calls[0])
+            self.assertTrue(os.path.exists(os.path.join(temp_dir, "fill_tracking.json")))
+            db = BotDatabase(db_path=os.path.join(temp_dir, "bot_data.sqlite3"))
+            self.assertEqual(len(db.fetch_recent_decisions(hours=24 * 365, max_rows=20)), 1)
+            db.close()
+
+
+class TradeIntelligenceRegressionTests(unittest.TestCase):
+
+    def test_trade_intelligence_loads_cities_from_weather_module_when_instance_has_no_cities_attr(self):
+        from trade_intelligence import TradeIntelligence
+
+        intel = TradeIntelligence(weather_engine=weather_engine.WeatherEngine())
+        cities = intel._get_cities()
+
+        self.assertIsInstance(cities, dict)
+        self.assertIn("NYC", cities)
+        self.assertEqual(cities["NYC"]["nws_station"], "KNYC")
 
 
 class TradeReviewerRegressionTests(unittest.TestCase):
