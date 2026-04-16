@@ -139,12 +139,11 @@ DEFAULT_MODEL_WEIGHTS = {
     "nws_grid_hourly": 0.20,
 }
 
-# === SEASONAL EDGE MULTIPLIERS (backtest: March 2.7F MAE vs Oct 2.0F) ===
-# Spring is structurally harder to forecast (frontal systems).
+# === SEASONAL EDGE MULTIPLIERS ===
+# March remains the one clearly harder month in the current backtest slice.
+# April/May no longer carry an extra penalty under the Phase 2 filters.
 SEASONAL_EDGE_MULTIPLIERS = {
     3: 1.2,   # March: hardest month
-    4: 1.1,   # April
-    5: 1.1,   # May
 }
 
 # === CITY BIAS SAFETY GATE ===

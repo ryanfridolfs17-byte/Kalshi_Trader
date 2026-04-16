@@ -564,6 +564,27 @@ class StrategyRegressionTests(unittest.TestCase):
         self.assertEqual(shadow_signal["side"], "no")
         self.assertEqual(shadow_signal["shadow_mode"], "next_day_directional_override")
 
+    def test_edge_threshold_does_not_apply_april_penalty(self):
+        strategy = Strategy()
+        with patch.object(config, "SEASONAL_EDGE_MULTIPLIERS", {3: 1.2}):
+            april_threshold = strategy._get_edge_threshold(
+                is_next_day=False,
+                is_confirmed=False,
+                local_hour=15,
+                city_code="DAL",
+                target_date="2026-04-15",
+            )
+            march_threshold = strategy._get_edge_threshold(
+                is_next_day=False,
+                is_confirmed=False,
+                local_hour=15,
+                city_code="DAL",
+                target_date="2026-03-15",
+            )
+
+        self.assertAlmostEqual(april_threshold, config.MIN_EDGE)
+        self.assertAlmostEqual(march_threshold, config.MIN_EDGE * 1.2)
+
 
 class ExecutionParityRegressionTests(unittest.TestCase):
 
@@ -1547,6 +1568,108 @@ class StrategyScorecardRegressionTests(unittest.TestCase):
             self.assertEqual(weather["paper_resolved"], 1)
             self.assertEqual(weather["fill_rate"], 1.0)
             self.assertIn("live_disabled_by_config", weather["promotion_blockers"])
+            journal.close()
+
+    def test_strategy_scorecards_include_settlement_lock_file_history(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = os.path.join(temp_dir, "bot_data.sqlite3")
+            paper_locks_path = os.path.join(temp_dir, "paper_locks.json")
+            now = datetime.now(timezone.utc)
+            with open(paper_locks_path, "w", encoding="utf-8") as handle:
+                json.dump({
+                    "active": {
+                        "KXHIGHCHI-TEST": {
+                            "ticker": "KXHIGHCHI-TEST",
+                            "strategy": "S3-SettlementLock",
+                            "confirmation_verdict": "SETTLEMENT_LOCK",
+                            "first_seen_at": now.isoformat(),
+                            "status": "active",
+                        }
+                    },
+                    "history": [
+                        {
+                            "ticker": "KXHIGHDAL-WIN",
+                            "strategy": "S3-SettlementLock",
+                            "confirmation_verdict": "SETTLEMENT_LOCK",
+                            "first_seen_at": now.isoformat(),
+                            "resolved_at": now.isoformat(),
+                            "status": "win",
+                            "entry_profit_cents": 20,
+                            "net_profit_cents": 20,
+                        },
+                        {
+                            "ticker": "KXHIGHDAL-LOSS",
+                            "strategy": "S3-SettlementLock",
+                            "confirmation_verdict": "SETTLEMENT_LOCK",
+                            "first_seen_at": now.isoformat(),
+                            "resolved_at": now.isoformat(),
+                            "status": "loss",
+                            "entry_profit_cents": -8,
+                            "net_profit_cents": -8,
+                        },
+                    ],
+                }, handle)
+
+            with patch.object(config, "ENABLE_SETTLEMENT_LOCK_STRATEGY", True), \
+                    patch.object(config, "ALLOW_LIVE_SETTLEMENT_LOCK_TRADES", False), \
+                    patch.object(config, "PAPER_LOCKS_FILE", paper_locks_path):
+                db = BotDatabase(db_path=db_path)
+                cards = build_strategy_scorecards(hours=24, db=db)
+                db.close()
+
+            s3 = next(card for card in cards if card["strategy"] == "S3-SettlementLock")
+            self.assertEqual(s3["paper_filled"], 3)
+            self.assertEqual(s3["paper_resolved"], 2)
+            self.assertEqual(s3["wins"], 1)
+            self.assertEqual(s3["losses"], 1)
+            self.assertEqual(s3["fill_rate"], 1.0)
+            self.assertEqual(s3["net_profit_cents"], 12)
+            self.assertEqual(s3["verdict_stats"]["SETTLEMENT_LOCK"]["resolved"], 2)
+
+    def test_strategy_scorecards_expose_verdict_breakdown(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = os.path.join(temp_dir, "bot_data.sqlite3")
+            journal = ObservationJournal(
+                events_file=os.path.join(temp_dir, "observation_events.jsonl"),
+                decisions_file=os.path.join(temp_dir, "scan_decisions.jsonl"),
+                recent_events_file=os.path.join(temp_dir, "observation_recent_events.jsonl"),
+                recent_decisions_file=os.path.join(temp_dir, "observation_recent_decisions.jsonl"),
+                recent_cache_file=os.path.join(temp_dir, "observation_recent_cache.json"),
+                daily_summary_file=os.path.join(temp_dir, "observation_daily_summary.json"),
+                db_path=db_path,
+            )
+            journal.log_paper_event("paper_trade_resolved", {
+                "ticker": "KXHIGHNY-STRONG",
+                "side": "no",
+                "contracts": 1,
+                "strategy": "S1-Weather",
+                "confirmation_verdict": "STRONG",
+                "status": "win",
+                "net_profit_cents": 55,
+            })
+            journal.log_paper_event("paper_trade_resolved", {
+                "ticker": "KXHIGHNY-CONFIRM",
+                "side": "no",
+                "contracts": 1,
+                "strategy": "S1-Weather",
+                "confirmation_verdict": "CONFIRM",
+                "status": "loss",
+                "net_profit_cents": -21,
+            })
+
+            db = BotDatabase(db_path=db_path)
+            cards = build_strategy_scorecards(hours=24, db=db)
+            db.close()
+
+            weather = next(card for card in cards if card["strategy"] == "S1-Weather")
+            self.assertEqual(weather["strong_resolved"], 1)
+            self.assertEqual(weather["strong_wins"], 1)
+            self.assertEqual(weather["strong_losses"], 0)
+            self.assertEqual(weather["confirm_resolved"], 1)
+            self.assertEqual(weather["confirm_wins"], 0)
+            self.assertEqual(weather["confirm_losses"], 1)
+            self.assertEqual(weather["verdict_stats"]["STRONG"]["net_profit_cents"], 55)
+            self.assertEqual(weather["verdict_stats"]["CONFIRM"]["net_profit_cents"], -21)
             journal.close()
 
     def test_strategy_scorecards_fall_back_to_jsonl_when_sqlite_disabled(self):

@@ -6,7 +6,9 @@ strategy-level paper scorecards plus simple promotion gates before live trading
 is ever re-enabled.
 """
 
-from datetime import datetime, timezone
+import json
+import os
+from datetime import datetime, timedelta, timezone
 
 from bot_db import BotDatabase
 import config
@@ -335,6 +337,111 @@ def _compute_drawdown_cents(profit_series):
     return max_drawdown
 
 
+def _parse_utc_timestamp(value):
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _record_verdict_outcome(card, verdict, pnl):
+    verdict_name = str(verdict or "").strip().upper()
+    if not verdict_name:
+        return
+    verdict_stats = card.setdefault("verdict_stats", {})
+    stats = verdict_stats.setdefault(
+        verdict_name,
+        {
+            "resolved": 0,
+            "wins": 0,
+            "losses": 0,
+            "net_profit_cents": 0,
+        },
+    )
+    stats["resolved"] += 1
+    stats["net_profit_cents"] += pnl
+    if pnl > 0:
+        stats["wins"] += 1
+    elif pnl < 0:
+        stats["losses"] += 1
+
+    if verdict_name == "STRONG":
+        card["strong_resolved"] += 1
+        if pnl > 0:
+            card["strong_wins"] += 1
+        elif pnl < 0:
+            card["strong_losses"] += 1
+    elif verdict_name == "CONFIRM":
+        card["confirm_resolved"] += 1
+        if pnl > 0:
+            card["confirm_wins"] += 1
+        elif pnl < 0:
+            card["confirm_losses"] += 1
+
+
+def _record_resolved_trade(card, resolved_profit_series, pnl, verdict=""):
+    pnl = int(pnl or 0)
+    card["paper_resolved"] += 1
+    card["net_profit_cents"] += pnl
+    resolved_profit_series.append(pnl)
+    if pnl > 0:
+        card["wins"] += 1
+        card["gross_profit_cents"] += pnl
+    elif pnl < 0:
+        card["losses"] += 1
+        card["gross_loss_cents"] += abs(pnl)
+    _record_verdict_outcome(card, verdict, pnl)
+
+
+def _merge_settlement_lock_scorecard(scorecards, resolved_profits, hours):
+    card = scorecards.get("S3-SettlementLock")
+    if not card:
+        return
+    try:
+        if not os.path.exists(config.PAPER_LOCKS_FILE):
+            return
+        with open(config.PAPER_LOCKS_FILE, "r", encoding="utf-8") as handle:
+            state = json.load(handle)
+    except Exception:
+        return
+
+    if not isinstance(state, dict):
+        return
+
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=int(hours or 0))
+    active_rows = list((state.get("active", {}) or {}).values())
+    history_rows = list(state.get("history", []) or [])
+
+    filled_entries = 0
+    for row in active_rows:
+        first_seen_at = _parse_utc_timestamp(row.get("first_seen_at") or row.get("timestamp"))
+        if first_seen_at and first_seen_at >= cutoff:
+            filled_entries += 1
+
+    for row in history_rows:
+        first_seen_at = _parse_utc_timestamp(row.get("first_seen_at") or row.get("timestamp"))
+        if first_seen_at and first_seen_at >= cutoff:
+            filled_entries += 1
+
+        resolved_at = _parse_utc_timestamp(row.get("resolved_at"))
+        if not resolved_at or resolved_at < cutoff:
+            continue
+        if row.get("status") not in ("win", "loss"):
+            continue
+
+        pnl = int(row.get("net_profit_cents", row.get("entry_profit_cents", 0)) or 0)
+        verdict = row.get("confirmation_verdict", "SETTLEMENT_LOCK")
+        _record_resolved_trade(card, resolved_profits["S3-SettlementLock"], pnl, verdict=verdict)
+
+    card["paper_filled"] += filled_entries
+
+
 def build_strategy_scorecards(hours=None, db=None):
     hours = int(hours or getattr(config, "STRATEGY_SCORECARD_WINDOW_HOURS", 24 * 14) or (24 * 14))
     definitions = get_strategy_definitions()
@@ -389,6 +496,13 @@ def build_strategy_scorecards(hours=None, db=None):
                 "profit_factor": None,
                 "expectancy_cents": None,
                 "max_drawdown_cents": 0,
+                "verdict_stats": {},
+                "strong_resolved": 0,
+                "strong_wins": 0,
+                "strong_losses": 0,
+                "confirm_resolved": 0,
+                "confirm_wins": 0,
+                "confirm_losses": 0,
                 "promotion_gate": definition.get("promotion_gate", {}),
                 "paper_entry_blockers": [],
                 "promotion_blockers": [],
@@ -409,11 +523,14 @@ def build_strategy_scorecards(hours=None, db=None):
                 scorecards[strategy_id]["paper_blocked"] += 1
 
         resolved_profits = {key: [] for key in scorecards}
+        has_s3_event_data = False
         for event in events:
             event_type = event.get("event_type", "")
             strategy_id = event.get("strategy", "")
             if strategy_id not in scorecards:
                 continue
+            if strategy_id == "S3-SettlementLock":
+                has_s3_event_data = True
             if event_type == "paper_order_queued":
                 scorecards[strategy_id]["paper_queued"] += 1
             elif event_type == "paper_order_filled":
@@ -422,15 +539,16 @@ def build_strategy_scorecards(hours=None, db=None):
                 scorecards[strategy_id]["paper_expired"] += 1
             elif event_type == "paper_trade_resolved":
                 pnl = int(event.get("net_profit_cents", 0) or 0)
-                scorecards[strategy_id]["paper_resolved"] += 1
-                scorecards[strategy_id]["net_profit_cents"] += pnl
-                resolved_profits[strategy_id].append(pnl)
-                if pnl > 0:
-                    scorecards[strategy_id]["wins"] += 1
-                    scorecards[strategy_id]["gross_profit_cents"] += pnl
-                elif pnl < 0:
-                    scorecards[strategy_id]["losses"] += 1
-                    scorecards[strategy_id]["gross_loss_cents"] += abs(pnl)
+                verdict = event.get("confirmation_verdict", "")
+                _record_resolved_trade(
+                    scorecards[strategy_id],
+                    resolved_profits[strategy_id],
+                    pnl,
+                    verdict=verdict,
+                )
+
+        if not has_s3_event_data:
+            _merge_settlement_lock_scorecard(scorecards, resolved_profits, hours)
 
         for strategy_id, card in scorecards.items():
             closed_fill_trials = card["paper_filled"] + card["paper_expired"]

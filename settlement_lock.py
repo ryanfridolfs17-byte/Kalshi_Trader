@@ -291,6 +291,8 @@ class SettlementLockPaper:
             if not existing:
                 active[ticker] = {
                     **cand,
+                    "strategy": "S3-SettlementLock",
+                    "confirmation_verdict": "SETTLEMENT_LOCK",
                     "status": "active",
                     "seen_count": 1,
                     "first_seen_at": now_iso,
@@ -304,6 +306,8 @@ class SettlementLockPaper:
 
             existing["last_seen_at"] = now_iso
             existing["seen_count"] = int(existing.get("seen_count", 0) or 0) + 1
+            existing.setdefault("strategy", "S3-SettlementLock")
+            existing.setdefault("confirmation_verdict", "SETTLEMENT_LOCK")
             existing["observed_high_f"] = max(
                 float(existing.get("observed_high_f", 0) or 0),
                 float(cand.get("observed_high_f", 0) or 0),
@@ -341,11 +345,15 @@ class SettlementLockPaper:
                 best_pnl = (100 - best_price) if lock_side == result else -best_price
                 resolved = dict(cand)
                 resolved.update({
+                    "strategy": resolved.get("strategy", "S3-SettlementLock"),
+                    "confirmation_verdict": resolved.get("confirmation_verdict", "SETTLEMENT_LOCK"),
                     "status": "win" if lock_side == result else "loss",
                     "market_result": result,
                     "resolved_at": now.isoformat(),
                     "entry_profit_cents": entry_pnl,
                     "best_profit_cents": best_pnl,
+                    "gross_profit_cents": entry_pnl,
+                    "net_profit_cents": entry_pnl,
                 })
                 history.append(resolved)
                 del active[ticker]
@@ -358,11 +366,15 @@ class SettlementLockPaper:
                 if now - stale_cutoff > timedelta(days=2):
                     expired = dict(cand)
                     expired.update({
+                        "strategy": expired.get("strategy", "S3-SettlementLock"),
+                        "confirmation_verdict": expired.get("confirmation_verdict", "SETTLEMENT_LOCK"),
                         "status": "expired_unknown",
                         "market_result": "",
                         "resolved_at": now.isoformat(),
                         "entry_profit_cents": 0,
                         "best_profit_cents": 0,
+                        "gross_profit_cents": 0,
+                        "net_profit_cents": 0,
                     })
                     history.append(expired)
                     del active[ticker]
