@@ -2302,6 +2302,64 @@ class ObservationDashboardRegressionTests(unittest.TestCase):
         self.assertEqual(stats["no_observation"], 1)
         self.assertEqual(stats["no_observation_h14"], 1)
 
+    def test_settlement_lock_blocks_predawn_snapshot_with_stale_observation(self):
+        """DAL Apr 14 regression: at 1 AM CT on Apr 14, a stale 84F observation
+        (almost certainly Apr 13's high) caused a false NO lock on the 79-80
+        bucket which actually settled at 79-80F. The fix adds the
+        SETTLEMENT_LOCK_MIN_LOCAL_HOUR gate to evaluate_market_snapshot so
+        candidates aren't even detected before the daily high can be reliably
+        observed.
+        """
+        parsed = {
+            "city_code": "DAL",
+            "temp_low": 79,
+            "temp_high": 80,
+            "target_date": "2026-04-14",
+        }
+        weather = DummyWeather(parsed, {}, 0.5)
+        paper = SettlementLockPaper(weather_engine=weather)
+        # 06:00 UTC on Apr 14 = 01:00 CT (DAL is America/Chicago) — pre-dawn.
+        observed_at = datetime(2026, 4, 14, 6, 0, tzinfo=timezone.utc)
+
+        result = paper.evaluate_market_snapshot(
+            market={"ticker": "KXHIGHTDAL-26APR14-B79.5", "no_ask": 80, "yes_ask": 20},
+            todays_high=84.0,
+            observed_at=observed_at,
+            require_same_day=True,
+        )
+
+        self.assertIsNone(result, "Pre-dawn snapshot must not produce a lock")
+        stats = paper.get_eval_stats()
+        self.assertIn("too_early_for_snapshot", stats)
+        self.assertEqual(stats["too_early_for_snapshot"], 1)
+
+    def test_settlement_lock_allows_post_min_hour_snapshot(self):
+        """Companion to the pre-dawn block: confirm that observations after
+        SETTLEMENT_LOCK_MIN_LOCAL_HOUR still produce a lock when the
+        observation cleanly exceeds the bucket ceiling.
+        """
+        parsed = {
+            "city_code": "DAL",
+            "temp_low": 79,
+            "temp_high": 80,
+            "target_date": "2026-04-14",
+        }
+        weather = DummyWeather(parsed, {}, 0.5)
+        paper = SettlementLockPaper(weather_engine=weather)
+        # 19:00 UTC on Apr 14 = 14:00 CT — well after min hour (10).
+        observed_at = datetime(2026, 4, 14, 19, 0, tzinfo=timezone.utc)
+
+        result = paper.evaluate_market_snapshot(
+            market={"ticker": "KXHIGHTDAL-26APR14-B79.5", "no_ask": 30, "yes_ask": 70},
+            todays_high=84.0,
+            observed_at=observed_at,
+            require_same_day=True,
+        )
+
+        self.assertIsNotNone(result, "Post-min-hour snapshot should produce a lock")
+        self.assertEqual(result["lock_side"], "no")
+        self.assertEqual(result["lock_type"], "upper_bound_breached")
+
     def test_observation_response_includes_strategy_scorecards(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             bot_status = os.path.join(temp_dir, "bot_status.json")

@@ -140,10 +140,15 @@ DEFAULT_MODEL_WEIGHTS = {
 }
 
 # === SEASONAL EDGE MULTIPLIERS ===
-# March remains the one clearly harder month in the current backtest slice.
-# April/May no longer carry an extra penalty under the Phase 2 filters.
+# Backtest 365-day MAE by month (overall avg 2.26F):
+#   Mar 2.70F (1.19x), Oct 1.96F (0.87x).
+# Other months sit at 0.95-1.08x — within noise, no multiplier applied.
+# March remains the one structurally harder month under the current stack.
+# October is the structurally easiest month — apply a discount so the
+# bot takes more of the cleanest signals.
 SEASONAL_EDGE_MULTIPLIERS = {
-    3: 1.2,   # March: hardest month
+    3: 1.2,    # March: hardest month (backtest MAE 2.70F vs 2.26F avg)
+    10: 0.87,  # October: best month (backtest MAE 1.96F vs 2.26F avg)
 }
 
 # === CITY BIAS SAFETY GATE ===
@@ -156,7 +161,10 @@ ROUNDING_BUFFER_SOFT_F = 2
 NO_SEPARATION_FLOOR_F = 2.0
 NO_SEPARATION_STD_DEV_MULT = 0.6
 MAX_MODEL_DIVERGENCE_YES_F = 8
-MAX_MODEL_DIVERGENCE_NO_F = 10
+# Tightened from 10F: 14% of NWS-native predictions had 5F+ model spread.
+# These are the noisiest signals — wide model disagreement = low confidence.
+# Cuts the worst tail without much volume loss.
+MAX_MODEL_DIVERGENCE_NO_F = 5
 MODEL_CONVERGENCE_BOOST_F = 2
 CONFIRM_NO_SEPARATION_PENALTY = 1.25
 
@@ -169,6 +177,14 @@ OPEN_METEO_FETCH_END_ET = 19     # Was 18. Late East Coast convergence trades.
 ENSEMBLE_CACHE_TTL = 3600         # 60 min (models update every 6h — 15 min was 9x too aggressive)
 DISTRIBUTION_CACHE_TTL = 3600     # 60 min (matches ensemble)
 CLOUD_COVER_CACHE_TTL = 7200      # 120 min (daily data, changes once/day)
+
+# Defense against pre-dawn stale observations triggering false same-day highs
+# (overnight cached METAR/NWS readings, edge-case timezone wraps, etc.).
+# get_todays_high() suppresses the value unless at least one observation
+# from after this local hour is present. Mirrors SETTLEMENT_LOCK_MIN_LOCAL_HOUR
+# at the observation layer for defense-in-depth.
+# Set to 0 to disable (legacy behavior). 6 = local dawn.
+OBSERVATION_MIN_LOCAL_HOUR = 6
 
 # === METAR OBSERVATION SOURCE ===
 METAR_API_URL = "https://aviationweather.gov/api/data/metar"

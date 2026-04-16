@@ -212,6 +212,17 @@ class SettlementLockPaper:
             if target_date != local_now.strftime("%Y-%m-%d"):
                 self._record_eval("not_same_day")
                 return None
+            # Guard against stale overnight observations: the daily high is
+            # almost never realized before local morning. Without this gate,
+            # a cached midnight METAR (which can still reflect yesterday's
+            # peak in some edge cases) could trigger a false lock.
+            # See INVESTIGATION_FINDINGS.md — DAL 80c Apr 14 spurious loss.
+            min_hour = int(getattr(config, "SETTLEMENT_LOCK_MIN_LOCAL_HOUR", 10) or 10)
+            if local_now.hour < min_hour:
+                self._record_eval("too_early_for_snapshot",
+                                  market.get("ticker", ""),
+                                  f"hour={local_now.hour} min={min_hour}")
+                return None
 
         ticker = market.get("ticker", "")
         hard_buffer = int(getattr(config, "ROUNDING_BUFFER_HARD_F", 1) or 1)

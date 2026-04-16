@@ -1174,7 +1174,15 @@ class TradeIntelligence:
             return {}
 
     def _get_metar_todays_high(self, city_code, station):
-        """Extract today's max temp from METAR batch data for one station."""
+        """Extract today's max temp from METAR batch data for one station.
+
+        Requires at least one observation from after local dawn before
+        returning a value. Prevents stale overnight observations
+        (yesterday's peak still in cache, edge-case timezone issues, etc.)
+        from triggering false same-day "today's high" readings — the daily
+        high is almost never realized in pre-dawn hours.
+        See INVESTIGATION_FINDINGS.md — DAL 80c Apr 14 spurious lock.
+        """
         metar_data = self.fetch_metar_batch()
         if not metar_data or station not in metar_data:
             return None
@@ -1186,12 +1194,17 @@ class TradeIntelligence:
         tz_name = cities[city_code].get("timezone", "America/New_York")
         tz = ZoneInfo(tz_name)
         local_date = datetime.now(tz).strftime("%Y-%m-%d")
+        min_dawn_hour = int(getattr(config, "OBSERVATION_MIN_LOCAL_HOUR", 6) or 6)
 
         temps = []
+        post_dawn_seen = False
         for obs in metar_data[station]:
-            obs_local_date = obs["obs_time"].astimezone(tz).strftime("%Y-%m-%d")
-            if obs_local_date == local_date:
-                temps.append(obs["temp_f"])
+            obs_local = obs["obs_time"].astimezone(tz)
+            if obs_local.strftime("%Y-%m-%d") != local_date:
+                continue
+            temps.append(obs["temp_f"])
+            if obs_local.hour >= min_dawn_hour:
+                post_dawn_seen = True
 
         if not temps and metar_data.get(station):
             if self._should_emit_obs_diag(
@@ -1202,7 +1215,23 @@ class TradeIntelligence:
                     "  [METAR-EMPTY] %s: %d raw obs, 0 matched today (%s)"
                     % (city_code, len(metar_data[station]), local_date)
                 )
-        return max(temps) if temps else None
+            return None
+
+        if temps and not post_dawn_seen:
+            # Have today-stamped observations but none from after local dawn.
+            # The daily high cannot be reliably read yet — return None and
+            # let callers (S3 SettlementLock, CASE 1 confirmation) skip.
+            if self._should_emit_obs_diag(
+                f"metar_predawn_{station}",
+                max_age_sec=getattr(config, "METAR_CACHE_TTL_SEC", 90),
+            ):
+                print(
+                    "  [METAR-PREDAWN] %s: %d obs all before local %dAM, suppressing"
+                    % (city_code, len(temps), min_dawn_hour)
+                )
+            return None
+
+        return max(temps)
 
     def _get_metar_current_temp(self, station):
         """Get latest temperature from METAR batch for one station."""
@@ -1370,7 +1399,12 @@ class TradeIntelligence:
         return result
 
     def _fetch_nws_todays_high(self, city_code, station):
-        """Fetch today's high from NWS observations. Returns F or None."""
+        """Fetch today's high from NWS observations. Returns F or None.
+
+        Mirrors the post-dawn guard in _get_metar_todays_high: requires at
+        least one observation from after local dawn before returning a value
+        so pre-dawn cached/stale obs cannot fire false same-day highs.
+        """
         cities = self._get_cities()
         if not cities or city_code not in cities:
             return None
@@ -1381,6 +1415,7 @@ class TradeIntelligence:
                 hour=0, minute=0, second=0, microsecond=0)
             midnight_utc = midnight_local.astimezone(timezone.utc)
             local_date = datetime.now(tz).strftime("%Y-%m-%d")
+            min_dawn_hour = int(getattr(config, "OBSERVATION_MIN_LOCAL_HOUR", 6) or 6)
             url = NWS_OBS_URL.format(station=station)
             params = {"start": midnight_utc.isoformat()}
             resp = requests.get(url, headers=NWS_HEADERS,
@@ -1389,20 +1424,24 @@ class TradeIntelligence:
                 return None
             features = resp.json().get("features", [])
             temps = []
+            post_dawn_seen = False
             for obs in features:
                 props = obs.get("properties", {})
                 timestamp = props.get("timestamp", "")
                 try:
                     obs_utc = datetime.fromisoformat(
                         timestamp.replace("Z", "+00:00"))
-                    obs_local_date = obs_utc.astimezone(tz).strftime("%Y-%m-%d")
+                    obs_local = obs_utc.astimezone(tz)
                 except Exception:
                     continue
-                if obs_local_date == local_date:
-                    temp_c = props.get("temperature", {}).get("value")
-                    if temp_c is not None:
-                        temps.append(math.floor(temp_c * 9 / 5 + 32))
-            if temps:
+                if obs_local.strftime("%Y-%m-%d") != local_date:
+                    continue
+                temp_c = props.get("temperature", {}).get("value")
+                if temp_c is not None:
+                    temps.append(math.floor(temp_c * 9 / 5 + 32))
+                    if obs_local.hour >= min_dawn_hour:
+                        post_dawn_seen = True
+            if temps and post_dawn_seen:
                 return max(temps)
         except Exception:
             pass
